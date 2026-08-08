@@ -1,0 +1,49 @@
+# Обновления зависимостей.
+#
+# Каждый PR здесь запускает полную сборку под три платформы, поэтому обновления
+# сгруппированы: одно предложение в неделю на экосистему вместо десятка. Мажорные
+# версии Tauri вынесены отдельно — их не принимают не глядя, там ломающие правки
+# в API и в правах.
+
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      сервер:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
+
+  # У оболочки своё рабочее пространство и свой Cargo.lock.
+  - package-ecosystem: cargo
+    directory: /desktop/src-tauri
+    schedule:
+      interval: weekly
+    groups:
+      оболочка:
+        patterns: ["*"]
+        exclude-patterns: ["tauri", "tauri-build", "tauri-plugin-*"]
+      tauri:
+        patterns: ["tauri", "tauri-build", "tauri-plugin-*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # Мажорную версию Tauri поднимают руками: она тянет за собой права,
+      # capabilities и сгенерированный проект Android.
+      - dependency-name: "tauri*"
+        update-types: ["version-update:semver-major"]
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly

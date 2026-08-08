@@ -17,7 +17,8 @@
         "resizable": true,
         "fullscreen": false,
         "label": "main",
-        "url": "https://verse.yeru.cc"
+        "url": "https://verse.yeru.cc",
+        "dragDropEnabled": false
       }
     ],
     "security": {

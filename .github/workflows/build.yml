@@ -4,11 +4,22 @@ on:
   push:
     branches: [main, master]
     tags: ["v*"]
+  # Фильтр по путям только здесь: у push он распространился бы и на теги, а
+  # релиз, тихо не собравшийся из-за правки в документации, — худший из миров.
   pull_request:
+    paths-ignore: ["**.md"]
   workflow_dispatch:
+
+# Пока идёт сборка, в ветку успевают дослать ещё коммит — старый прогон уже
+# никому не нужен. Релизные теги дорабатывают до конца.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   CARGO_TERM_COLOR: always
+  # Отладочная информация в CI не нужна никому, а линковка с ней заметно дольше.
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
   server:
@@ -17,10 +28,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --bin yeruverse
+
+      # Отдельной релизной сборки здесь нет: её делает образ ниже, а clippy
+      # проверяет то же самое дерево быстрее и с предупреждениями как ошибками.
+      - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: docker build -t yeruverse:ci .
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   desktop:
     name: приложение (${{ matrix.os }})
@@ -28,32 +51,53 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # На macOS собираем универсальный пакет: один и тот же файл ставится и
-          # на Apple Silicon, и на Intel — иначе пришлось бы держать две сборки.
-          - os: macos-latest
-            target: universal-apple-darwin
-          - os: windows-latest
-            target: ""
+        # Каждая система собирается под свою архитектуру, без явного --target:
+        # раннер macOS и так на Apple Silicon. Универсальный пакет компилировал
+        # всё дважды — вдвое дольше ради машин, которых Apple не продаёт с 2020
+        # года; Intel-маки остаются на ручной сборке.
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
 
-      - run: cargo install tauri-cli --version "^2" --locked
+      # Готовый бинарник вместо `cargo install`: тот собирал CLI из исходников
+      # по несколько минут в каждой задаче.
+      - uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall -y tauri-cli@^2
 
       - name: сборка установщика
         working-directory: desktop/src-tauri
-        # Ключ подписи обновлений — в секретах репозитория. Без него сборка
-        # падает: в конфигурации есть публичный ключ, и Tauri требует приватный.
+        shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: cargo tauri build ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+        run: |
+          set -e
+          # Ключ подписи есть не всегда: в форках секреты недоступны. Без него
+          # собираем без пакетов обновления — иначе Tauri останавливает сборку,
+          # ведь публичный ключ в конфигурации есть, а приватного нет.
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::warning::нет TAURI_SIGNING_PRIVATE_KEY — собираем без пакетов обновления"
+            cargo tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+            exit 0
+          fi
+
+          # Ключ — одна строка base64. Перенос строки или пробел, попавшие при
+          # копировании, ломают разбор с невразумительным «Missing comment in
+          # secret key», поэтому чистим сами и проверяем заранее.
+          TAURI_SIGNING_PRIVATE_KEY="$(printf %s "$TAURI_SIGNING_PRIVATE_KEY" | tr -d '[:space:]')"
+          export TAURI_SIGNING_PRIVATE_KEY
+          case "$TAURI_SIGNING_PRIVATE_KEY" in
+            dW50cnVzdGVkIGNvbW1lbnQ6*) ;;
+            *)
+              echo "::error::TAURI_SIGNING_PRIVATE_KEY не похож на ключ. Нужно всё содержимое файла ~/.yeruverse/updater.key целиком — одна длинная строка base64, начинается с dW50cnVzdGVkIGNvbW1lbnQ6. Не путайте с updater.key.pub и не вставляйте расшифрованный текст ключа."
+              exit 1
+              ;;
+          esac
+          cargo tauri build
 
       # Установщики — людям, архивы с подписями — обновлятелю.
       - uses: actions/upload-artifact@v4
@@ -82,31 +126,33 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
       - uses: android-actions/setup-android@v3
       - name: NDK
         run: |
           sdkmanager --install "ndk;27.0.12077973"
           echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> $GITHUB_ENV
 
+      # Только arm64: все живые телефоны на нём, а Rust собирается под каждую
+      # архитектуру заново — на остальных трёх ушло бы вчетверо больше времени.
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
 
-      - run: cargo install tauri-cli --version "^2" --locked
+      - uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall -y tauri-cli@^2
 
       - name: подготовка проекта
-        working-directory: desktop/src-tauri
-        run: cargo tauri android init
-      # Права, уровень языка Java и иконка — то же, что делает `make android`.
-      - run: cd desktop/src-tauri && cargo tauri icon icons/icon.png
-      - run: python3 scripts/android_patch.py
+        run: |
+          cd desktop/src-tauri && cargo tauri android init && cargo tauri icon icons/icon.png
+          cd - && python3 scripts/android_patch.py
 
       - name: сборка APK
         working-directory: desktop/src-tauri
-        run: cargo tauri android build --apk
+        run: cargo tauri android build --apk --target aarch64
 
       # Неподписанный APK телефон не поставит — «пакет повреждён» это про него.
       # Ключ лежит в секретах: base64 от вашего ~/.yeruverse/android.jks.
@@ -138,6 +184,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -151,12 +199,14 @@ jobs:
         with:
           draft: true
           generate_release_notes: true
+          # В релиз идёт только подписанный APK: неподписанный всё равно не
+          # поставить, а рядом с рабочим он лишь путал бы. Подписи `.sig` тоже
+          # не выкладываем — они уже внутри latest.json.
           files: |
             latest.json
             dist/**/*.dmg
             dist/**/*.exe
             dist/**/*.msi
-            dist/**/*.apk
+            dist/**/yeruverse.apk
             dist/**/*.tar.gz
             dist/**/*.zip
-            dist/**/*.sig

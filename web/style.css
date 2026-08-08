@@ -239,6 +239,17 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
   background: color-mix(in srgb, var(--text) 4%, transparent);
 }
 .attach .ico { width: 18px; height: 18px; flex: none; color: var(--muted); }
+/* Над комнатой держат файл. Подсказка не должна ловить события мышью —
+   иначе она же и перехватила бы бросок. */
+#screen-room.dropping::after {
+  content: 'Отпустите — файл уйдёт в чат';
+  position: fixed; inset: 8px; z-index: 30; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px dashed var(--accent); border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  color: var(--accent); font-weight: 600;
+}
+
 /* Картинка из чата: показываем целиком, но не даём растянуть колонку. */
 .chat-log .shot {
   display: block; margin-top: 6px; max-width: 100%; max-height: 240px;

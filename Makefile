@@ -95,7 +95,10 @@ icons-ui:
 	python3 scripts/fetch_icons.py
 
 tauri-cli:
-	@cargo tauri --version > /dev/null 2>&1 || cargo install tauri-cli --version '^2' --locked
+	@cargo tauri --version > /dev/null 2>&1 && exit 0; \
+	 cargo binstall --version > /dev/null 2>&1 \
+	   && cargo binstall -y tauri-cli@'^2' \
+	   || cargo install tauri-cli --version '^2' --locked
 
 docker:
 	docker build -t yeruverse .

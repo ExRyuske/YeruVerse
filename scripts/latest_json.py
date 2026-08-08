@@ -20,10 +20,11 @@ import sys
 
 REPO = 'ExRyuske/YeruVerse'
 
-# Какой архив для какой системы. macOS собирается универсальным, поэтому один и
-# тот же пакет обслуживает и Apple Silicon, и Intel.
+# Какой архив для какой системы. macOS собирается только под Apple Silicon,
+# поэтому Intel в манифест не попадает: обновлятель иначе скачал бы им
+# приложение, которое не запустится.
 TARGETS = [
-    ('.app.tar.gz', ['darwin-aarch64', 'darwin-x86_64']),
+    ('.app.tar.gz', ['darwin-aarch64']),
     ('-setup.nsis.zip', ['windows-x86_64']),
     ('.msi.zip', ['windows-x86_64']),
 ]

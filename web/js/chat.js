@@ -19,6 +19,8 @@ export function initChat(deps) {
     addAttachment(ctx.peer(detail.from), detail.meta, false, detail.srv);
   });
 
+  initDrop();
+
   // Скриншот из буфера уходит в чат по Ctrl+V, где бы ни стоял курсор: искать
   // ради этого скрепку и сохранённый на диск файл — лишние три действия.
   document.addEventListener('paste', (e) => {
@@ -32,6 +34,51 @@ export function initChat(deps) {
     e.preventDefault();
     for (const img of images) sendFile(named(img));
   });
+}
+
+/**
+ * Файл, брошенный в окно комнаты, уходит в чат.
+ *
+ * Цель — вся комната, а не узкая полоска чата: попасть в неё мышью с файлом
+ * труднее, чем кажется, а промах по умолчанию открывает файл вместо страницы —
+ * то есть комната просто исчезает. Поэтому промах мы гасим отдельно, на всём
+ * документе.
+ */
+function initDrop() {
+  const room = $('#screen-room');
+  // dragenter и dragleave приходят и от вложенных элементов, поэтому считаем
+  // вход и выход, а не переключаем подсветку на каждом.
+  let depth = 0;
+  const files = (e) => [...(e.dataTransfer?.types ?? [])].includes('Files');
+  const off = () => {
+    depth = 0;
+    room.classList.remove('dropping');
+  };
+
+  room.addEventListener('dragenter', (e) => {
+    if (!files(e)) return;
+    e.preventDefault();
+    depth++;
+    room.classList.add('dropping');
+  });
+  room.addEventListener('dragover', (e) => {
+    if (!files(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  room.addEventListener('dragleave', () => {
+    if (--depth <= 0) off();
+  });
+  room.addEventListener('drop', (e) => {
+    if (!files(e)) return;
+    e.preventDefault();
+    off();
+    for (const file of e.dataTransfer.files) sendFile(file);
+  });
+
+  for (const type of ['dragover', 'drop']) {
+    document.addEventListener(type, (e) => files(e) && e.preventDefault());
+  }
 }
 
 /**
