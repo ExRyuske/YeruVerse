@@ -1,0 +1,6 @@
+target
+desktop
+.git
+.github
+*.md
+.env

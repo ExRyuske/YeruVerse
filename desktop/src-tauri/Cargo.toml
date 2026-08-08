@@ -1,0 +1,54 @@
+[package]
+name = "yeruverse-desktop"
+version = "0.1.0"
+edition = "2021"
+default-run = "yeruverse-desktop"
+
+# Собственное рабочее пространство: десктоп тянет пол-экосистемы Tauri, и
+# держать его в одном Cargo.lock с лёгким сервером незачем.
+[workspace]
+
+[lib]
+name = "yeruverse_desktop_lib"
+# staticlib/cdylib нужны Android- и iOS-сборкам Tauri.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+# Оболочка намеренно ничего не знает про сервер комнат: окно всегда смотрит на
+# внешний адрес. Благодаря этому в приложение (и особенно в APK) не едут ни
+# axum, ни tokio, ни rustls с его сишными потрохами.
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Системные сочетания существуют только на настольных системах: на Android
+# этого плагина просто нет, и сборка падала на его импорте.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-global-shortcut = "2"
+# Обновление на месте: на Android его нет, там APK ставят руками.
+tauri-plugin-updater = "2"
+# Инжект ввода: простое управление чужим рабочим столом из браузера.
+enigo = "0.3"
+
+# Оболочка почти ничего не считает: вся работа идёт в вебвью и в сервере.
+# Поэтому здесь важнее время сборки, чем последний процент скорости — тонкая
+# LTO и параллельная кодогенерация вместо полной LTO в один поток. Для Android
+# это особенно заметно: там всё собирается заново под каждую архитектуру.
+[profile.release]
+lto = "thin"
+codegen-units = 16
+strip = true
+
+# Отладочная сборка приложения: отлаживать тут нечего — интересный код живёт в
+# JS и в крейте сервера, — поэтому отладочную информацию не генерируем вовсе,
+# а зависимости собираем оптимизированно один раз.
+[profile.dev]
+debug = 0
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = false

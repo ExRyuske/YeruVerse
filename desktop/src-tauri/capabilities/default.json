@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Права окна: базовое ядро. IPC доступен только со своих адресов.",
+  "windows": [
+    "main",
+    "overlay"
+  ],
+  "local": true,
+  "remote": {
+    "urls": [
+      "https://verse.yeru.cc",
+      "https://*.yeru.cc",
+      "http://localhost:*",
+      "http://127.0.0.1:*"
+    ]
+  },
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "allow-native-api"
+  ]
+}

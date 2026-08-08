@@ -1,0 +1,31 @@
+# Команды приложения доступны с локальной страницы по умолчанию, но окно
+# грузится с сервера по https — а для удалённого адреса каждую команду нужно
+# разрешить явно, иначе IPC отвечает «not allowed by ACL».
+
+[[permission]]
+identifier = "allow-native-api"
+description = "Нативные команды YeruVerse: выбор сервера, локальный сервер и приём чужого ввода."
+
+[permission.commands]
+allow = [
+  "capabilities",
+  "overlay",
+  "set_hotkeys",
+  "current_server",
+  "set_server",
+  "sunshine",
+  "sunshine_creds",
+  "sunshine_pin",
+  "set_control",
+  "input_pause",
+  "input_move",
+  "input_button",
+  "input_scroll",
+  "input_key",
+  "input_release",
+  "open_url",
+  "update_check",
+  "update_install",
+  "moonlight",
+]
+deny = []

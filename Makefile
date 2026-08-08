@@ -1,0 +1,116 @@
+# Короткие команды для типовых задач. Всё то же самое можно набрать руками —
+# см. README, здесь просто собраны рабочие сочетания флагов.
+
+.PHONY: help server web app app-debug android android-all android-prepare sign-apk icons icons-ui updater-key docker docker-run deploy check clean
+
+APP_DIR := desktop/src-tauri
+ANDROID_HOME ?= $(or $(ANDROID_SDK_ROOT),$(HOME)/Library/Android/sdk)
+# Ключ подписи. Android не ставит неподписанный пакет — «пакет повреждён» это
+# как раз про него. Ключ рождается сам и лежит вне репозитория; сохраните его:
+# обновление поверх установленного приложения требует того же ключа.
+KEYSTORE ?= $(HOME)/.yeruverse/android.jks
+KEY_PASS ?= yeruverse
+APK := $(CURDIR)/yeruverse.apk
+
+help:
+	@echo "make server      — собрать и запустить сервер (веб-версия на :8080)"
+	@echo "make app         — собрать установщик под текущую систему (.dmg/.msi/.AppImage)"
+	@echo "make app-debug   — запустить приложение без упаковки"
+	@echo "make android     — собрать и подписать APK под arm64 (нужны ANDROID_HOME и NDK_HOME)"
+	@echo "make android-all — то же, но под все архитектуры (дольше в четыре раза)"
+	@echo "make icons       — перегенерировать иконки приложения из scripts/make_icon.py"
+	@echo "make icons-ui    — пересобрать иконки интерфейса из Font Awesome"
+	@echo "make updater-key — создать ключ подписи обновлений (один раз на проект)"
+	@echo "make docker      — собрать образ сервера"
+	@echo "make deploy      — поднять сервер + HTTPS + TURN через compose"
+	@echo "make check       — сборка, clippy и форматирование"
+
+server:
+	cargo run --release
+
+web: server
+
+# Установщик под ту систему, на которой запущено: кросс-компиляции у Tauri нет.
+app: tauri-cli $(UPDATER_KEY)
+	cd $(APP_DIR) && TAURI_SIGNING_PRIVATE_KEY="$$(cat $(UPDATER_KEY))" cargo tauri build
+	@echo "Готовые файлы: $(APP_DIR)/target/release/bundle/"
+
+app-debug:
+	cd $(APP_DIR) && cargo run
+
+# Только arm64: все живые телефоны на нём, а Rust собирается под каждую
+# архитектуру заново — на остальных трёх уходит вчетверо больше времени.
+android: android-prepare
+	cd $(APP_DIR) && cargo tauri android build --apk --target aarch64
+	@$(MAKE) --no-print-directory sign-apk
+
+android-all: android-prepare
+	cd $(APP_DIR) && cargo tauri android build --apk
+	@$(MAKE) --no-print-directory sign-apk
+
+# Проект под Android генерируется заново и в репозиторий не входит, поэтому
+# каждый раз доводим его до рабочего вида: права на микрофон, уровень языка,
+# иконки. Вручную это забывается ровно один раз — и потом ищется полдня.
+android-prepare: tauri-cli $(KEYSTORE)
+	@test -d $(APP_DIR)/gen/android || (cd $(APP_DIR) && cargo tauri android init)
+	cd $(APP_DIR) && cargo tauri icon icons/icon.png
+	python3 scripts/android_patch.py
+
+# Выравниваем и подписываем свежайший из собранных пакетов.
+sign-apk:
+	@set -e; \
+	tools="$$(ls -d "$(ANDROID_HOME)"/build-tools/* 2>/dev/null | tail -1)"; \
+	if [ -z "$$tools" ]; then \
+	  echo "Не нашли build-tools в $(ANDROID_HOME) — задайте ANDROID_HOME"; exit 1; \
+	fi; \
+	raw="$$(ls -t $(APP_DIR)/gen/android/app/build/outputs/apk/*/release/*-unsigned.apk | head -1)"; \
+	"$$tools/zipalign" -f -p 4 "$$raw" "$(APK)"; \
+	"$$tools/apksigner" sign --ks "$(KEYSTORE)" --ks-pass "pass:$(KEY_PASS)" "$(APK)"; \
+	echo "APK: $(APK)"
+
+$(KEYSTORE):
+	@mkdir -p "$(dir $@)"
+	keytool -genkeypair -keystore "$@" -alias yeruverse -keyalg RSA -keysize 2048 \
+	  -validity 10000 -storepass "$(KEY_PASS)" -keypass "$(KEY_PASS)" -dname "CN=YeruVerse"
+	@echo "Ключ подписи создан: $@ — сохраните его, иначе обновление не встанет поверх"
+
+# Ключ подписи обновлений: создаётся один раз, живёт вне репозитория.
+# Его же содержимое кладут в секрет TAURI_SIGNING_PRIVATE_KEY на GitHub.
+UPDATER_KEY ?= $(HOME)/.yeruverse/updater.key
+
+updater-key: $(UPDATER_KEY)
+
+$(UPDATER_KEY):
+	@mkdir -p "$(dir $@)"
+	cd $(APP_DIR) && cargo tauri signer generate --ci -p "" -w "$@"
+	@echo "Публичный ключ — $@.pub, он же прописан в tauri.conf.json"
+
+# Иконки приложения для всех платформ рождаются из одного PNG 1024×1024.
+icons:
+	python3 scripts/make_icon.py
+	cd $(APP_DIR) && cargo tauri icon icons/icon.png
+
+# Иконки интерфейса: пересобрать web/js/icons.js из Font Awesome Free.
+icons-ui:
+	python3 scripts/fetch_icons.py
+
+tauri-cli:
+	@cargo tauri --version > /dev/null 2>&1 || cargo install tauri-cli --version '^2' --locked
+
+docker:
+	docker build -t yeruverse .
+
+docker-run: docker
+	docker run --rm -p 8080:8080 yeruverse
+
+deploy:
+	docker compose up -d --build
+
+check:
+	cargo fmt --check
+	cargo clippy --all-targets -- -D warnings
+	cd $(APP_DIR) && cargo clippy --all-targets -- -D warnings
+
+clean:
+	cargo clean
+	cd $(APP_DIR) && cargo clean

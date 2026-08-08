@@ -1,0 +1,46 @@
+# Развёртывание на VPS: сервер комнат + автоматический HTTPS.
+#
+# TURN свой не поднимаем — он берётся у Cloudflare (см. .env). Без TURN зрители
+# за симметричным NAT — мобильные операторы, корпоративные сети — не соединятся
+# напрямую, и голос, файл и демонстрация экрана у них не заработают.
+#
+#   cp .env.example .env && $EDITOR .env
+#   docker compose up -d
+
+services:
+  yeruverse:
+    build: .
+    container_name: yeruverse
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      RUST_LOG: yeruverse=info
+      # TURN у Cloudflare: сервер сам выпускает короткоживущие учётки.
+      CF_TURN_KEY_ID: ${CF_TURN_KEY_ID:-}
+      CF_TURN_API_TOKEN: ${CF_TURN_API_TOKEN:-}
+      # Любой другой провайдер со статическими учётками — как запасной вариант.
+      TURN_URL: ${TURN_URL:-}
+      TURN_USER: ${TURN_USER:-}
+      TURN_PASS: ${TURN_PASS:-}
+    expose:
+      - "8080"
+
+  # Caddy сам получает и продлевает сертификат Let's Encrypt и умеет
+  # проксировать WebSocket без дополнительной настройки.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [yeruverse]
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  caddy-data:
+  caddy-config:

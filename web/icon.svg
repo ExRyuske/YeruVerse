@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="YeruVerse">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b2030"/>
+      <stop offset="1" stop-color="#0b0d12"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b8cff"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="115" fill="url(#bg)"/>
+
+  <!-- орбита -->
+  <circle cx="256" cy="256" r="161" fill="none" stroke="url(#ring)" stroke-width="53"/>
+
+  <!-- спутник: тёмный ободок отделяет его от орбиты -->
+  <circle cx="355" cy="129" r="43" fill="#0b0d12"/>
+  <circle cx="355" cy="129" r="32" fill="#3ecf8e"/>
+
+  <!-- воспроизведение -->
+  <polygon points="218,197 325,256 218,315" fill="#f2f5ff" stroke="#f2f5ff"
+           stroke-width="14" stroke-linejoin="round"/>
+</svg>

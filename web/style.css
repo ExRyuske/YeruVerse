@@ -1,0 +1,389 @@
+:root {
+  --bg: var(--tg-theme-bg-color, #0f1115);
+  --panel: var(--tg-theme-secondary-bg-color, #171a21);
+  --text: var(--tg-theme-text-color, #e8eaed);
+  --muted: var(--tg-theme-hint-color, #8b93a1);
+  --accent: var(--tg-theme-button-color, #5b8cff);
+  --accent-text: var(--tg-theme-button-text-color, #fff);
+  --border: color-mix(in srgb, var(--text) 14%, transparent);
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+
+/* Наши display:flex у .screen/.sidebar перебивают браузерное правило для
+   [hidden] — без !important скрытый экран остаётся на виду. */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  /* dvh, а не vh: на телефоне адресная строка то появляется, то исчезает, и
+     от vh низ интерфейса уезжает под неё. */
+  height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overscroll-behavior: none;
+}
+
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.error { color: #ff6b6b; }
+.grow { flex: 1; }
+.screen { height: 100%; display: flex; flex-direction: column; }
+
+button, input {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 14px;
+}
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 600; }
+button.ghost { background: transparent; }
+input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ---------- вход ---------- */
+#screen-join { align-items: center; justify-content: center; padding: 20px; }
+.join-card {
+  width: min(420px, 100%);
+  display: flex; flex-direction: column; gap: 14px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 16px; padding: 24px;
+}
+.join-card h1 { margin: 0; font-size: 28px; letter-spacing: -.02em; }
+.join-card label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+.join-card input { background: var(--bg); }
+.row { display: flex; gap: 10px; }
+/* Ненавязчивое предложение на экране входа: рамка вместо модального окна. */
+.notice {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px; display: flex; flex-direction: column; gap: 10px;
+}
+.notice p { margin: 0; color: var(--muted); }
+.notice .row { flex-wrap: wrap; }
+.row > button { flex: 1; }
+
+/* ---------- комната ---------- */
+.topbar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border-bottom: 1px solid var(--border);
+  padding-top: max(7px, env(safe-area-inset-top));
+}
+.room-id { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* Код комнаты — секрет: на людях и в трансляции он не должен читаться, пока
+   владелец сам его не покажет. Нажатие снимает размытие и копирует код. */
+.room-code {
+  font-weight: 700; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: none; border: none; padding: 2px 4px; max-width: 22ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  filter: blur(5px); user-select: none; transition: filter .15s;
+}
+.room-code:hover { border: none; }
+.room-code.revealed { filter: none; user-select: all; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: #f0a020; flex: none; }
+.dot.on { background: #3ecf8e; }
+.dot.off { background: #ff6b6b; }
+
+.layout { flex: 1; display: flex; min-height: 0; }
+.stage-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 12px; gap: 10px; }
+
+.views { display: flex; gap: 8px; flex-wrap: wrap; }
+.views button {
+  padding: 5px 11px; font-size: 13px; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.views button .who { font-weight: 600; }
+/* На этой трансляции кто-то показывает курсором, а на сцене сейчас другая:
+   курсор рисуется только на своём кадре, поэтому подсказываем, куда смотреть. */
+.views button.pointed {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.views button.pointed::after {
+  content: ''; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); animation: blink 1.2s ease-in-out infinite;
+}
+@keyframes blink { 50% { opacity: .25; } }
+
+.stage {
+  position: relative; flex: 1; min-height: 0;
+  background: #000; border-radius: var(--radius); overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+}
+.stage video, .stage iframe { width: 100%; height: 100%; display: block; border: 0; background: #000; }
+.stage-empty { text-align: center; padding: 20px; }
+.stage-empty p { margin: 4px 0; }
+/* Карточка Sunshine: кнопка и адрес, к которому идёт Moonlight. */
+.stage-empty .row { justify-content: center; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+.stage-empty .row > button { flex: 0 0 auto; }
+
+/* От ряда управления остался только полный экран: паузу и перемотку показывает
+   сам плеер, и синхронизация слушает именно его кнопки. */
+.controls { display: flex; justify-content: flex-end; }
+
+.sources { display: flex; flex-direction: column; gap: 8px; }
+.src-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.src-row #in-url { flex: 1; min-width: 180px; }
+
+.sidebar {
+  width: 300px; flex: none; border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; min-height: 0;
+}
+.peers { padding: 12px; border-bottom: 1px solid var(--border); max-height: 40%; overflow: auto; }
+.peers h3 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; color: var(--muted); letter-spacing: .04em; }
+.peers ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.peers li { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.peers img { width: 22px; height: 22px; border-radius: 50%; }
+.badge { background: var(--accent); color: var(--accent-text); border-radius: 20px; padding: 1px 7px; font-size: 12px; }
+.tag { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; }
+.tag.warn { color: #f0a020; border-color: #f0a020; }
+
+/* Говорящий участник подсвечивается фоном, а не цветом имени: имя красится
+   личным цветом ника и перебивать его нельзя. */
+.peers li { padding: 2px 6px; margin: 0 -6px; border-radius: 8px; }
+.peers li.speaking { background: color-mix(in srgb, #3ecf8e 18%, transparent); }
+.peers li.speaking img { box-shadow: 0 0 0 2px #3ecf8e; }
+/* Красным помечено только то, что выключено: микрофон, звук, замок. Идущая
+   трансляция — не «выключено», у неё обычный приглушённый цвет. */
+.peers li .off-mark { color: #ff6b6b; }
+.peers li .live-mark { color: var(--muted); }
+
+/* Громкость участника прямо в строке с ником. */
+.pv-mini { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.pv-mini .pv-icon {
+  padding: 0 2px; background: none; border: none; font-size: 13px; line-height: 1;
+}
+.pv-mini .pv-icon:hover { border: none; opacity: .7; }
+.peers li .rc {
+  padding: 0 4px; background: none; border: 1px solid var(--border);
+  border-radius: 6px; font-size: 12px; line-height: 1.6;
+}
+.peers li .rc.on { color: var(--accent); border-color: var(--accent); }
+/* Закрытый замок — тоже «выключено», и цвет у него общий с микрофоном. */
+.peers li .rc.shut { color: #ff6b6b; border-color: color-mix(in srgb, #ff6b6b 45%, transparent); }
+
+.pv-mini input[type="range"] {
+  width: 62px; padding: 0; margin: 0; border: none; background: none;
+  accent-color: var(--accent);
+}
+
+button.active { background: var(--accent); color: var(--accent-text); border-color: transparent; }
+.topbar .badge { margin-left: 5px; }
+
+/* Кнопки-иконки: одинаковый квадрат. Контуры Font Awesome вместо эмодзи —
+   они одинаково выглядят во всех системах и красятся под тему. */
+button.icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; padding: 0; flex: none;
+}
+.ico { fill: currentColor; flex: none; }
+/* Кнопки с подписью: иконка слева, текст следом. */
+button > .ico + span { margin-left: 7px; }
+button:has(> .ico) { display: inline-flex; align-items: center; }
+.tag > .ico, .off-mark > .ico, .live-mark > .ico, .views .ico { vertical-align: -2px; }
+.views button > .ico + span { margin-left: 6px; }
+/* Выключенный микрофон или звук — это не «неактивная кнопка», а состояние, о
+   котором нужно помнить: красим тем же красным, что и выход из комнаты. */
+button.icon.off {
+  color: #ff6b6b;
+  border-color: color-mix(in srgb, #ff6b6b 55%, transparent);
+  background: color-mix(in srgb, #ff6b6b 16%, var(--panel));
+}
+button.icon.off:hover:not(:disabled) { border-color: #ff6b6b; }
+button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
+/* Перечёркивание для выключенного микрофона и заглушённого звука. */
+
+
+.hotkeys { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.hotkeys .row {
+  display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 8px;
+  font-size: 14px;
+}
+.hotkeys .combo {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+  padding: 6px 10px; min-width: 150px; text-align: center;
+}
+.hotkeys .combo.recording { border-color: var(--accent); color: var(--accent); }
+.hotkeys .clear { padding: 6px 8px; }
+
+.diag { font-size: 12px; line-height: 1.7; white-space: pre-wrap; }
+.diag b { font-weight: 600; }
+
+.chat { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.chat-log .at { color: var(--muted); font-size: 11px; margin-right: 6px; font-variant-numeric: tabular-nums; }
+.chat-log {
+  flex: 1; overflow-y: auto; padding: 12px;
+  display: flex; flex-direction: column; gap: 8px; font-size: 14px;
+  /* Длинное слово или ссылка без пробелов не должны растягивать колонку и
+     уезжать за край — рвём их по любому месту. */
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.chat-log > * { max-width: 100%; }
+.chat-log .who { color: var(--accent); font-weight: 600; margin-right: 5px; }
+.chat-log .sys { color: var(--muted); font-size: 13px; font-style: italic; }
+.chat-form { display: flex; gap: 6px; padding: 10px; border-top: 1px solid var(--border); padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+.chat-form input { flex: 1; min-width: 0; }
+.chat-form .icon { width: 38px; height: 38px; }
+
+/* Вложение в чате: имя, размер и кнопка со прогрессом загрузки. */
+.attach {
+  display: flex; align-items: center; gap: 8px;
+  border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px;
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+.attach .ico { width: 18px; height: 18px; flex: none; color: var(--muted); }
+.attach .meta { min-width: 0; flex: 1; }
+.attach .name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach .sub { color: var(--muted); font-size: 12px; }
+.attach button { padding: 6px 10px; font-size: 13px; white-space: nowrap; }
+
+/* ---------- общие указатели ---------- */
+.ptr-layer { position: absolute; inset: 0; z-index: 5; pointer-events: none; overflow: hidden; }
+.ptr {
+  position: absolute; top: 0; left: 0; display: flex; align-items: flex-start; gap: 3px;
+  will-change: transform; transition: transform .07s linear;
+}
+.ptr svg { fill: var(--ptr, #5b8cff); stroke: rgba(0,0,0,.55); stroke-width: .8; flex: none; }
+/* background: currentColor здесь брал бы color этого же правила, то есть чёрный —
+   поэтому цвет участника приезжает отдельной переменной. */
+.ptr span {
+  background: var(--ptr, #5b8cff); color: #0b0d12;
+  font-size: 11px; font-weight: 600; padding: 1px 5px; border-radius: 6px;
+  white-space: nowrap; margin-top: 10px;
+}
+.ptr span:empty { display: none; }
+.ptr-ping {
+  position: absolute; top: 0; left: 0; width: 0; height: 0;
+  box-shadow: 0 0 0 2px var(--ptr, #5b8cff); border-radius: 50%;
+  animation: ping .9s ease-out forwards;
+}
+@keyframes ping {
+  0%   { width: 0; height: 0; margin: 0; opacity: 1; }
+  100% { width: 56px; height: 56px; margin: -28px 0 0 -28px; opacity: 0; }
+}
+
+/* ---------- палитра и настройки ---------- */
+.palette { display: flex; gap: 8px; flex-wrap: wrap; }
+.palette button {
+  width: 26px; height: 26px; padding: 0; border-radius: 50%;
+  border: 2px solid transparent; cursor: pointer;
+}
+.palette button[aria-pressed="true"] { border-color: var(--text); transform: scale(1.12); }
+
+.modal {
+  position: fixed; inset: 0; z-index: 30;
+  background: rgba(0, 0, 0, .55);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.modal-card {
+  width: min(460px, 100%); max-height: 86vh; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 18px;
+}
+.modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.modal-head h2 { margin: 0; font-size: 19px; }
+.modal-card section { padding: 14px 0; border-top: 1px solid var(--border); }
+.modal-card section:first-of-type { border-top: none; }
+.modal-card h3 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; color: var(--muted); letter-spacing: .04em; }
+.field { display: flex; flex-direction: column; gap: 6px; font-size: 14px; margin-bottom: 12px; }
+.field input[type="range"] { padding: 0; border: none; background: none; accent-color: var(--accent); }
+.field output { float: right; color: var(--muted); font-size: 13px; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 14px; margin-bottom: 8px; }
+.check input { width: auto; }
+
+.pick {
+  user-select: all; word-break: break-all;
+  padding: 4px 8px; border-radius: 6px; background: var(--panel);
+}
+.toast .pick {
+  display: block; margin-top: 4px; user-select: all; word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+  max-width: min(70vw, 460px);
+}
+.peers li .rc:disabled { opacity: .4; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 16px; box-shadow: 0 8px 30px rgba(0,0,0,.4); z-index: 20;
+}
+
+/* Полный экран: сцена занимает всё, лишнее убирается. */
+body.fullscreen .stage-wrap { padding: 0; gap: 0; background: #000; }
+body.fullscreen .sources { display: none; }
+body.fullscreen .stage { border-radius: 0; }
+/* Кнопка полного экрана уезжает в угол, а не растягивается полосой по низу:
+   полоса перекрывала нижнюю часть кадра и съедала клики. */
+body.fullscreen .controls {
+  position: absolute; top: 10px; right: 10px; z-index: 8;
+  transition: opacity .25s;
+}
+body.fullscreen .views {
+  position: absolute; top: 10px; left: 10px; z-index: 8; transition: opacity .25s;
+}
+/* Мышь стоит — панели гаснут: наведение на неподвижный курсор не заканчивается
+   никогда, и они закрывали бы кадр всё время. Сам курсор при этом не прячем:
+   пропавшая мышь читается как «всё зависло». */
+body.fullscreen.idle .controls,
+body.fullscreen.idle .views { opacity: 0; pointer-events: none; }
+
+@media (max-width: 860px) {
+  .layout { flex-direction: column; }
+  .sidebar {
+    width: auto; border-left: none; border-top: 1px solid var(--border);
+    height: 40dvh; min-height: 180px; flex: none;
+  }
+  .stage-wrap { flex: 1 1 auto; min-height: 0; }
+  /* Сцена держит пропорции кадра, а не растягивается на всю высоту. */
+  .stage { aspect-ratio: 16 / 9; flex: 0 1 auto; }
+  .stage-wrap { padding: 8px; gap: 8px; }
+
+  /* Шапка: подписи прячем, остаются иконки — иначе кнопки не помещаются. */
+  .topbar { gap: 5px; padding: 6px 8px; padding-top: max(6px, env(safe-area-inset-top)); }
+  .topbar button.icon { width: 34px; height: 34px; }
+
+  /* Крупные цели для пальца и поля во всю ширину. */
+  button, input, select { padding: 11px 14px; font-size: 15px; }
+  .src-row { gap: 6px; }
+  .src-row > button { flex: 1 1 45%; }
+  .src-row #in-url { flex: 1 1 100%; }
+  .controls #btn-playpause { min-width: 60px; }
+
+  /* Ряд трансляций не переносится, а прокручивается вбок. */
+  .views { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+  .views::-webkit-scrollbar { display: none; }
+  .views button { flex: none; }
+
+  .modal { padding: 0; align-items: stretch; }
+  .modal-card {
+    width: 100%; max-height: 100%; border: none; border-radius: 0;
+    padding: 16px 16px max(16px, env(safe-area-inset-bottom));
+  }
+  /* Список участников сжимается в одну прокручиваемую строку: на телефоне
+     вертикаль дороже, и её лучше отдать чату. */
+  .peers { max-height: none; padding: 8px 12px; }
+  .peers h3 { display: none; }
+  .peers ul { flex-direction: row; overflow-x: auto; gap: 10px; scrollbar-width: none; }
+  .peers ul::-webkit-scrollbar { display: none; }
+  .peers li { flex: none; margin: 0; }
+  .pv-mini { display: none; }        /* громкость крутят в настройках */
+  .pv-mini input[type="range"] { width: 84px; }
+}
+
+/* Совсем узкие экраны: имя комнаты не должно выдавливать кнопки. */
+@media (max-width: 420px) {
+  .room-code { max-width: 8ch; }
+  .join-card { padding: 18px 16px; }
+}
+
+/* Телефон в горизонтали: боковую панель прячем, сцене нужна высота. */
+@media (max-width: 860px) and (orientation: landscape) {
+  .sidebar { height: 100%; width: 260px; border-top: none; border-left: 1px solid var(--border); }
+  .layout { flex-direction: row; }
+}

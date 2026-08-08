@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Без этих строк macOS не покажет запрос доступа, и getUserMedia молча откажет. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Микрофон нужен для голосового чата с друзьями в комнате.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Камера не используется, доступ можно не давать.</string>
+</dict>
+</plist>

@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>YeruVerse</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<section id="screen-join" class="screen">
+  <div class="join-card">
+    <h1>YeruVerse</h1>
+    <label>Как вас зовут
+      <input id="in-name" type="text" placeholder="Имя" maxlength="32" autocomplete="off">
+    </label>
+    <label>Цвет ника
+      <div id="join-palette" class="palette"></div>
+    </label>
+    <label id="link-row">Ссылка или код комнаты
+      <div class="row">
+        <input id="in-link" type="text" placeholder="ссылка или код" autocomplete="off">
+        <button id="btn-link" type="button" class="primary">Войти</button>
+      </div>
+    </label>
+    <label id="server-row" hidden>Сервер комнат
+      <input id="in-server" type="text" placeholder="https://verse.yeru.cc" autocomplete="off">
+    </label>
+    <button id="btn-create">Создать комнату</button>
+    <p id="join-error" class="error" hidden></p>
+    <div id="update-notice" class="notice" hidden>
+      <p class="small">Вышла версия <b id="update-version"></b>.</p>
+      <div class="row">
+        <button id="btn-update" type="button" class="primary">Обновить</button>
+        <button id="btn-update-later" type="button" class="ghost">Позже</button>
+      </div>
+    </div>
+    <div id="stream-tools" class="notice" hidden>
+      <p class="small">Мышь и клавиатура работают поверх демонстрации экрана.
+        Для игр нужны <b>Sunshine</b> и <b>Moonlight</b>.</p>
+      <div class="row">
+        <button id="btn-get-sunshine" type="button" class="ghost">Скачать Sunshine</button>
+        <button id="btn-get-moonlight" type="button" class="ghost">Скачать Moonlight</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="screen-room" class="screen" hidden>
+  <header class="topbar">
+    <div class="room-id">
+      <span class="dot" id="conn-dot"></span>
+      <button id="room-name" class="room-code" type="button"
+              title="Нажмите, чтобы показать и скопировать код комнаты">—</button>
+    </div>
+    <div class="grow"></div>
+    <button id="btn-mute" class="icon" data-icon="mic" title="Свой микрофон"></button>
+    <button id="btn-deafen" class="icon" data-icon="speaker" title="Заглушить остальных"></button>
+    <button id="btn-settings" class="icon" data-icon="gear" title="Настройки"></button>
+    <button id="btn-invite" class="icon" data-icon="link" title="Скопировать ссылку-приглашение"></button>
+    <button id="btn-leave" class="icon danger" data-icon="exit" title="Выйти из комнаты"></button>
+  </header>
+
+  <main class="layout">
+    <div class="stage-wrap">
+      <div id="views" class="views" hidden></div>
+      <div id="stage" class="stage">
+        <div id="stage-empty" class="stage-empty">
+          <p class="muted">Пока смотреть нечего</p>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button id="btn-full" class="icon" data-icon="expand" title="Во весь экран"></button>
+      </div>
+
+      <div class="sources">
+        <div class="src-row">
+          <button id="btn-screen" data-icon="screen"><span>Экран</span></button>
+          <button id="btn-camera" data-icon="camera"><span>Камера</span></button>
+          <button id="btn-pointer" class="ghost active" data-icon="pointer" title="Показывать курсоры участников поверх видео"><span>Указки</span></button>
+        </div>
+      </div>
+    </div>
+
+    <aside id="sidebar" class="sidebar">
+      <div class="peers">
+        <h3>В комнате <span id="peer-count" class="badge">0</span></h3>
+        <ul id="peer-list"></ul>
+      </div>
+      <div class="chat">
+        <div id="chat-log" class="chat-log"></div>
+        <form id="chat-form" class="chat-form">
+          <button id="btn-attach" type="button" class="icon" data-icon="paperclip" title="Отправить файл"></button>
+          <input id="in-attach" type="file" hidden multiple>
+          <input id="chat-input" type="text" placeholder="Сообщение…" maxlength="500" autocomplete="off">
+          <button type="submit" class="icon" data-icon="send" title="Отправить"></button>
+        </form>
+      </div>
+    </aside>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <div id="settings" class="modal" hidden>
+    <div class="modal-card">
+      <header class="modal-head">
+        <h2>Настройки</h2>
+        <button id="btn-settings-close" class="ghost icon" data-icon="close" title="Закрыть"></button>
+      </header>
+
+      <section>
+        <h3>Профиль</h3>
+        <label class="field">Ник
+          <input id="set-name" type="text" maxlength="32" autocomplete="off">
+        </label>
+        <label class="field">Цвет ника
+          <div id="set-palette" class="palette"></div>
+        </label>
+      </section>
+
+      <section>
+        <h3>Звук</h3>
+        <label class="field">Громкость голоса <output id="out-voice-vol"></output>
+          <input id="set-voice-vol" type="range" min="0" max="200">
+        </label>
+      </section>
+
+      <section>
+        <h3>Звуковые устройства</h3>
+        <label class="field">Микрофон
+          <select id="set-mic"></select>
+        </label>
+        <label class="field">Вывод звука
+          <select id="set-output"></select>
+        </label>
+        <p class="muted small" id="output-note"></p>
+
+        <label class="field">Подавление шума
+          <select id="set-denoise">
+            <option value="rnnoise">Нейросетью — RNNoise</option>
+            <option value="browser">Средствами браузера</option>
+            <option value="off">Без подавления</option>
+          </select>
+        </label>
+        <label class="check"><input id="set-ec" type="checkbox"> Эхоподавление</label>
+        <label class="check"><input id="set-agc" type="checkbox"> Автоматическое усиление</label>
+        <p class="muted small">Уровень сигнала: <span id="mic-level" class="mono">—</span></p>
+      </section>
+
+      <section>
+        <h3>Трансляция</h3>
+        <label class="field">Профиль качества
+          <select id="set-quality"></select>
+        </label>
+        <label class="field">Разрешение
+          <select id="set-height"></select>
+        </label>
+        <label class="field">Кадров в секунду <output id="out-fps"></output>
+          <input id="set-fps" type="range" min="10" max="120" step="5">
+        </label>
+        <label class="field">Битрейт <output id="out-bitrate"></output>
+          <input id="set-bitrate" type="range" min="1" max="25" step="0.5">
+        </label>
+      </section>
+
+      <section id="sunshine-section" hidden>
+        <h3>Sunshine</h3>
+        <p class="muted small">Логин и пароль веб-панели. Нужны, чтобы подтверждать
+          сопряжение с Moonlight.</p>
+        <label class="field">Логин
+          <input id="set-sun-user" type="text" autocomplete="off">
+        </label>
+        <label class="field">Пароль
+          <input id="set-sun-pass" type="password" autocomplete="off">
+        </label>
+        <button id="btn-sun-save" type="button">Сохранить</button>
+        <p class="muted small" id="sunshine-reach"></p>
+      </section>
+
+      <section>
+        <h3>Горячие клавиши</h3>
+        <div id="hotkeys" class="hotkeys"></div>
+      </section>
+
+
+      <section>
+        <h3>Диагностика</h3>
+        <div id="diag" class="diag mono">—</div>
+        <p class="muted small">
+          Если у кого-то не слышно голоса, смотрите тип соединения: <b>relay</b> —
+          через TURN, <b>srflx/host</b> — напрямую. Пусто и «failed» означают, что
+          TURN не настроен или его порты закрыты.
+        </p>
+      </section>
+    </div>
+  </div>
+</section>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

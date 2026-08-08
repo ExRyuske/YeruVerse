@@ -1,0 +1,26 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop",
+  "description": "Системные сочетания и обновление на месте. Плагинов, которые их дают, на мобильных платформах не существует, поэтому права вынесены отдельно.",
+  "platforms": [
+    "linux",
+    "macOS",
+    "windows"
+  ],
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "remote": {
+    "urls": [
+      "https://verse.yeru.cc",
+      "https://*.yeru.cc",
+      "http://localhost:*",
+      "http://127.0.0.1:*"
+    ]
+  },
+  "permissions": [
+    "global-shortcut:default",
+    "updater:default"
+  ]
+}

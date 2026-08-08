@@ -1,0 +1,20 @@
+{$DOMAIN} {
+	encode zstd gzip
+
+	# WebSocket проходит через reverse_proxy как есть, отдельных правил не нужно.
+	reverse_proxy yeruverse:8080
+
+	header {
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Content-Type-Options nosniff
+		-Server
+	}
+
+	# Заголовки кэширования приходят от сервера комнат и должны дойти до
+	# браузера и CDN как есть — своих здесь не добавляем.
+
+	log {
+		output stdout
+		format console
+	}
+}

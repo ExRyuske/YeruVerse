@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>YeruVerse — указатели</title>
+<style>
+  /* Прозрачное окно поверх всех приложений. Никакого фона: видно только
+     курсоры, всё остальное пропускает и свет, и клики. */
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: transparent; pointer-events: none;
+    font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .ptr {
+    position: absolute; top: 0; left: 0; display: flex; align-items: flex-start; gap: 3px;
+    will-change: transform; transition: transform .07s linear;
+    filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .7));
+  }
+  .ptr svg { fill: var(--ptr, #5b8cff); stroke: rgba(0, 0, 0, .55); stroke-width: .8; }
+  .ptr span {
+    background: var(--ptr, #5b8cff); color: #0b0d12; font-weight: 600;
+    padding: 2px 6px; border-radius: 6px; white-space: nowrap; margin-top: 12px;
+  }
+  .ping {
+    position: absolute; top: 0; left: 0; width: 0; height: 0; border-radius: 50%;
+    box-shadow: 0 0 0 3px var(--ptr, #5b8cff); animation: ping .9s ease-out forwards;
+  }
+  @keyframes ping {
+    0%   { width: 0; height: 0; margin: 0; opacity: 1; }
+    100% { width: 90px; height: 90px; margin: -45px 0 0 -45px; opacity: 0; }
+  }
+</style>
+</head>
+<body>
+<script type="module">
+// Окно живёт только в десктопной сборке и получает позиции курсоров событиями
+// от главного окна. Координаты приходят долями кадра — здесь кадр совпадает с
+// экраном, поэтому просто умножаем на его размер.
+
+const { listen } = window.__TAURI__.event;
+const cursors = new Map();
+
+const ARROW =
+  '<svg viewBox="0 0 12 18" width="18" height="26"><path d="M1 1l10 8-4.5.6L9 15l-2 .9-2.4-5.3L1 13z"/></svg>';
+
+function place(el, x, y) {
+  el.style.transform = `translate(${x * innerWidth}px, ${y * innerHeight}px)`;
+}
+
+listen('cursor', ({ payload }) => {
+  const { id, x, y, name, color, gone, click } = payload;
+
+  if (gone) {
+    cursors.get(id)?.remove();
+    cursors.delete(id);
+    return;
+  }
+
+  let el = cursors.get(id);
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'ptr';
+    el.innerHTML = `${ARROW}<span></span>`;
+    document.body.appendChild(el);
+    cursors.set(id, el);
+  }
+  el.style.setProperty('--ptr', color ?? '#5b8cff');
+  el.querySelector('span').textContent = name ?? '';
+  place(el, x, y);
+
+  if (click) {
+    const ping = document.createElement('div');
+    ping.className = 'ping';
+    ping.style.setProperty('--ptr', color ?? '#5b8cff');
+    place(ping, x, y);
+    document.body.appendChild(ping);
+    setTimeout(() => ping.remove(), 900);
+  }
+});
+
+// Курсор, о котором давно ничего не слышно, убираем — иначе он повиснет на
+// экране навсегда, если зритель просто закрыл вкладку.
+listen('cursors-clear', () => {
+  for (const el of cursors.values()) el.remove();
+  cursors.clear();
+});
+</script>
+</body>
+</html>
