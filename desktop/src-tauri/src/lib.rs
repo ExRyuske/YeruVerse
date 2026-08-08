@@ -358,10 +358,14 @@ async fn update_install() -> Result<(), String> {
 #[tauri::command]
 async fn overlay(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("overlay") {
-        if enabled {
+        if !enabled {
+            let _ = win.close();
             return Ok(());
         }
-        let _ = win.close();
+        // Окно уже есть — просто напоминаем системе, где ему место: чужое
+        // полноэкранное приложение могло перекрыть его, пока мы не смотрели.
+        let _ = win.set_always_on_top(true);
+        let _ = win.set_visible_on_all_workspaces(true);
         return Ok(());
     }
     if !enabled {
@@ -380,6 +384,11 @@ async fn overlay(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
         .transparent(true)
         .decorations(false)
         .always_on_top(true)
+        // Без этого окно живёт только в своём рабочем столе: стоит игре уйти в
+        // полноэкранный режим — а на macOS это отдельное пространство, — и
+        // курсоры зрителей остаются на брошенном экране. Разрешение «быть на
+        // всех рабочих столах» — единственное, чем это лечится снаружи.
+        .visible_on_all_workspaces(true)
         .skip_taskbar(true)
         .focused(false)
         .shadow(false)

@@ -71,6 +71,11 @@ jobs:
   android:
     name: приложение (Android)
     runs-on: ubuntu-latest
+    # Секреты — на уровне задачи: в условии шага контекст `secrets` недоступен,
+    # а `env` доступен, и по нему шаг подписи понимает, есть ли чем подписывать.
+    env:
+      ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+      ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -106,10 +111,7 @@ jobs:
       # Неподписанный APK телефон не поставит — «пакет повреждён» это про него.
       # Ключ лежит в секретах: base64 от вашего ~/.yeruverse/android.jks.
       - name: подпись APK
-        if: ${{ secrets.ANDROID_KEYSTORE != '' }}
-        env:
-          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
-          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+        if: env.ANDROID_KEYSTORE != ''
         run: |
           set -e
           echo "$ANDROID_KEYSTORE" | base64 -d > /tmp/android.jks

@@ -18,6 +18,31 @@ export function initChat(deps) {
     if (detail.from === ctx.self()?.id) return;   // свою карточку уже нарисовали
     addAttachment(ctx.peer(detail.from), detail.meta, false, detail.srv);
   });
+
+  // Скриншот из буфера уходит в чат по Ctrl+V, где бы ни стоял курсор: искать
+  // ради этого скрепку и сохранённый на диск файл — лишние три действия.
+  document.addEventListener('paste', (e) => {
+    if (!ctx.self()) return;                      // ещё не в комнате
+    const images = [...(e.clipboardData?.items ?? [])]
+      .filter((i) => i.kind === 'file' && i.type.startsWith('image/'))
+      .map((i) => i.getAsFile())
+      .filter(Boolean);
+    if (!images.length) return;                   // обычный текст вставляется как обычно
+
+    e.preventDefault();
+    for (const img of images) sendFile(named(img));
+  });
+}
+
+/**
+ * У картинки из буфера имени нет — браузер зовёт её `image.png`. Подставляем
+ * время: в списке из десяти «image.png» ничего не найти.
+ */
+function named(file) {
+  if (file.name && file.name !== 'image.png') return file;
+  const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+  const at = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return new File([file], `Снимок ${at.replace(':', '-')}.${ext}`, { type: file.type });
 }
 
 export function clearChat() {
@@ -38,6 +63,9 @@ function sendFile(file) {
 }
 
 
+/** Картинки показываем прямо в чате, всё остальное — карточкой с кнопкой. */
+const isImage = (meta) => (meta.mime ?? '').startsWith('image/');
+
 function addAttachment(peer, meta, mine, at) {
   const log = $('#chat-log');
   const row = document.createElement('div');
@@ -53,7 +81,7 @@ function addAttachment(peer, meta, mine, at) {
 
   const card = document.createElement('div');
   card.className = 'attach';
-  card.innerHTML = icon('file', { size: 18 });
+  if (!isImage(meta)) card.innerHTML = icon('file', { size: 18 });
 
   const info = document.createElement('div');
   info.className = 'meta';
@@ -77,10 +105,30 @@ function addAttachment(peer, meta, mine, at) {
 
   card.append(info, action);
   row.append(time, who, card);
+
+  // Картинку показываем сразу: свою — из своей же копии, чужую качаем сами,
+  // не дожидаясь нажатия. Ради снимка экрана жать «Скачать» никто не станет.
+  let img = null;
+  if (isImage(meta)) {
+    img = document.createElement('img');
+    img.className = 'shot';
+    img.alt = meta.name;
+    img.loading = 'lazy';
+    row.appendChild(img);
+
+    const own = ctx.swarm.get(meta.id)?.blobUrl;
+    if (own) {
+      img.src = own;
+      action.remove();
+    } else {
+      action.click();
+    }
+  }
+
   log.appendChild(row);
   log.scrollTop = log.scrollHeight;
 
-  attachRows.set(meta.id, { action, sub });
+  attachRows.set(meta.id, { action, sub, img });
 }
 
 export function renderAttachProgress(id, pct) {
@@ -91,7 +139,7 @@ export function renderAttachProgress(id, pct) {
 /** Файл собран: подменяем кнопку ссылкой и сразу сохраняем его на диск. */
 export function finishAttach(id, url, meta) {
   const row = attachRows.get(id);
-  if (!row || !row.action.isConnected) return;
+  if (!row) return;
 
   const link = document.createElement('a');
   link.href = url;
@@ -99,8 +147,14 @@ export function finishAttach(id, url, meta) {
   link.innerHTML = icon('download', { size: 14 });
   link.append(' Сохранить');
   link.className = 'tag';
-  row.action.replaceWith(link);
+
+  if (row.action.isConnected) row.action.replaceWith(link);
   row.sub.textContent = `${fmtSize(meta.size)} · получен, теперь вы тоже раздаёте`;
+
+  if (row.img) {
+    row.img.src = url;
+    return;   // картинка уже перед глазами, на диск её сохраняют по желанию
+  }
   link.click();
 }
 

@@ -239,6 +239,11 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
   background: color-mix(in srgb, var(--text) 4%, transparent);
 }
 .attach .ico { width: 18px; height: 18px; flex: none; color: var(--muted); }
+/* Картинка из чата: показываем целиком, но не даём растянуть колонку. */
+.chat-log .shot {
+  display: block; margin-top: 6px; max-width: 100%; max-height: 240px;
+  border-radius: 10px; border: 1px solid var(--border); object-fit: contain;
+}
 .attach .meta { min-width: 0; flex: 1; }
 .attach .name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attach .sub { color: var(--muted); font-size: 12px; }
