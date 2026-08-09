@@ -1,7 +1,7 @@
 # Короткие команды для типовых задач. Всё то же самое можно набрать руками —
 # см. README, здесь просто собраны рабочие сочетания флагов.
 
-.PHONY: help server web app app-debug android android-all android-prepare sign-apk icons icons-ui updater-key docker docker-run deploy check clean
+.PHONY: help server web app app-debug android android-all android-prepare sign-apk icons icons-ui updater-key updater-pubkey docker docker-run deploy check clean
 
 APP_DIR := desktop/src-tauri
 ANDROID_HOME ?= $(or $(ANDROID_SDK_ROOT),$(HOME)/Library/Android/sdk)
@@ -32,7 +32,10 @@ web: server
 
 # Установщик под ту систему, на которой запущено: кросс-компиляции у Tauri нет.
 app: tauri-cli $(UPDATER_KEY)
-	cd $(APP_DIR) && TAURI_SIGNING_PRIVATE_KEY="$$(cat $(UPDATER_KEY))" cargo tauri build
+	cd $(APP_DIR) \
+	  && TAURI_SIGNING_PRIVATE_KEY="$$(cat $(UPDATER_KEY))" \
+	     TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(UPDATER_KEY_PASS)" \
+	     cargo tauri build
 	@echo "Готовые файлы: $(APP_DIR)/target/release/bundle/"
 
 app-debug:
@@ -77,13 +80,21 @@ $(KEYSTORE):
 # Ключ подписи обновлений: создаётся один раз, живёт вне репозитория.
 # Его же содержимое кладут в секрет TAURI_SIGNING_PRIVATE_KEY на GitHub.
 UPDATER_KEY ?= $(HOME)/.yeruverse/updater.key
+# Ключ зашифрован всегда, даже пустой строкой. Пароль передаём явно: без
+# переменной Tauri останавливает сборку и ждёт ввода с клавиатуры.
+UPDATER_KEY_PASS ?=
 
 updater-key: $(UPDATER_KEY)
 
 $(UPDATER_KEY):
 	@mkdir -p "$(dir $@)"
-	cd $(APP_DIR) && cargo tauri signer generate --ci -p "" -w "$@"
-	@echo "Публичный ключ — $@.pub, он же прописан в tauri.conf.json"
+	cd $(APP_DIR) && cargo tauri signer generate --ci -p "$(UPDATER_KEY_PASS)" -w "$@"
+	@$(MAKE) --no-print-directory updater-pubkey
+
+# Публичный ключ в конфиге обязан соответствовать приватному: разойдутся — и
+# обновления перестанут ставиться молча, без единой ошибки в логе.
+updater-pubkey:
+	@python3 -c 'import json,pathlib,sys; 	  c=pathlib.Path("$(APP_DIR)/tauri.conf.json"); d=json.loads(c.read_text()); 	  d.setdefault("plugins",{}).setdefault("updater",{})["pubkey"]=pathlib.Path("$(UPDATER_KEY).pub").read_text().strip(); 	  c.write_text(json.dumps(d,indent=2,ensure_ascii=False)+"\n"); 	  print("публичный ключ вписан в tauri.conf.json")'
 
 # Иконки приложения для всех платформ рождаются из одного PNG 1024×1024.
 icons:

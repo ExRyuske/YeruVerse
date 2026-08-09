@@ -208,6 +208,12 @@ capabilities и сгенерированный проект Android.
 Обновление предлагается на экране входа, а не посреди разговора. Манифест
 собирает `scripts/latest_json.py` в задаче релиза. Android так не обновляется.
 
+Выпуск версии: поднять `version` в `desktop/src-tauri/Cargo.toml`, поставить тег
+`v<та же версия>` — сборка сверяет их и останавливается при расхождении, иначе
+обновление предлагалось бы по кругу. Черновик релиза **нужно опубликовать
+руками**: `releases/latest` черновики не показывает, и до публикации обновление
+никому не придёт.
+
 Ключ подписи — **одна длинная строка base64**, начинается с
 `dW50cnVzdGVkIGNvbW1lbnQ6`. Копировать целиком (`pbcopy < ~/.yeruverse/updater.key`),
 не путать с `updater.key.pub` и не вставлять расшифрованный текст: иначе сборка
@@ -218,9 +224,48 @@ capabilities и сгенерированный проект Android.
 | Секрет | Зачем | Где взять |
 |---|---|---|
 | `TAURI_SIGNING_PRIVATE_KEY` | подпись обновлений | `make updater-key`, затем **всё содержимое** `~/.yeruverse/updater.key` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | пароль к нему, если задавали | — |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | пароль к ключу; пустой, если не задавали | — |
 | `ANDROID_KEYSTORE` | подпись APK | `base64 -i ~/.yeruverse/android.jks` |
-| `ANDROID_KEYSTORE_PASS` | пароль хранилища | тот, с которым создавали ключ |
+| `ANDROID_KEYSTORE_PASS` | пароль хранилища | `yeruverse`, если ключ создал `make android` |
+
+### Первый релиз
+
+```bash
+# 1. Ключи. Оба уже созданы, если собирали локально; иначе:
+make updater-key                                   # ~/.yeruverse/updater.key
+make android                                       # заодно создаст android.jks
+
+# 2. Значения для секретов (macOS; на другой системе вместо pbcopy — xclip)
+pbcopy < ~/.yeruverse/updater.key                  # → TAURI_SIGNING_PRIVATE_KEY
+base64 -i ~/.yeruverse/android.jks | pbcopy        # → ANDROID_KEYSTORE
+# ANDROID_KEYSTORE_PASS = yeruverse
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD = пусто
+
+# 3. Код на GitHub, дождаться зелёной сборки
+git push -u origin main
+
+# 4. Тег той же версии, что в desktop/src-tauri/Cargo.toml
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Секреты добавляются в Settings → Secrets and variables → Actions → New
+repository secret. После тега появится **черновик** релиза — его нужно открыть и
+нажать «Publish release»: `releases/latest` черновики не отдаёт.
+
+Проверить, что обновления заработали:
+
+```bash
+curl -sL https://github.com/ExRyuske/YeruVerse/releases/latest/download/latest.json
+```
+
+Первая версия обновлять нечего — она сама себе базовая. Цепочка проверяется со
+второго релиза: поднять `version` в `Cargo.toml`, `git tag v0.1.1`, опубликовать
+черновик — установленная 0.1.0 предложит обновиться в течение шести часов или
+сразу при следующем запуске.
+
+Пароль к ключу подписи спрашивается только тогда, когда переменной
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` нет вовсе: ключ зашифрован всегда, пусть и
+пустой строкой. `make app` передаёт её сам, в CI она приходит из секрета.
 
 ## Развёртывание
 

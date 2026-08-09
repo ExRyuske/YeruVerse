@@ -26,7 +26,7 @@ jobs:
     name: сервер + образ
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -37,8 +37,8 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
 
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
         with:
           context: .
           push: false
@@ -57,7 +57,7 @@ jobs:
         # года; Intel-маки остаются на ручной сборке.
         os: [macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -100,7 +100,7 @@ jobs:
           cargo tauri build
 
       # Установщики — людям, архивы с подписями — обновлятелю.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: yeruverse-${{ matrix.os }}
           path: |
@@ -121,13 +121,19 @@ jobs:
       ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
       ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
-      - uses: android-actions/setup-android@v3
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: gradle-${{ runner.os }}-
+      - uses: android-actions/setup-android@v4
       - name: NDK
         run: |
           sdkmanager --install "ndk;27.0.12077973"
@@ -167,7 +173,7 @@ jobs:
           "$tools/apksigner" sign --ks /tmp/android.jks --ks-pass "pass:$ANDROID_KEYSTORE_PASS" yeruverse.apk
           rm -f /tmp/android.jks
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: yeruverse-android
           path: |
@@ -183,10 +189,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
-          sparse-checkout: scripts
-      - uses: actions/download-artifact@v4
+          # Задаче нужен один скрипт и версия приложения, с которой он сверяет тег.
+          sparse-checkout: |
+            scripts
+            desktop/src-tauri/Cargo.toml
+      - uses: actions/download-artifact@v8
         with:
           path: dist
 
@@ -195,7 +204,7 @@ jobs:
       - name: манифест обновления
         run: python3 scripts/latest_json.py --tag "${{ github.ref_name }}" --dir dist
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           draft: true
           generate_release_notes: true

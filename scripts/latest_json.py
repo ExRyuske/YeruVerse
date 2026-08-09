@@ -16,9 +16,11 @@ import argparse
 import datetime as dt
 import json
 import pathlib
+import re
 import sys
 
 REPO = 'ExRyuske/YeruVerse'
+CARGO = pathlib.Path(__file__).resolve().parent.parent / 'desktop/src-tauri/Cargo.toml'
 
 # Какой архив для какой системы. macOS собирается только под Apple Silicon,
 # поэтому Intel в манифест не попадает: обновлятель иначе скачал бы им
@@ -37,6 +39,21 @@ def main() -> None:
     ap.add_argument('--out', default='latest.json')
     ap.add_argument('--notes', default='')
     args = ap.parse_args()
+    version = args.tag.lstrip('v')
+
+    # Версию манифеста берём из тега, а приложение о себе сообщает ту, что в
+    # Cargo.toml. Разойдись они — обновлятель увидит новую версию, скачает
+    # пакет, тот представится старой, и предложение появится снова. И так по
+    # кругу, пока кто-нибудь не догадается сверить два числа.
+    built = re.search(r'^version = "([^"]+)"', CARGO.read_text(), re.M)
+    if not built:
+        raise SystemExit('не нашли версию в Cargo.toml приложения')
+    if built.group(1) != version:
+        raise SystemExit(
+            f'тег {args.tag} не совпадает с версией приложения {built.group(1)}.\n'
+            'Поднимите version в desktop/src-tauri/Cargo.toml и повторите тег — '
+            'иначе обновление будет предлагаться бесконечно.'
+        )
 
     root = pathlib.Path(args.dir)
     platforms: dict[str, dict] = {}
@@ -66,8 +83,8 @@ def main() -> None:
     pathlib.Path(args.out).write_text(
         json.dumps(
             {
-                'version': args.tag.lstrip('v'),
-                'notes': args.notes or f'Версия {args.tag.lstrip("v")}',
+                'version': version,
+                'notes': args.notes or f'Версия {version}',
                 'pub_date': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
                 'platforms': platforms,
             },
