@@ -224,9 +224,9 @@ capabilities и сгенерированный проект Android.
 | Секрет | Зачем | Где взять |
 |---|---|---|
 | `TAURI_SIGNING_PRIVATE_KEY` | подпись обновлений | `make updater-key`, затем **всё содержимое** `~/.yeruverse/updater.key` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | пароль к ключу; пустой, если не задавали | — |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | пароль к ключу | содержимое локального `~/.yeruverse/updater.key.password` |
 | `ANDROID_KEYSTORE` | подпись APK | `base64 -i ~/.yeruverse/android.jks` |
-| `ANDROID_KEYSTORE_PASS` | пароль хранилища | `yeruverse`, если ключ создал `make android` |
+| `ANDROID_KEYSTORE_PASS` | пароль хранилища | содержимое локального `~/.yeruverse/android.jks.password` |
 
 ### Первый релиз
 
@@ -238,8 +238,8 @@ make android                                       # заодно создаст
 # 2. Значения для секретов (macOS; на другой системе вместо pbcopy — xclip)
 pbcopy < ~/.yeruverse/updater.key                  # → TAURI_SIGNING_PRIVATE_KEY
 base64 -i ~/.yeruverse/android.jks | pbcopy        # → ANDROID_KEYSTORE
-# ANDROID_KEYSTORE_PASS = yeruverse
-# TAURI_SIGNING_PRIVATE_KEY_PASSWORD = пусто
+# ANDROID_KEYSTORE_PASS = содержимое ~/.yeruverse/android.jks.password
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD = содержимое ~/.yeruverse/updater.key.password
 
 # 3. Код на GitHub, дождаться зелёной сборки
 git push -u origin main

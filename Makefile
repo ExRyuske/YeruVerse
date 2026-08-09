@@ -9,7 +9,9 @@ ANDROID_HOME ?= $(or $(ANDROID_SDK_ROOT),$(HOME)/Library/Android/sdk)
 # как раз про него. Ключ рождается сам и лежит вне репозитория; сохраните его:
 # обновление поверх установленного приложения требует того же ключа.
 KEYSTORE ?= $(HOME)/.yeruverse/android.jks
-KEY_PASS ?= yeruverse
+# Пароль keystore хранится только локально рядом с ним; в CI он приходит из
+# GitHub Secret. Старое значение оставлено для первого создания ключа с нуля.
+KEY_PASS ?= $(shell test -r "$(KEYSTORE).password" && tr -d '\n' < "$(KEYSTORE).password" || printf %s yeruverse)
 APK := $(CURDIR)/yeruverse.apk
 
 help:
@@ -80,9 +82,9 @@ $(KEYSTORE):
 # Ключ подписи обновлений: создаётся один раз, живёт вне репозитория.
 # Его же содержимое кладут в секрет TAURI_SIGNING_PRIVATE_KEY на GitHub.
 UPDATER_KEY ?= $(HOME)/.yeruverse/updater.key
-# Ключ зашифрован всегда, даже пустой строкой. Пароль передаём явно: без
-# переменной Tauri останавливает сборку и ждёт ввода с клавиатуры.
-UPDATER_KEY_PASS ?=
+# Ключ зашифрован всегда. Пароль лежит рядом с приватным ключом только локально
+# (этот файл не попадает в репозиторий); в CI его передаёт GitHub Secret.
+UPDATER_KEY_PASS ?= $(shell test -r "$(UPDATER_KEY).password" && tr -d '\n' < "$(UPDATER_KEY).password")
 
 updater-key: $(UPDATER_KEY)
 
