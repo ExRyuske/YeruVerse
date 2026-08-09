@@ -9,6 +9,17 @@ on:
   pull_request:
     paths-ignore: ["**.md"]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      release:
+        description: Создать черновик GitHub Release после сборки.
+        required: false
+        default: false
+        type: boolean
+      release_tag:
+        description: Тег релиза, который нужно собрать.
+        required: false
+        type: string
 
 # Пока идёт сборка, в ветку успевают дослать ещё коммит — старый прогон уже
 # никому не нужен. Релизные теги дорабатывают до конца.
@@ -20,6 +31,9 @@ env:
   CARGO_TERM_COLOR: always
   # Отладочная информация в CI не нужна никому, а линковка с ней заметно дольше.
   CARGO_PROFILE_DEV_DEBUG: "0"
+  # Reusable workflow собирает именно коммит созданного релизного тега.
+  BUILD_REF: ${{ inputs.release_tag || github.ref }}
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   server:
@@ -27,6 +41,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BUILD_REF }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -58,6 +74,8 @@ jobs:
         os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BUILD_REF }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -122,6 +140,8 @@ jobs:
       ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BUILD_REF }}
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -184,13 +204,14 @@ jobs:
   release:
     name: релиз по тегу
     needs: [desktop, android]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ env.BUILD_REF }}
           # Задаче нужен один скрипт и версия приложения, с которой он сверяет тег.
           sparse-checkout: |
             scripts
@@ -202,7 +223,7 @@ jobs:
       # Приложение ходит за этим файлом по постоянному адресу
       # releases/latest/download/latest.json и по нему решает, обновляться ли.
       - name: манифест обновления
-        run: python3 scripts/latest_json.py --tag "${{ github.ref_name }}" --dir dist
+        run: python3 scripts/latest_json.py --tag "${{ env.RELEASE_TAG }}" --dir dist
 
       - uses: softprops/action-gh-release@v3
         with:
