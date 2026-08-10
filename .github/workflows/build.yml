@@ -1,18 +1,20 @@
 name: build
 
+# Ветку `main` собирает не этот workflow, а «выпуск»: он поднимает версию,
+# ставит тег и вызывает сборку уже по нему. Иначе каждый push собирался бы
+# дважды. Здесь остаются проверка веток-предложений и ручной запуск по тегу.
 on:
   push:
-    branches: [main, master]
     tags: ["v*"]
-  # Фильтр по путям только здесь: у push он распространился бы и на теги, а
-  # релиз, тихо не собравшийся из-за правки в документации, — худший из миров.
+  # Фильтр по путям только у PR: у тега он значил бы релиз, тихо не собравшийся
+  # из-за правки в документации, — худший из миров.
   pull_request:
     paths-ignore: ["**.md"]
   workflow_dispatch:
   workflow_call:
     inputs:
       release:
-        description: Создать черновик GitHub Release после сборки.
+        description: Опубликовать GitHub Release после сборки.
         required: false
         default: false
         type: boolean
@@ -22,10 +24,11 @@ on:
         type: string
 
 # Пока идёт сборка, в ветку успевают дослать ещё коммит — старый прогон уже
-# никому не нужен. Релизные теги дорабатывают до конца.
+# никому не нужен. Выпуск дорабатывает до конца: его тег уже стоит, и брошенная
+# на середине сборка оставила бы версию без релиза.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  group: ${{ github.workflow }}-${{ inputs.release_tag || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') && !inputs.release }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -58,10 +61,10 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
-      # В реестр пускаем только с ветки и по тегу: в PR (тем более из форка)
+      # В реестр пускаем всё, кроме веток-предложений: в PR (тем более из форка)
       # токен на запись не выдаётся, да и публиковать там нечего.
       - uses: docker/login-action@v4
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -71,17 +74,20 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
-          # `latest` только с ветки по умолчанию, тег версии — с тега.
+          # `latest` только с ветки по умолчанию, тег версии — с тега. Выпуск
+          # приходит с ветки и знает номер сам: `github.ref` у него `main`, и
+          # без последней строки версия образа потерялась бы.
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ inputs.release_tag }},enable=${{ inputs.release_tag != '' }}
 
       - uses: docker/build-push-action@v7
         with:
           context: .
-          push: ${{ github.event_name == 'push' }}
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -193,11 +199,17 @@ jobs:
 
   release:
     name: релиз по тегу
-    needs: [desktop, android]
+    # Раз релиз публикуется сразу, ждём и проверок сервера: непрошедший clippy
+    # не должен оказаться в том, что люди уже скачивают.
+    needs: [docker, desktop, android]
     if: startsWith(github.ref, 'refs/tags/v') || inputs.release
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # Тем же секретом задача проверяет, есть ли чему складываться в манифест:
+    # без ключа сборка идёт без пакетов обновления, и подписей просто нет.
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -212,12 +224,20 @@ jobs:
 
       # Приложение ходит за этим файлом по постоянному адресу
       # releases/latest/download/latest.json и по нему решает, обновляться ли.
+      # Без ключа подписи релиз всё равно выходит — просто без автообновления:
+      # установщики людям нужнее, чем безупречный манифест.
       - name: манифест обновления
+        if: env.TAURI_SIGNING_PRIVATE_KEY != ''
         run: python3 scripts/release.py manifest --tag "${{ env.RELEASE_TAG }}" --dir dist
 
+      # Публикуем сразу, без черновика: `releases/latest` черновики не отдаёт,
+      # а значит недописанный релиз — это молчащее обновление у всех, кто уже
+      # поставил приложение. Список изменений GitHub соберёт по коммитам сам.
       - uses: softprops/action-gh-release@v3
         with:
-          draft: true
+          tag_name: ${{ env.RELEASE_TAG }}
+          draft: false
+          make_latest: true
           generate_release_notes: true
           # В релиз идёт только подписанный APK: неподписанный всё равно не
           # поставить, а рядом с рабочим он лишь путал бы. Подписи `.sig` тоже

@@ -1,6 +1,14 @@
 name: выпуск
 
+# Ветка `main` выпускается сама: каждый push поднимает patch-версию, ставит тег,
+# собирает всё и публикует релиз. Руками — только когда нужен minor или major.
+#
+# Не выпускать конкретный push можно строкой `[skip release]` в сообщении
+# коммита; правки одной документации не выпускаются и без неё.
 on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", ".github/ISSUE_TEMPLATE/**", "LICENSE"]
   workflow_dispatch:
     inputs:
       bump:
@@ -10,11 +18,16 @@ on:
         type: choice
         options: [patch, minor, major]
 
-# Нужен для коммита версии и аннотированного тега. Если main защищена, разрешите
-# GitHub Actions обходить защиту либо запускайте выпуск из разрешённой ветки.
+# Нужен для коммита версии и аннотированного тега; `packages` — вызванной сборке
+# образа: вызывающий workflow обязан дать не меньше прав, чем просит вызванный.
+# Если main защищена, разрешите GitHub Actions обходить защиту либо запускайте
+# выпуск из разрешённой ветки.
 permissions:
   contents: write
+  packages: write
 
+# Пока идёт выпуск, в main успевают дослать ещё коммит. Отменять начатое нельзя:
+# версия уже поднята и тег уже стоит — следующий выпуск подождёт своей очереди.
 concurrency:
   group: release-main
   cancel-in-progress: false
@@ -23,6 +36,7 @@ jobs:
   prepare:
     name: версия и тег
     runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
     outputs:
       tag: ${{ steps.version.outputs.tag }}
     steps:
@@ -35,10 +49,12 @@ jobs:
         name: повысить версию
         run: |
           set -e
-          tag="$(python3 scripts/release.py bump --part '${{ inputs.bump }}' | sed -n 's/.*-> \(v[0-9][0-9.]*\)$/\1/p')"
+          tag="$(python3 scripts/release.py bump --part '${{ inputs.bump || 'patch' }}' | sed -n 's/.*-> \(v[0-9][0-9.]*\)$/\1/p')"
           test -n "$tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      # Коммит и тег уходят под токеном GitHub Actions, а его push не запускает
+      # workflow заново — иначе выпуск выпускал бы сам себя по кругу.
       - name: зафиксировать версию и тег
         env:
           TAG: ${{ steps.version.outputs.tag }}
@@ -52,9 +68,12 @@ jobs:
           git push origin HEAD:main "$TAG"
 
   build:
-    name: сборка и черновик релиза
+    name: сборка и релиз
     needs: prepare
     uses: ./.github/workflows/build.yml
+    permissions:
+      contents: write
+      packages: write
     with:
       release: true
       release_tag: ${{ needs.prepare.outputs.tag }}

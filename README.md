@@ -1,6 +1,6 @@
 # YeruVerse
 
-[![Сборка](https://github.com/ExRyuske/YeruVerse/actions/workflows/build.yml/badge.svg)](https://github.com/ExRyuske/YeruVerse/actions/workflows/build.yml)
+[![Сборка](https://github.com/ExRyuske/YeruVerse/actions/workflows/release.yml/badge.svg)](https://github.com/ExRyuske/YeruVerse/actions/workflows/release.yml)
 [![Релизы](https://img.shields.io/github/v/release/ExRyuske/YeruVerse?display_name=tag)](https://github.com/ExRyuske/YeruVerse/releases)
 
 > Статус: ранняя версия. Не открывайте комнату и доступ к компьютеру людям,
@@ -233,8 +233,8 @@ make android-all    # под все архитектуры, вчетверо д�
 
 ## Сборка и обновления через GitHub
 
-Каждый push проверяет сервер, собирает и **публикует образ** в `ghcr.io`
-(`latest` с основной ветки, версия — по тегу), собирает приложение под **macOS** (Apple Silicon)
+Каждый push в `main` проверяет сервер, собирает и **публикует образ** в `ghcr.io`
+(`latest` и номер версии), собирает приложение под **macOS** (Apple Silicon)
 и **Windows**, плюс **APK** под arm64. Intel-маки и другие архитектуры Android
 собираются вручную: универсальный пакет компилировал всё дважды ради машин,
 которых Apple не продаёт с 2020 года. Зависимости обновляет Dependabot — раз в
@@ -249,17 +249,26 @@ make android-all    # под все архитектуры, вчетверо д�
 
 ### Выпуск версии
 
-В GitHub откройте **Actions → выпуск → Run workflow** и выберите уровень
-изменения: `patch`, `minor` или `major`. Workflow сам синхронно меняет версии
-сервера и приложения, обновляет оба lockfile, коммитит изменения в `main`,
-ставит тег `vX.Y.Z`, собирает установщики и создаёт черновик GitHub Release.
-Версии в приложении, lockfile и теге поэтому не могут разойтись.
+Выпуск делается сам: **`git push` в `main` — и всё**. Workflow «выпуск»
+поднимает patch-версию сразу в обоих пакетах и обоих lockfile, коммитит,
+ставит тег `vX.Y.Z`, собирает образ, установщики и APK и **публикует** GitHub
+Release со списком изменений. Версии в приложении, lockfile и теге поэтому не
+могут разойтись, а обновление доходит до людей без единого нажатия.
 
-Черновик релиза всё равно нужно **опубликовать вручную**: URL
-`releases/latest` не отдаёт draft, а значит до публикации обновление никому не
-будет предложено. Для работы автоматизации у GitHub Actions должно быть право
-`contents: write`; при защищённой `main` разрешите GitHub Actions создавать
-релизный коммит и тег.
+Руками нужно вмешаться только в двух случаях:
+
+* **minor или major** — **Actions → выпуск → Run workflow** и выбрать уровень;
+* **не выпускать этот push** — строка `[skip release]` в сообщении коммита.
+  Правки одной документации не выпускаются и без неё.
+
+Релиз публикуется, а не остаётся черновиком, намеренно: `releases/latest`
+черновики не отдаёт, и недописанный релиз означал бы молчащее обновление у
+всех, кто уже поставил приложение. Публикация ждёт всех сборок сразу — упавший
+`clippy` или несобравшийся APK останавливают её.
+
+Для автоматизации у GitHub Actions должно быть право `contents: write`
+(Settings → Actions → General → Workflow permissions); при защищённой `main`
+разрешите GitHub Actions создавать релизный коммит и тег.
 
 Ключ подписи — **одна длинная строка base64**, начинается с
 `dW50cnVzdGVkIGNvbW1lbnQ6`. Копировать целиком (`pbcopy < ~/.yeruverse/updater.key`),
@@ -288,14 +297,14 @@ base64 -i ~/.yeruverse/android.jks | pbcopy        # → ANDROID_KEYSTORE
 # ANDROID_KEYSTORE_PASS = содержимое ~/.yeruverse/android.jks.password
 # TAURI_SIGNING_PRIVATE_KEY_PASSWORD = содержимое ~/.yeruverse/updater.key.password
 
-# 3. Код на GitHub, дождаться зелёной сборки.
-# Затем Actions → выпуск → Run workflow → patch/minor/major.
+# 3. Код на GitHub — выпуск начнётся сам.
 git push -u origin main
 ```
 
 Секреты добавляются в Settings → Secrets and variables → Actions → New
-repository secret. После workflow появится **черновик** релиза — его нужно
-открыть и нажать «Publish release»: `releases/latest` черновики не отдаёт.
+repository secret — **до** первого push, иначе установщики соберутся без
+подписи и обновляться будет нечем. Через 15–20 минут релиз появится на вкладке
+Releases уже опубликованным.
 
 Проверить, что обновления заработали:
 
@@ -304,9 +313,9 @@ curl -sL https://github.com/ExRyuske/YeruVerse/releases/latest/download/latest.j
 ```
 
 Первая версия обновлять нечего — она сама себе базовая. Цепочка проверяется со
-второго релиза: запустите workflow с `patch`, опубликуйте черновик —
-установленная предыдущая версия предложит обновиться в течение шести часов или
-сразу при следующем запуске.
+второго релиза: любой следующий push в `main` — и установленная предыдущая
+версия предложит обновиться в течение шести часов или сразу при следующем
+запуске.
 
 Пароль к ключу подписи спрашивается только тогда, когда переменной
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` нет вовсе: ключ зашифрован всегда, пусть и
