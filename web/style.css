@@ -51,15 +51,33 @@ button.ghost { background: transparent; }
 input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* ---------- вход ---------- */
-/* Карточка входа стоит ровно по середине экрана, а список комнат — сбоку от
-   неё. Простой ряд сдвигал бы карточку вправо на половину ширины списка;
-   три колонки с одинаковыми краями держат середину настоящей серединой. */
+/* Карточка входа стоит ровно по середине экрана: комнаты слева, загрузки
+   справа. Простой ряд сдвигал бы её на половину ширины боковой панели; три
+   колонки с одинаковыми краями держат середину настоящей серединой. */
 #screen-join {
   display: grid; grid-template-columns: 1fr auto 1fr;
   align-items: center; gap: 16px; padding: 20px;
+  overflow-y: auto;
 }
 #rooms-join { grid-column: 1; justify-self: end; }
 .join-card-wrap { grid-column: 2; display: flex; }
+#downloads { grid-column: 3; justify-self: start; }
+/* Боковые панели экрана входа: одна фигура и один размер у обеих — иначе
+   середина видна, а края выглядят собранными из разных интерфейсов. */
+.side-panel {
+  width: 220px; padding: 12px; flex: none;
+  display: flex; flex-direction: column; gap: 6px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+.side-panel h3 {
+  margin: 2px 6px 6px; font-size: 13px; text-transform: uppercase;
+  color: var(--muted); letter-spacing: .04em;
+}
+/* Только собственные кнопки панели: у предложения обновиться свой ряд из двух,
+   и растягивать их по левому краю незачем. */
+#downloads > button { justify-content: flex-start; text-align: left; }
+#downloads > p { margin: 4px 6px 0; }
 /* Панель: единая поверхность для карточки входа, окна настроек и всплывающих
    настроек у кнопок. */
 .join-card, .modal-card, .pop {
@@ -133,16 +151,8 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 }
 #rooms:hover, #rooms:focus-within { width: 200px; margin-right: -148px; overflow-y: auto; }
 
-/* На экране входа — такая же панель, как карточка рядом. */
-#rooms-join h3 {
-  margin: 2px 6px 6px; font-size: 13px; text-transform: uppercase;
-  color: var(--muted); letter-spacing: .04em;
-}
-#rooms-join {
-  width: 220px; max-height: min(70dvh, 520px); padding: 12px;
-  background: var(--panel); border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-}
+/* Список комнат на экране входа — обычная боковая панель, см. .side-panel. */
+#rooms-join { max-height: min(70dvh, 520px); }
 
 .room-tile { position: relative; display: flex; align-items: center; flex: none; }
 .room-open {
@@ -211,13 +221,6 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 .cam-tile video {
   display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; cursor: zoom-in;
 }
-/* Крестик появляется под курсором: постоянный он спорил бы с подписью. */
-.tile-off {
-  position: absolute; top: 4px; right: 4px; opacity: 0;
-  border-radius: var(--r-sm); color: #fff; background: rgba(0, 0, 0, .55);
-}
-.tile-off:hover { color: #fff; background: rgba(0, 0, 0, .75); }
-.cam-tile:hover .tile-off, .tile-off:focus-visible { opacity: 1; }
 .cam-tile span {
   position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 7px;
   font-size: 12px; background: linear-gradient(transparent, rgba(0, 0, 0, .75));
@@ -292,26 +295,26 @@ body.resizing { cursor: col-resize; user-select: none; }
 .peers li { padding: 2px 6px; margin: 0 -6px; border-radius: var(--r-sm); }
 .peers li.speaking { background: color-mix(in srgb, #3ecf8e 18%, transparent); }
 .peers li.speaking img { box-shadow: 0 0 0 2px #3ecf8e; }
-/* Красным помечено только то, что выключено: микрофон, звук, замок. Идущая
-   трансляция — не «выключено», у неё обычный приглушённый цвет. */
-.peers li .off-mark { color: #ff6b6b; }
-.peers li .live-mark { color: var(--muted); }
-/* Значок трансляции — ещё и выключатель, поэтому ведёт себя как кнопка. */
-.peers li button.live-mark {
-  padding: 0; background: none; border: none; line-height: 1; cursor: pointer;
+/* Всё, что стоит в строке участника, — один значок одного размера: и метка
+   состояния, и выключатель трансляции, и замок, и громкость. Разные рамки и
+   размеры превращали строку в набор случайных элементов.
+   Цвет говорит одно и то же везде: приглушённый — обычное, красный —
+   выключено, синий — включено мной. */
+.mark {
+  width: 24px; height: 24px; padding: 0; flex: none; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: none; border-radius: var(--r-sm); color: var(--muted);
 }
-.peers li button.live-mark:hover { color: var(--accent); }
-.peers li .live-mark.off { color: #ff6b6b; }
+button.mark:hover:not(:disabled) {
+  border: none; color: var(--text);
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+.mark.off { color: #ff6b6b; }
+.mark.on { color: var(--accent); }
+.mark:disabled { opacity: .4; }
 
 /* Громкость участника прямо в строке с ником. */
-.pv-mini { display: flex; align-items: center; gap: 4px; margin-left: auto; }
-
-.peers li .rc {
-  padding: 0 4px; background: none; border: 1px solid var(--border);
-  border-radius: var(--r-sm); font-size: 12px; line-height: 1.6;
-}
-.peers li .rc.on { color: var(--accent); border-color: var(--accent); }
-/* Закрытый замок — тоже «выключено», и цвет у него общий с микрофоном. */
+.pv-mini { display: flex; align-items: center; gap: 2px; margin-left: auto; }
 
 .pv-mini input[type="range"] {
   width: 62px; padding: 0; margin: 0; border: none; background: none;
@@ -331,7 +334,7 @@ button.icon {
 /* Кнопки с подписью: иконка слева, текст следом. */
 button > .ico + span { margin-left: 7px; }
 button:has(> .ico) { display: inline-flex; align-items: center; }
-.tag > .ico, .off-mark > .ico, .live-mark > .ico, .views .ico { vertical-align: -2px; }
+.tag > .ico, .views .ico { vertical-align: -2px; }
 .views button > .ico + span { margin-left: 6px; }
 /* Выключенный микрофон или звук — это не «неактивная кнопка», а состояние, о
    котором нужно помнить: красим тем же красным, что и выход из комнаты. */
@@ -373,15 +376,16 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
 .chat-log > * { max-width: 100%; }
 .chat-log .who { color: var(--accent); font-weight: 600; margin-right: 5px; }
 .chat-log .sys { color: var(--muted); font-size: 13px; font-style: italic; }
-/* Поле и кнопки — один ряд одинаковых по высоте элементов: разнокалиберные
-   выглядели как случайно составленные. */
+/* Поле и кнопки — один ряд: одна высота, одно скругление, один размер
+   квадрата. Кнопки, тянувшиеся по высоте поля, выходили то выше, то ниже него
+   и выглядели случайно составленными. */
 .chat-form {
-  display: flex; align-items: stretch; gap: 6px; padding: 10px;
+  display: flex; align-items: center; gap: 6px; padding: 10px;
   border-top: 1px solid var(--border);
   padding-bottom: max(10px, env(safe-area-inset-bottom));
 }
-.chat-form input { flex: 1; min-width: 0; }
-.chat-form .icon { width: auto; height: auto; aspect-ratio: 1; padding: 0; }
+.chat-form input { flex: 1; min-width: 0; height: 38px; padding: 0 12px; }
+.chat-form .icon { width: 38px; height: 38px; aspect-ratio: auto; }
 
 /* Вложение в чате: имя, размер и кнопка со прогрессом загрузки. */
 .attach {
@@ -414,7 +418,13 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
   display: flex; align-items: center; justify-content: center; padding: 20px;
   background: rgba(0, 0, 0, .88);
 }
-.lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--r-sm); }
+/* Камера разворачивается в границах сцены, а не поверх всего окна: рядом
+   остаются и чат, и участники. */
+.lightbox.inside { position: absolute; z-index: 7; padding: 8px; background: rgba(0, 0, 0, .92); }
+.lightbox img, .lightbox video {
+  max-width: 100%; max-height: 100%; width: auto; height: auto;
+  object-fit: contain; border-radius: var(--r-sm);
+}
 .attach .meta { min-width: 0; flex: 1; }
 .attach .name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attach .sub { color: var(--muted); font-size: 12px; }
@@ -482,7 +492,6 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
   max-width: min(70vw, 460px);
 }
-.peers li .rc:disabled { opacity: .4; }
 
 .toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
@@ -490,29 +499,42 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
   padding: 10px 16px; box-shadow: 0 8px 30px rgba(0,0,0,.4); z-index: 20;
 }
 
-/* Полный экран: сцена занимает всё, лишнее убирается. */
-body.fullscreen .stage-wrap { padding: 0; gap: 0; background: #000; }
-body.fullscreen .stage { border-radius: 0; }
-/* В полном экране всё управление уходит вниз, к краю кадра: сверху оно
-   закрывало бы то, на что смотрят, а внизу его ищут по привычке. */
+/* Полный экран.
+   Разворачиваем сцену через Fullscreen API, а где его нет — на телефоне и в
+   окне приложения — тем же классом растягиваем её на всё окно. Поэтому здесь
+   и `position: fixed`: с настоящим полным экраном он ничему не мешает, а без
+   него это единственный способ убрать шапку, чат и список комнат. */
+body.fullscreen .topbar,
+body.fullscreen .sidebar,
+body.fullscreen #rooms { display: none; }
+body.fullscreen .stage-wrap {
+  position: fixed; inset: 0; z-index: 25;
+  padding: 0; gap: 0; background: #000;
+}
+body.fullscreen .stage { border-radius: 0; aspect-ratio: auto; flex: 1; }
+
+/* Управление — одной полосой у нижнего края: сверху оно закрывало бы то, на
+   что смотрят, а двумя полосами закрывало бы вдвое больше. Переключатели
+   трансляций встают в тот же ряд, что и кнопки. */
 body.fullscreen .sources {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 8;
-  padding: 10px 14px;
+  flex-direction: row; align-items: center; gap: 10px;
+  padding: 10px 14px; padding-bottom: max(10px, env(safe-area-inset-bottom));
   background: linear-gradient(transparent, rgba(0, 0, 0, .8));
   transition: opacity .25s;
 }
+body.fullscreen .src-row { flex: none; }
 body.fullscreen .views {
-  position: absolute; left: 0; right: 0; bottom: 58px; z-index: 8;
-  padding: 0 14px; transition: opacity .25s;
+  flex: 1 1 auto; min-width: 0; flex-wrap: nowrap;
+  overflow-x: auto; scrollbar-width: none;
 }
-/* Камеры в полном экране поднимаются над рядом кнопок, чтобы не спорить с ним
-   за нижний угол. */
-body.fullscreen .cams { bottom: 96px; }
-/* Мышь стоит — панели гаснут: наведение на неподвижный курсор не заканчивается
-   никогда, и они закрывали бы кадр всё время. Сам курсор при этом не прячем:
+body.fullscreen .views::-webkit-scrollbar { display: none; }
+/* Камеры поднимаются над полосой, чтобы не спорить с ней за нижний угол. */
+body.fullscreen .cams { bottom: 68px; }
+/* Мышь стоит — полоса гаснет: наведение на неподвижный курсор не заканчивается
+   никогда, и она закрывала бы кадр всё время. Сам курсор при этом не прячем:
    пропавшая мышь читается как «всё зависло». */
-body.fullscreen.idle .sources,
-body.fullscreen.idle .views { opacity: 0; pointer-events: none; }
+body.fullscreen.idle .sources { opacity: 0; pointer-events: none; }
 
 @media (max-width: 860px) {
   .layout { flex-direction: column; }
@@ -523,10 +545,18 @@ body.fullscreen.idle .views { opacity: 0; pointer-events: none; }
     border-right: none; border-bottom: 1px solid var(--border);
     overflow-x: auto; overflow-y: hidden;
   }
-  /* На узком экране панель комнат встаёт над карточкой, а не сбоку. */
-  #screen-join { grid-template-columns: 1fr; align-items: start; }
-  #rooms-join, .join-card-wrap { grid-column: 1; justify-self: stretch; }
-  #rooms-join { width: auto; max-height: 30dvh; }
+  /* На узком экране боковые панели встают под карточкой, а не по бокам: сама
+     карточка нужна первой — за ней и приходят. */
+  #screen-join { grid-template-columns: 1fr; align-items: start; padding: 12px; }
+  #rooms-join, .join-card-wrap, #downloads {
+    grid-column: 1; justify-self: stretch;
+  }
+  .join-card-wrap { order: -1; }
+  .side-panel { width: auto; }
+  #rooms-join { max-height: 30dvh; }
+  #downloads { flex-direction: row; flex-wrap: wrap; }
+  #downloads > h3, #downloads > p, #update-notice { flex-basis: 100%; }
+  #downloads > button { flex: 1 1 30%; justify-content: center; }
   .room-tile { flex: 0 0 auto; }
   .room-open { max-width: 40vw; }
   /* Пальцем «навести» нельзя — действия видно всегда. */
@@ -548,17 +578,27 @@ body.fullscreen.idle .views { opacity: 0; pointer-events: none; }
   .topbar { gap: 5px; padding: 6px 8px; padding-top: max(6px, env(safe-area-inset-top)); }
   .topbar button.icon { width: 34px; height: 34px; }
 
-  /* Крупные цели для пальца и поля во всю ширину. */
+  /* Крупные цели для пальца: 44 пикселя — тот минимум, ниже которого промах
+     становится правилом. Двойное касание при этом не должно менять масштаб. */
   button, input, select { padding: 11px 14px; font-size: 15px; }
-  .src-row { gap: 6px; }
-  /* Подписи растягиваются, кнопки-иконки остаются квадратными. */
-  .src-row > button { flex: 1 1 30%; }
-  .src-row > button.icon { flex: 0 0 auto; }
+  button, .mark, .room-open { touch-action: manipulation; }
+  button.icon { width: 44px; height: 44px; }
+  .mark { width: 32px; height: 32px; }
+  /* Ряд источников — по краям экрана, без переносов на полстроки. */
+  .src-row { gap: 6px; justify-content: space-between; }
+  .caret { width: 26px; }
 
   /* Ряд трансляций не переносится, а прокручивается вбок. */
   .views { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
   .views::-webkit-scrollbar { display: none; }
   .views button { flex: none; }
+
+  /* Всплывающая настройка занимает ширину экрана: 260 пикселей от кнопки у
+     правого края уезжали за границу. */
+  .pop { left: 0; right: 0; min-width: 0; max-width: none; }
+
+  /* Кнопки под пальцем выше, значит и полоса выше — камерам надо подняться. */
+  body.fullscreen .cams { bottom: 76px; }
 
   .modal { padding: 0; align-items: stretch; }
   .modal-card {

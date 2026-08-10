@@ -291,9 +291,12 @@ async function refreshOutputs() {
 
   if (!ctx.voice.canChooseOutput) {
     select.disabled = true;
-    select.innerHTML = '<option>Системное по умолчанию</option>';
+    select.innerHTML = '<option>Куда и вся система</option>';
+    // На движке WebKit — это Safari и окно приложения на macOS — выбирать
+    // устройство нечем: звук идёт туда же, куда системный. Меняется он в
+    // «Звук» системных настроек, и это не поломка, а единственный путь.
     note.textContent =
-      'Этот браузер не умеет выбирать устройство вывода — поменяйте его в системе.';
+      'Звук идёт туда же, куда системный. Устройство выбирается в настройках системы.';
     return;
   }
   note.textContent = '';
@@ -318,9 +321,12 @@ async function refreshOutputs() {
 }
 
 /**
- * Список камер. Названия появляются только после первого доступа к камере —
- * до него система показывает голые идентификаторы, и «фронтальная» от «тыльной»
- * не отличить. Поэтому до первого включения подписываем их сами.
+ * Список камер.
+ *
+ * Названия появляются только после первого доступа к камере, а на телефоне до
+ * него не видно и самого списка: одна безымянная запись, выбрать которую значит
+ * попросить камеру по идентификатору, которого ещё нет, и получить отказ.
+ * Поэтому там выбирают не устройство, а сторону — она известна всегда.
  */
 async function refreshCameras() {
   const select = $('#pick-cam');
@@ -330,19 +336,17 @@ async function refreshCameras() {
     .catch(() => []) ?? [];
 
   select.innerHTML = '';
-  const auto = document.createElement('option');
-  auto.value = '';
-  auto.textContent = list.length ? 'По умолчанию' : 'Камер не найдено';
-  select.appendChild(auto);
-  select.disabled = !list.length;
+  select.append(new Option('По умолчанию', ''));
+  if (matchMedia('(pointer: coarse)').matches) {
+    select.append(new Option('Фронтальная', 'user'), new Option('Тыльная', 'environment'));
+  }
+  list.forEach((d, i) => select.append(new Option(d.label || `Камера ${i + 1}`, d.deviceId)));
+  select.disabled = select.options.length < 2;
 
-  list.forEach((d, i) => {
-    const o = document.createElement('option');
-    o.value = d.deviceId;
-    o.textContent = d.label || `Камера ${i + 1}`;
-    select.appendChild(o);
-  });
+  // Запомненной камеры может уже не быть — тогда список молча съезжает на
+  // «По умолчанию», и настройка должна съехать вместе с ним.
   select.value = ctx.settings.get('camDevice');
+  if (!select.value) ctx.settings.set('camDevice', '');
 }
 
 export async function refreshDevices() {

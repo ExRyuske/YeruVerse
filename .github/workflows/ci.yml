@@ -1,0 +1,293 @@
+name: сборка
+
+# Один workflow на всё: проверка веток-предложений, выпуск версии, сборка под
+# все системы и публикация релиза.
+#
+# Раньше их было два, и один вызывал другой. Общую матрицу приходилось держать
+# в согласии руками, а вызов требовал ещё и согласовывать права: вызывающий
+# обязан выдать не меньше, чем просит любая вложенная задача, и рассинхрон
+# обнаруживался уже на сервере отказом «packages: none».
+#
+# Push в `main` выпускает версию сам. Не выпускать конкретный push можно строкой
+# `[skip release]` в сообщении коммита; правки одной документации не выпускаются
+# и без неё. `minor` и `major` — Actions → сборка → Run workflow.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "LICENSE", ".github/ISSUE_TEMPLATE/**"]
+  pull_request:
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Как повысить версию перед выпуском.
+        required: true
+        default: patch
+        type: choice
+        options: [patch, minor, major]
+
+# `contents` — релизному коммиту, тегу и самому релизу; `packages` — образу,
+# который уезжает в реестр самого GitHub.
+permissions:
+  contents: write
+  packages: write
+
+# Ветку-предложение дописывают на ходу, и старый прогон уже никому не нужен.
+# Выпуск дорабатывает до конца: его тег уже стоит, и брошенная на середине
+# сборка оставила бы версию без релиза.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Отладочная информация в CI не нужна никому, а линковка с ней заметно дольше.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  # Версия поднимается до сборки, а не после: приложение сообщает о себе ту, что
+  # зашита в Cargo.toml при компиляции, и манифест обновления сверяется с ней.
+  version:
+    name: версия и тег
+    if: github.event_name != 'pull_request' && !contains(github.event.head_commit.message, '[skip release]')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - id: bump
+        run: |
+          set -e
+          tag="$(python3 scripts/release.py bump --part '${{ inputs.bump || 'patch' }}' | sed -n 's/.*-> \(v[0-9][0-9.]*\)$/\1/p')"
+          test -n "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      # Коммит и тег уходят под токеном GitHub Actions, а его push не запускает
+      # workflow заново — иначе выпуск выпускал бы сам себя по кругу.
+      - env:
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          set -e
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock desktop/src-tauri/Cargo.toml desktop/src-tauri/Cargo.lock
+          git commit -m "chore(release): $TAG"
+          git tag --annotate "$TAG" --message "Релиз $TAG"
+          git push origin HEAD:main "$TAG"
+
+  # Проверки сервера и образ для развёртывания. Отдельной релизной сборки нет:
+  # её делает сам образ, а clippy проверяет то же дерево быстрее.
+  docker:
+    name: сервер
+    needs: version
+    if: ${{ !cancelled() && needs.version.result != 'failure' }}
+    runs-on: ubuntu-latest
+    env:
+      BUILD_REF: ${{ needs.version.outputs.tag || github.ref }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BUILD_REF }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+
+      - uses: docker/setup-buildx-action@v4
+      # В реестр пускаем всё, кроме веток-предложений: в PR (тем более из форка)
+      # токен на запись не выдаётся, да и публиковать там нечего.
+      - if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.version.outputs.tag }},enable=${{ needs.version.outputs.tag != '' }}
+            type=sha,format=short
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Все три системы одной матрицей: у них общие полдюжины шагов — Rust, кэш,
+  # CLI Tauri, выгрузка артефактов, — и держать их врозь значило чинить каждую
+  # правку дважды. Своё есть только у Android, и оно помечено `matrix.android`.
+  #
+  # Каждая система собирается под свою архитектуру: раннер macOS и так на Apple
+  # Silicon, а универсальный пакет компилировал всё дважды ради машин, которых
+  # Apple не продаёт с 2020 года. Android — только arm64: все живые телефоны на
+  # нём, а Rust собирается под каждую архитектуру заново.
+  app:
+    name: ${{ matrix.name }}
+    needs: version
+    if: ${{ !cancelled() && needs.version.result != 'failure' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+            artifacts: |
+              desktop/src-tauri/target/**/release/bundle/**/*.dmg
+              desktop/src-tauri/target/**/release/bundle/**/*.tar.gz
+              desktop/src-tauri/target/**/release/bundle/**/*.sig
+          - name: Windows
+            os: windows-latest
+            artifacts: |
+              desktop/src-tauri/target/**/release/bundle/**/*.exe
+              desktop/src-tauri/target/**/release/bundle/**/*.msi
+              desktop/src-tauri/target/**/release/bundle/**/*.zip
+              desktop/src-tauri/target/**/release/bundle/**/*.sig
+          - name: Android
+            os: ubuntu-latest
+            android: true
+            target: aarch64-linux-android
+            artifacts: yeruverse.apk
+    env:
+      BUILD_REF: ${{ needs.version.outputs.tag || github.ref }}
+      # Секреты — на уровне задачи: в условии шага контекст `secrets` недоступен,
+      # а `env` доступен, и по нему шаг подписи понимает, есть ли чем подписывать.
+      ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BUILD_REF }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      # Готовый бинарник вместо `cargo install`: тот собирал CLI из исходников по
+      # несколько минут в каждой задаче.
+      - uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall -y tauri-cli@^2
+        shell: bash
+
+      - if: matrix.android
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      # Проекта Android при checkout ещё нет, поэтому кэш свой, а не от setup-java.
+      - if: matrix.android
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: gradle-
+      - if: matrix.android
+        uses: android-actions/setup-android@v4
+
+      # `gen/android` в репозиторий не входит: он генерируется и тут же
+      # правится скриптом — права, Java 17, отступ под системные панели.
+      - if: matrix.android
+        name: сборка APK
+        run: |
+          set -e
+          sdkmanager --install "ndk;27.0.12077973"
+          export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
+          cd desktop/src-tauri
+          cargo tauri android init
+          cargo tauri icon icons/icon.png
+          cd -
+          python3 scripts/android_patch.py
+          cd desktop/src-tauri
+          cargo tauri android build --apk --target aarch64
+
+      # Неподписанный APK телефон не поставит — «пакет повреждён» это про него.
+      # Ключ лежит в секретах: base64 от вашего ~/.yeruverse/android.jks.
+      - if: matrix.android && env.ANDROID_KEYSTORE != ''
+        name: подпись APK
+        env:
+          KEYSTORE: /tmp/android.jks
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+        run: |
+          set -e
+          echo "$ANDROID_KEYSTORE" | base64 -d > "$KEYSTORE"
+          scripts/sign_apk.sh yeruverse.apk
+          rm -f "$KEYSTORE"
+
+      - if: ${{ !matrix.android }}
+        name: сборка установщика
+        shell: bash
+        run: scripts/build_app.sh
+
+      # Установщики — людям, архивы с подписями — обновлятелю. Неподписанный APK
+      # не выгружаем вовсе: поставить его всё равно нельзя, а рядом с рабочим он
+      # лишь путал бы.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: yeruverse-${{ matrix.name }}
+          path: ${{ matrix.artifacts }}
+          if-no-files-found: warn
+
+  release:
+    name: релиз
+    needs: [version, docker, app]
+    if: needs.version.outputs.tag != ''
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      # Тем же секретом задача проверяет, есть ли чему складываться в манифест:
+      # без ключа сборка идёт без пакетов обновления, и подписей просто нет.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+          # Задаче нужен один скрипт и версия приложения, с которой он сверяет тег.
+          sparse-checkout: |
+            scripts
+            desktop/src-tauri/Cargo.toml
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+
+      # Приложение ходит за этим файлом по постоянному адресу
+      # releases/latest/download/latest.json и по нему решает, обновляться ли.
+      # Без ключа подписи релиз всё равно выходит — просто без автообновления:
+      # установщики людям нужнее, чем безупречный манифест.
+      - if: env.TAURI_SIGNING_PRIVATE_KEY != ''
+        run: python3 scripts/release.py manifest --tag "$TAG" --dir dist
+
+      # Публикуем сразу, без черновика: `releases/latest` черновики не отдаёт,
+      # а значит недописанный релиз — это молчащее обновление у всех, кто уже
+      # поставил приложение. Список изменений GitHub соберёт по коммитам сам.
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          draft: false
+          make_latest: true
+          generate_release_notes: true
+          # Подписи `.sig` не выкладываем — они уже внутри latest.json.
+          files: |
+            latest.json
+            dist/**/*.dmg
+            dist/**/*.exe
+            dist/**/*.msi
+            dist/**/*.apk
+            dist/**/*.tar.gz
+            dist/**/*.zip

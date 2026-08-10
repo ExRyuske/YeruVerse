@@ -6,9 +6,11 @@
 // Отдельным остался только контекст RNNoise: модель работает строго на 48 кГц,
 // а системный может оказаться 44.1.
 //
-// Через WebAudio, а не через `volume` у media-элемента, всё это идёт по одной
-// причине: у элемента громкость упирается в единицу, и «200%» звучали бы ровно
-// как «100%».
+// Играет звук при этом обычный <audio>, а WebAudio подключается только чтобы
+// поднять громкость выше ста процентов — у элемента она упирается в единицу.
+// Раньше всё шло через WebAudio, и на движке WebKit (Safari и окно приложения
+// на macOS — это он) собеседников не было слышно вовсе: поток из WebRTC там
+// доходит до графа обработки не всегда, а до <audio> доходит всегда.
 
 /** Потолок усиления: дальше не громче, а грязнее. */
 export const MAX_GAIN = 5;
@@ -25,26 +27,88 @@ export function audioCtx() {
   return shared;
 }
 
-/** Умеет ли контекст выбирать устройство вывода. */
+/** Устройство вывода умеют выбирать либо контекст, либо сами элементы. */
+const ctxSink = () => typeof AudioContext !== 'undefined' && 'setSinkId' in AudioContext.prototype;
+const elSink = () =>
+  typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
+
 export function canChooseOutput() {
-  return typeof AudioContext !== 'undefined' && 'setSinkId' in AudioContext.prototype;
+  return ctxSink() || elSink();
 }
 
-/** Куда выводить звук — сразу всё приложение, раз контекст общий. */
+const players = new Set();   // всё, что сейчас звучит, — им назначаем устройство
+let sink = '';
+
+/** Куда выводить звук — сразу всему приложению. */
 export async function setOutput(deviceId) {
-  if (!canChooseOutput()) return;
-  try {
-    await audioCtx().setSinkId(deviceId || '');
-  } catch {}
+  sink = deviceId || '';
+  if (ctxSink()) {
+    try { await audioCtx().setSinkId(sink); } catch {}
+  }
+  for (const el of players) applySink(el);
+}
+
+function applySink(el) {
+  if (elSink()) el.setSinkId(sink).catch(() => {});
+}
+
+/**
+ * Громкость media-элемента, играющего этот поток.
+ *
+ * До ста процентов играет сам элемент — это работает в любом движке. Выше —
+ * подключается усилитель WebAudio, а элемент глушится, чтобы звук не шёл двумя
+ * путями сразу. Где WebAudio с потоком из WebRTC не дружит, громче ста
+ * процентов просто не станет, но слышно будет.
+ */
+export function volume(el, stream) {
+  players.add(el);
+  applySink(el);
+
+  let boost = null;
+
+  return {
+    set(v) {
+      const level = Math.min(MAX_GAIN, Math.max(0, v));
+      const loud = level > 1;
+      if (loud && !boost) boost = amplify(stream);
+      boost?.set(loud ? level : 0);
+      el.muted = loud;
+      el.volume = loud ? 1 : level;
+    },
+    close() {
+      players.delete(el);
+      boost?.close();
+    },
+  };
+}
+
+/** Чужой голос: свой невидимый элемент и та же громкость поверх него. */
+export function playback(stream) {
+  const el = new Audio();
+  el.srcObject = stream;
+  el.autoplay = true;
+  el.style.display = 'none';   // Safari не играет элемент вне документа
+  document.body.appendChild(el);
+  const level = volume(el, stream);
+
+  return {
+    play: () => el.play(),
+    set: (v) => level.set(v),
+    close() {
+      level.close();
+      el.srcObject = null;
+      el.remove();
+    },
+  };
 }
 
 /**
  * Усилитель поверх потока: `gain` можно поднимать выше единицы.
  *
- * Media-элемент при этом всё равно нужен беззвучным — без привязки потока к
- * нему Chrome не отдаёт звук в WebAudio вовсе.
+ * Media-элемент при этом всё равно нужен — без привязки потока к нему Chrome не
+ * отдаёт звук в WebAudio вовсе, поэтому создаётся усилитель только из playback.
  */
-export function amplify(stream) {
+function amplify(stream) {
   const ctx = audioCtx();
   const src = ctx.createMediaStreamSource(stream);
   const gain = ctx.createGain();

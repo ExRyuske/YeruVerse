@@ -136,11 +136,17 @@ export function showImage(src, name = '') {
   overlayHost().appendChild(box);
 }
 
-/** Живой поток во весь экран. Закрывается щелчком или Escape, как и картинка. */
-export function showVideo(stream) {
+/**
+ * Живой поток крупно. Закрывается щелчком или Escape, как и картинка.
+ *
+ * По умолчанию — поверх всего окна, но камеру разворачивают внутри сцены:
+ * `host` для того и нужен. Тогда рядом остаётся и чат, и список участников —
+ * увеличенное лицо собеседника не повод убирать со стола всё остальное.
+ */
+export function showVideo(stream, host = null) {
   if (!stream) return;
   const box = document.createElement('div');
-  box.className = 'lightbox';
+  box.className = host ? 'lightbox inside' : 'lightbox';
 
   const video = document.createElement('video');
   video.autoplay = true;
@@ -163,7 +169,7 @@ export function showVideo(stream) {
   box.onclick = close;
   document.addEventListener('keydown', onKey, true);
   box.append(video);
-  overlayHost().appendChild(box);
+  (host ?? overlayHost()).appendChild(box);
   video.play().catch(() => {});
 }
 

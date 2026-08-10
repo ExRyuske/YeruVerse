@@ -14,7 +14,7 @@
 <body>
 
 <section id="screen-join" class="screen">
-  <nav id="rooms-join" class="rooms" aria-label="Комнаты"></nav>
+  <nav id="rooms-join" class="rooms side-panel" aria-label="Комнаты"></nav>
 
   <div class="join-card-wrap">
     <div class="join-card">
@@ -35,21 +35,24 @@
       </label>
       <button id="btn-create">Создать комнату</button>
       <p id="join-error" class="error" hidden></p>
-      <div id="update-notice" class="notice" hidden>
-        <p class="small">Вышла версия <b id="update-version"></b>.</p>
-        <div class="row">
-          <button id="btn-update" type="button" class="primary">Обновить</button>
-          <button id="btn-update-later" type="button" class="ghost">Позже</button>
-        </div>
-      </div>
-      <div id="stream-tools" class="notice" hidden>
-        <div class="row">
-          <button id="btn-get-sunshine" type="button" class="ghost">Скачать Sunshine</button>
-          <button id="btn-get-moonlight" type="button" class="ghost">Скачать Moonlight</button>
-        </div>
-      </div>
     </div>
   </div>
+
+  <aside id="downloads" class="side-panel" aria-label="Загрузки">
+    <h3>Загрузки</h3>
+    <div id="update-notice" class="notice" hidden>
+      <p class="small">Вышла версия <b id="update-version"></b>.</p>
+      <div class="row">
+        <button id="btn-update" type="button" class="primary">Обновить</button>
+        <button id="btn-update-later" type="button" class="ghost">Позже</button>
+      </div>
+    </div>
+    <button id="btn-get-app-join" type="button" class="ghost" data-icon="download"><span>Приложение</span></button>
+    <button id="btn-get-sunshine" type="button" class="ghost" data-icon="screen"><span>Sunshine</span></button>
+    <button id="btn-get-moonlight" type="button" class="ghost" data-icon="gamepad"><span>Moonlight</span></button>
+    <p class="muted small">Sunshine и Moonlight нужны, чтобы пустить друга
+      за свой компьютер и показать игру в полном экране.</p>
+  </aside>
 </section>
 
 <section id="screen-room" class="screen" hidden>
@@ -79,9 +82,11 @@
         <div id="cams" class="cams" hidden></div>
       </div>
 
-      <div id="views" class="views" hidden></div>
-
+      <!-- Переключатели трансляций живут в том же нижнем ряду, что и кнопки:
+           в полном экране это одна полоса поверх кадра, а не две. -->
       <div class="sources">
+        <div id="views" class="views" hidden></div>
+
         <div class="src-row">
           <span class="with-pick">
             <button id="btn-mute" class="icon" data-icon="mic" title="Свой микрофон"></button>

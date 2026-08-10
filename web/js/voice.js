@@ -2,7 +2,7 @@
 // сервер голос не слышит и не платит за него трафиком. Плюс индикатор того,
 // кто сейчас говорит.
 
-import { audioCtx, amplify, meter, canChooseOutput, setOutput } from './audio.js';
+import { playback, meter, canChooseOutput, setOutput } from './audio.js';
 
 const HOLD_MS = 400;       // сколько держим индикатор после конца фразы
 
@@ -88,6 +88,10 @@ export class Voice extends EventTarget {
         this.reload().catch(() => this.emit('blocked', {}));
       }
     });
+
+    // Выбранное устройство вывода должно действовать с первой секунды, а не
+    // только после того, как настройку тронут ещё раз.
+    this.applySink();
 
     mesh.on('peer-close', ({ id }) => this.detach(id));
     // Замер уровня — единственное, что мы делаем постоянно. Пока окно не
@@ -220,9 +224,9 @@ export class Voice extends EventTarget {
   }
 
   /**
-   * Общая громкость × персональная. Через усилитель, а не через `volume` у
-   * <audio>: тот упирается в единицу, и «150%» звучали ровно как «100%».
-   * Потолок всё же есть — за ним начинается не громче, а грязнее.
+   * Общая громкость × персональная. Выше ста процентов элемент сам не умеет —
+   * там подключается усилитель. Потолок всё же есть: за ним начинается не
+   * громче, а грязнее.
    */
   applyVolumes() {
     const master = this.settings.get('voiceVolume');
@@ -235,28 +239,17 @@ export class Voice extends EventTarget {
     return { enabled: this.enabled, muted: this.muted, deafened: this.deafened };
   }
 
-  /**
-   * Голос участника. Звук идёт через WebAudio — только так громкость поднимается
-   * выше ста процентов. Беззвучный <audio> при этом всё равно нужен: без
-   * привязки потока к media-элементу Chrome не отдаёт его в WebAudio вовсе.
-   */
+  /** Голос участника: свой элемент воспроизведения и громкость поверх него. */
   attach(id, stream) {
     this.detach(id);
-    const audio = new Audio();
-    audio.srcObject = stream;
-    audio.autoplay = true;
-    audio.muted = true;
-    // Safari не начинает играть скрытый элемент без вставки в DOM.
-    audio.style.display = 'none';
-    document.body.appendChild(audio);
-    audio.play().catch(() => this.emit('blocked', {}));
+    const sound = playback(stream);
+    sound.play().catch(() => this.emit('blocked', {}));
     stream.addEventListener('removetrack', () => {
       if (!stream.getAudioTracks().length) this.detach(id);
     });
 
-    this.remotes.set(id, { audio, sound: amplify(stream), meter: meter(stream) });
+    this.remotes.set(id, { sound, meter: meter(stream) });
     this.applyVolumes();
-    this.applySink();
     this.emit('change', this.status());
   }
 
@@ -265,8 +258,6 @@ export class Voice extends EventTarget {
     if (!r) return;
     r.sound.close();
     r.meter?.close();
-    r.audio.srcObject = null;
-    r.audio.remove();
     this.remotes.delete(id);
     this.speaking.delete(id);
     this.emit('change', this.status());
