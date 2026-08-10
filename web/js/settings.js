@@ -42,6 +42,7 @@ const DEFAULTS = {
   streamVolumeByName: {},   // громкость трансляций, тоже по имени
   echoCancellation: true,
   autoGainControl: true,
+  rooms: [],                // сохранённые комнаты: { code, name }
   pairedHosts: [],         // адреса, с которыми Moonlight уже сопряжён
 };
 
@@ -82,6 +83,13 @@ export class Settings extends EventTarget {
     this.peerVolume = new Map();
     this.names = new Map();                 // id участника -> его ник
     this.byName = new Map(Object.entries(this.values.peerVolumeByName ?? {}));
+
+    // Вкладку могут закрыть в те миллисекунды, пока запись отложена.
+    // `pagehide` приходит и на телефоне, где `beforeunload` часто не приходит.
+    for (const event of ['pagehide', 'beforeunload']) {
+      window.addEventListener(event, () => this.flush());
+    }
+    document.addEventListener('visibilitychange', () => document.hidden && this.flush());
   }
 
   /** Связывает id участника с ником, чтобы поднять сохранённую громкость. */
@@ -127,6 +135,25 @@ export class Settings extends EventTarget {
 
   streamVolumeOf(key) { return this.values.streamVolumeByName?.[key] ?? 1; }
 
+  /**
+   * Сохранённые комнаты. Список личный и лежит рядом с остальными настройками:
+   * на сервере комнаты не живут вовсе — там только те, в которых кто-то сейчас
+   * сидит. Код и есть комната, поэтому сохранить её значит запомнить код.
+   */
+  get rooms() { return this.values.rooms ?? []; }
+
+  saveRoom(code, name) {
+    const rooms = this.rooms.filter((r) => r.code !== code);
+    rooms.push({ code, name: name || `Комната ${rooms.length + 1}` });
+    this.set('rooms', rooms);
+  }
+
+  forgetRoom(code) {
+    this.set('rooms', this.rooms.filter((r) => r.code !== code));
+  }
+
+  roomName(code) { return this.rooms.find((r) => r.code === code)?.name ?? ''; }
+
   on(fn) { this.addEventListener('change', (e) => fn(e.detail)); }
 
   /**
@@ -144,7 +171,22 @@ export class Settings extends EventTarget {
     return c;
   }
 
+  /**
+   * Запись откладывается на кадр.
+   *
+   * Ползунок громкости шлёт событие на каждый пиксель, и на каждом же шла
+   * сериализация всех настроек и синхронная запись в хранилище — десятки
+   * блокирующих записей за одно движение мыши. Ничего страшного не случится,
+   * если состояние ляжет на диск на шестнадцать миллисекунд позже.
+   */
   _save() {
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => this.flush(), 16);
+  }
+
+  /** Записать немедленно: перед уходом со страницы ждать кадр уже нечем. */
+  flush() {
+    clearTimeout(this._saveTimer);
     try { localStorage.setItem(KEY, JSON.stringify(this.values)); } catch {}
   }
 }

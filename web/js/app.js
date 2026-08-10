@@ -184,6 +184,7 @@ async function init() {
 
   wireSidebar();
   wirePopovers();
+  renderRooms();
   buildPalette($('#join-palette'));
   buildPalette($('#set-palette'));
   wireJoin();
@@ -291,7 +292,6 @@ async function loadServerConfig() {
     .then((r) => r.json())
     .catch(() => ({}));
   window.YERUVERSE_ICE = state.config.iceServers ?? [];
-  window.YERUVERSE_LAN = !!state.config.lan;
 }
 
 function wireJoin() {
@@ -473,6 +473,106 @@ function join(code) {
   // Ключ в адресной строке — чтобы перезагрузка страницы не выкидывала из комнаты.
   // В адресной строке держим код: перезагрузка вернёт в ту же комнату.
   history.replaceState(null, '', `${location.pathname}#${encodeURIComponent(state.code)}`);
+
+  renderRooms();
+}
+
+/**
+ * Переход в другую сохранённую комнату: выходим из текущей и сразу входим в
+ * выбранную, не показывая экран входа — он тут только мешал бы.
+ */
+function switchRoom(code) {
+  if (code === state.code) return;
+  leaveRoom();
+  joinByCode(code);
+}
+
+/**
+ * Список сохранённых комнат — и слева в комнате, и на экране входа: чаще всего
+ * заходят именно в свои, а не вписывают код заново.
+ */
+function renderRooms() {
+  const empty = !settings.rooms.length;
+  for (const host of [$('#rooms'), $('#rooms-join')]) {
+    renderRoomList(host);
+    host.hidden = empty;      // пустой столбец — только шум
+  }
+  const save = $('#btn-save-room');
+  const saved = !!settings.roomName(state.code);
+  save.classList.toggle('active', saved);
+  save.title = saved ? 'Забыть комнату' : 'Сохранить комнату';
+}
+
+function renderRoomList(host) {
+  const join = host.id === 'rooms-join';
+  host.innerHTML = '';
+
+  if (join) {
+    const title = document.createElement('h3');
+    title.textContent = 'Ваши комнаты';
+    host.appendChild(title);
+  }
+
+  for (const room of settings.rooms) {
+    const tile = document.createElement('div');
+    tile.className = 'room-tile' + (!join && room.code === state.code ? ' active' : '');
+
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'room-open';
+    open.textContent = room.name;
+    open.title = room.name;
+    open.onclick = () => (join ? joinByCode(room.code) : switchRoom(room.code));
+
+    // Переименование прямо на месте: prompt() системный вебвью не показывает,
+    // и обработчик обрывался бы на нём молча.
+    const rename = document.createElement('button');
+    rename.type = 'button';
+    rename.className = 'mini room-act';
+    rename.title = 'Переименовать';
+    rename.innerHTML = icon('pen', { size: 11 });
+    rename.onclick = () => {
+      const field = document.createElement('input');
+      field.className = 'room-rename';
+      field.value = room.name;
+      field.maxLength = 24;
+      field.onblur = () => {
+        settings.saveRoom(room.code, field.value.trim() || room.name);
+        renderRooms();
+      };
+      field.onkeydown = (e) => {
+        if (e.key === 'Enter') field.blur();
+        if (e.key === 'Escape') renderRooms();
+      };
+      tile.replaceChildren(field);
+      field.focus();
+      field.select();
+    };
+
+    const forget = document.createElement('button');
+    forget.type = 'button';
+    forget.className = 'mini room-act';
+    forget.title = 'Забыть комнату';
+    forget.innerHTML = icon('close', { size: 11 });
+    forget.onclick = () => {
+      settings.forgetRoom(room.code);
+      renderRooms();
+    };
+
+    tile.append(open, rename, forget);
+    host.appendChild(tile);
+  }
+
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'room-add';
+  add.title = 'Другая комната';
+  add.textContent = '+';
+  add.onclick = () => {
+    if (!join) leaveRoom();
+    $('#in-link').focus();
+  };
+  host.appendChild(add);
 }
 
 /** Полный выход: рвём сокет, гасим WebRTC, забываем комнату. */
@@ -509,6 +609,7 @@ function leaveRoom() {
   $('#screen-join').hidden = false;
   $('#join-error').hidden = true;
   history.replaceState(null, '', location.pathname);
+  renderRooms();
 }
 
 /**
@@ -581,16 +682,18 @@ async function toggleFullscreen() {
   try {
     if (document.fullscreenElement) {
       await document.exitFullscreen();
-    } else if (host.requestFullscreen) {
-      await host.requestFullscreen({ navigationUI: 'hide' });
-    } else {
-      // Остаётся системный полноэкранный режим самого видео — так делает iPhone.
-      const video = $('#stage video');
-      if (video?.webkitEnterFullscreen) video.webkitEnterFullscreen();
-      else toast('Полный экран здесь недоступен');
+      return;
     }
-  } catch (e) {
-    toast(`Полный экран недоступен: ${e?.message ?? e}`);
+    if (host.requestFullscreen) {
+      await host.requestFullscreen({ navigationUI: 'hide' });
+      return;
+    }
+    throw new Error('нет Fullscreen API');
+  } catch {
+    // Android-вебвью и старый Safari разворачивать элементы не умеют. Сцену
+    // всё равно растягиваем на всё окно — системные панели останутся, но
+    // смотреть станет заметно удобнее.
+    applyFullscreen(on);
   }
 }
 
@@ -812,7 +915,7 @@ function streamVolumeSlider() {
 
   const btn = document.createElement('button');
   btn.type = 'button';
-  btn.className = 'pv-icon';
+  btn.className = 'mini';
 
   const slider = document.createElement('input');
   slider.type = 'range';
@@ -1123,7 +1226,7 @@ function renderCams() {
       video.onclick = () => showVideo(state.screens.get(key));
 
       const off = document.createElement('button');
-      off.className = 'tile-off';
+      off.className = 'mini tile-off';
       off.type = 'button';
       off.title = 'Убрать у себя';
       off.innerHTML = icon('close', { size: 12 });
@@ -1222,6 +1325,17 @@ function wireRoom() {
 
   ui('#btn-get-app').onclick = () =>
     openExternal('https://github.com/ExRyuske/YeruVerse/releases/latest');
+  // Комната сохраняется по нажатию: заходят и в чужие, и по одному разу —
+  // складывать в список всё подряд значит превратить его в свалку.
+  ui('#btn-save-room').onclick = () => {
+    if (settings.roomName(state.code)) {
+      settings.forgetRoom(state.code);
+    } else {
+      settings.saveRoom(state.code, `Комната ${settings.rooms.length + 1}`);
+      toast('Комната сохранена — переименовать можно карандашом в списке');
+    }
+    renderRooms();
+  };
   ui('#btn-invite').onclick = invite;
   ui('#btn-leave').onclick = leaveRoom;
   ui('#chat-form').onsubmit = (e) => {

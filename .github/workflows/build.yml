@@ -213,7 +213,7 @@ jobs:
       # Приложение ходит за этим файлом по постоянному адресу
       # releases/latest/download/latest.json и по нему решает, обновляться ли.
       - name: манифест обновления
-        run: python3 scripts/latest_json.py --tag "${{ env.RELEASE_TAG }}" --dir dist
+        run: python3 scripts/release.py manifest --tag "${{ env.RELEASE_TAG }}" --dir dist
 
       - uses: softprops/action-gh-release@v3
         with:

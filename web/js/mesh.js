@@ -3,23 +3,19 @@
 
 // Собираем конфиг в момент создания соединения: TURN приезжает из /config.json
 // уже после загрузки модуля, а у Cloudflare учётки ещё и короткоживущие.
-// В локальной сети внешние STUN недоступны и не нужны: соединение складывается
-// по адресам самой сети, а запросы наружу только тянут время на таймаутах.
 const iceConfig = () => ({
-  iceServers: window.YERUVERSE_LAN
-    ? [...(window.YERUVERSE_ICE ?? [])]
-    : [
-        // Несколько STUN от разных операторов: один может быть недоступен из
-        // сети конкретного зрителя, и тогда сработает следующий.
-        {
-          urls: [
-            'stun:stun.cloudflare.com:3478',
-            'stun:stun.l.google.com:19302',
-            'stun:stun1.l.google.com:19302',
-          ],
-        },
-        ...(window.YERUVERSE_ICE ?? []),
+  iceServers: [
+    // Несколько STUN от разных операторов: один может быть недоступен из сети
+    // конкретного зрителя, и тогда сработает следующий.
+    {
+      urls: [
+        'stun:stun.cloudflare.com:3478',
+        'stun:stun.l.google.com:19302',
+        'stun:stun1.l.google.com:19302',
       ],
+    },
+    ...(window.YERUVERSE_ICE ?? []),
+  ],
   bundlePolicy: 'max-bundle',
 });
 

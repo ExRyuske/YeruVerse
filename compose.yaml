@@ -9,6 +9,12 @@
 
 services:
   yeruverse:
+    # Готовый образ из реестра GitHub — на маленьком VPS Rust собирать нечем.
+    # Реестр отдаёт его только если пакет публичный: GitHub → Packages →
+    # yeruverse → Package settings → Change visibility → Public. Иначе будет
+    # «unauthorized», и тогда либо `docker login ghcr.io`, либо собрать самому:
+    #   docker compose up -d --build
+    image: ghcr.io/exryuske/yeruverse:latest
     build: .
     container_name: yeruverse
     restart: unless-stopped
@@ -37,7 +43,7 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
 

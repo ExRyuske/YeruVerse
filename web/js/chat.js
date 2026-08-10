@@ -171,7 +171,7 @@ function addAttachment(peer, meta, mine, at) {
       img.src = own;
       action.remove();
     } else {
-      action.click();
+      action.click();       // картинку показываем сразу, не дожидаясь нажатия
     }
   }
 
@@ -186,7 +186,12 @@ export function renderAttachProgress(id, pct) {
   if (row && row.action.isConnected) row.action.textContent = `${pct}%`;
 }
 
-/** Файл собран: подменяем кнопку ссылкой и сразу сохраняем его на диск. */
+/**
+ * Файл собран: кнопка превращается в ссылку «Сохранить».
+ *
+ * На диск сам он не ложится. Раньше ложился — и это значило, что любой участник
+ * комнаты мог положить вам в «Загрузки» что угодно, ни о чём не спрашивая.
+ */
 export function finishAttach(id, url, meta) {
   const row = attachRows.get(id);
   if (!row) return;
@@ -201,11 +206,7 @@ export function finishAttach(id, url, meta) {
   if (row.action.isConnected) row.action.replaceWith(link);
   row.sub.textContent = `${fmtSize(meta.size)} · получен, теперь вы тоже раздаёте`;
 
-  if (row.img) {
-    row.img.src = url;
-    return;   // картинка уже перед глазами, на диск её сохраняют по желанию
-  }
-  link.click();
+  if (row.img) row.img.src = url;
 }
 
 export function addChat(who, text, mine, at, color) {

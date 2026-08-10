@@ -14,35 +14,39 @@
 <body>
 
 <section id="screen-join" class="screen">
-  <div class="join-card">
-    <label>Как вас зовут
-      <input id="in-name" type="text" placeholder="Имя" maxlength="32" autocomplete="off">
-    </label>
-    <label>Цвет ника
-      <div id="join-palette" class="palette"></div>
-    </label>
-    <label id="link-row">Ссылка или код комнаты
-      <div class="row">
-        <input id="in-link" type="text" placeholder="ссылка или код" autocomplete="off">
-        <button id="btn-link" type="button" class="primary">Войти</button>
+  <nav id="rooms-join" class="rooms" aria-label="Комнаты"></nav>
+
+  <div class="join-card-wrap">
+    <div class="join-card">
+      <label>Как вас зовут
+        <input id="in-name" type="text" placeholder="Имя" maxlength="32" autocomplete="off">
+      </label>
+      <label>Цвет ника
+        <div id="join-palette" class="palette"></div>
+      </label>
+      <label id="link-row">Ссылка или код комнаты
+        <div class="row">
+          <input id="in-link" type="text" placeholder="ссылка или код" autocomplete="off">
+          <button id="btn-link" type="button" class="primary">Войти</button>
+        </div>
+      </label>
+      <label id="server-row" hidden>Сервер комнат
+        <input id="in-server" type="text" placeholder="https://verse.yeru.cc" autocomplete="off">
+      </label>
+      <button id="btn-create">Создать комнату</button>
+      <p id="join-error" class="error" hidden></p>
+      <div id="update-notice" class="notice" hidden>
+        <p class="small">Вышла версия <b id="update-version"></b>.</p>
+        <div class="row">
+          <button id="btn-update" type="button" class="primary">Обновить</button>
+          <button id="btn-update-later" type="button" class="ghost">Позже</button>
+        </div>
       </div>
-    </label>
-    <label id="server-row" hidden>Сервер комнат
-      <input id="in-server" type="text" placeholder="https://verse.yeru.cc" autocomplete="off">
-    </label>
-    <button id="btn-create">Создать комнату</button>
-    <p id="join-error" class="error" hidden></p>
-    <div id="update-notice" class="notice" hidden>
-      <p class="small">Вышла версия <b id="update-version"></b>.</p>
-      <div class="row">
-        <button id="btn-update" type="button" class="primary">Обновить</button>
-        <button id="btn-update-later" type="button" class="ghost">Позже</button>
-      </div>
-    </div>
-    <div id="stream-tools" class="notice" hidden>
-      <div class="row">
-        <button id="btn-get-sunshine" type="button" class="ghost">Скачать Sunshine</button>
-        <button id="btn-get-moonlight" type="button" class="ghost">Скачать Moonlight</button>
+      <div id="stream-tools" class="notice" hidden>
+        <div class="row">
+          <button id="btn-get-sunshine" type="button" class="ghost">Скачать Sunshine</button>
+          <button id="btn-get-moonlight" type="button" class="ghost">Скачать Moonlight</button>
+        </div>
       </div>
     </div>
   </div>
@@ -55,6 +59,7 @@
       <button id="room-name" class="room-code" type="button"
               title="Нажмите, чтобы показать и скопировать код комнаты">—</button>
     </div>
+    <button id="btn-save-room" class="icon" data-icon="save" title="Сохранить комнату"></button>
     <div class="grow"></div>
     <button id="btn-get-app" class="icon" data-icon="download" hidden
             title="Скачать приложение"></button>
@@ -64,6 +69,8 @@
   </header>
 
   <main class="layout">
+    <nav id="rooms" class="rooms" aria-label="Комнаты"></nav>
+
     <div class="stage-wrap">
       <div id="stage" class="stage">
         <div id="stage-empty" class="stage-empty">

@@ -1,7 +1,7 @@
 # Короткие команды для типовых задач. Всё то же самое можно набрать руками —
 # см. README, здесь просто собраны рабочие сочетания флагов.
 
-.PHONY: help server lan web app app-debug android android-all android-prepare sign-apk icons icons-ui updater-key updater-pubkey docker docker-run deploy check clean
+.PHONY: help server web app app-debug android android-all android-prepare sign-apk icons icons-ui updater-key updater-pubkey docker docker-run deploy check clean
 
 APP_DIR := desktop/src-tauri
 ANDROID_HOME ?= $(or $(ANDROID_SDK_ROOT),$(HOME)/Library/Android/sdk)
@@ -16,12 +16,11 @@ APK := $(CURDIR)/yeruverse.apk
 
 help:
 	@echo "make server      — собрать и запустить сервер (веб-версия на :8080)"
-	@echo "make lan         — сервер для локальной сети: https на :8443, без интернета"
 	@echo "make app         — собрать установщик под текущую систему (.dmg/.msi/.AppImage)"
 	@echo "make app-debug   — запустить приложение без упаковки"
 	@echo "make android     — собрать и подписать APK под arm64 (нужны ANDROID_HOME и NDK_HOME)"
 	@echo "make android-all — то же, но под все архитектуры (дольше в четыре раза)"
-	@echo "make icons       — перегенерировать иконки приложения из scripts/make_icon.py"
+	@echo "make icons       — перерисовать иконки приложения"
 	@echo "make icons-ui    — пересобрать иконки интерфейса из Font Awesome"
 	@echo "make updater-key — создать ключ подписи обновлений (один раз на проект)"
 	@echo "make docker      — собрать образ сервера"
@@ -30,10 +29,6 @@ help:
 
 server:
 	cargo run --release
-
-# Комната для локальной сети: https со своим сертификатом, никакого интернета.
-lan:
-	LAN=1 cargo run --release
 
 web: server
 
@@ -97,12 +92,12 @@ updater-pubkey:
 
 # Иконки приложения для всех платформ рождаются из одного PNG 1024×1024.
 icons:
-	python3 scripts/make_icon.py
+	python3 scripts/icons.py app
 	cd $(APP_DIR) && cargo tauri icon icons/icon.png
 
 # Иконки интерфейса: пересобрать web/js/icons.js из Font Awesome Free.
 icons-ui:
-	python3 scripts/fetch_icons.py
+	python3 scripts/icons.py ui
 
 tauri-cli:
 	@cargo tauri --version > /dev/null 2>&1 && exit 0; \

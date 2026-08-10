@@ -9,7 +9,7 @@ import { $, ui } from './ui.js';
 let ctx = null;
 
 /**
- * @param {object} deps  settings, voice, mesh, net, sync, native, hotkeys, toast,
+ * @param {object} deps  settings, voice, mesh, net, native, hotkeys, toast,
  *                       peers() — карта участников, config() — ответ сервера,
  *                       sunshine(), sunshineHint(), enableMic()
  */

@@ -6,7 +6,9 @@
   --accent: var(--tg-theme-button-color, #5b8cff);
   --accent-text: var(--tg-theme-button-text-color, #fff);
   --border: color-mix(in srgb, var(--text) 14%, transparent);
-  --radius: 12px;
+  --r-sm: 8px;         /* мелкие метки и значки */
+  --radius: 12px;      /* кнопки, поля, карточки внутри панелей */
+  --r-lg: 16px;        /* большие панели: карточка входа, окно настроек */
 }
 
 * { box-sizing: border-box; }
@@ -38,7 +40,7 @@ button, input {
   color: var(--text);
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius);
   padding: 9px 14px;
 }
 button { cursor: pointer; }
@@ -49,12 +51,26 @@ button.ghost { background: transparent; }
 input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* ---------- вход ---------- */
-#screen-join { align-items: center; justify-content: center; padding: 20px; }
+/* Карточка входа стоит ровно по середине экрана, а список комнат — сбоку от
+   неё. Простой ряд сдвигал бы карточку вправо на половину ширины списка;
+   три колонки с одинаковыми краями держат середину настоящей серединой. */
+#screen-join {
+  display: grid; grid-template-columns: 1fr auto 1fr;
+  align-items: center; gap: 16px; padding: 20px;
+}
+#rooms-join { grid-column: 1; justify-self: end; }
+.join-card-wrap { grid-column: 2; display: flex; }
+/* Панель: единая поверхность для карточки входа, окна настроек и всплывающих
+   настроек у кнопок. */
+.join-card, .modal-card, .pop {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
 .join-card {
   width: min(420px, 100%);
   display: flex; flex-direction: column; gap: 14px;
-  background: var(--panel); border: 1px solid var(--border);
-  border-radius: 16px; padding: 24px;
+  padding: 24px;
 }
 .join-card h1 { margin: 0; font-size: 28px; letter-spacing: -.02em; }
 .join-card label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
@@ -91,6 +107,79 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 .dot.off { background: #ff6b6b; }
 
 .layout { flex: 1; display: flex; min-height: 0; }
+
+/* Список сохранённых комнат — один и тот же на экране входа и в комнате.
+   Комната здесь это её код; список личный и живёт в настройках браузера, на
+   сервере ничего подобного нет.
+
+   Свёрнут до узкой полосы и разворачивается под курсором поверх содержимого:
+   раздвигать раскладку значило бы дёргать видео каждый раз, когда мышь прошла
+   мимо. Место в раскладке при этом остаётся прежним — отсюда отрицательный
+   отступ. */
+.rooms {
+  display: flex; flex-direction: column; gap: 4px; flex: none;
+  overflow-y: auto; scrollbar-width: none;
+}
+.rooms::-webkit-scrollbar { display: none; }
+
+/* В комнате — узкая полоса у края. Разворачивается под курсором поверх
+   содержимого: раздвигать раскладку значило бы дёргать видео каждый раз, когда
+   мышь прошла мимо, поэтому место в ней остаётся прежним. */
+#rooms {
+  position: relative; z-index: 9; width: 52px; overflow: hidden;
+  padding: 10px 8px; background: var(--bg);
+  border-right: 1px solid var(--border);
+  transition: width .15s ease, margin-right .15s ease;
+}
+#rooms:hover, #rooms:focus-within { width: 200px; margin-right: -148px; overflow-y: auto; }
+
+/* На экране входа — такая же панель, как карточка рядом. */
+#rooms-join h3 {
+  margin: 2px 6px 6px; font-size: 13px; text-transform: uppercase;
+  color: var(--muted); letter-spacing: .04em;
+}
+#rooms-join {
+  width: 220px; max-height: min(70dvh, 520px); padding: 12px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+
+.room-tile { position: relative; display: flex; align-items: center; flex: none; }
+.room-open {
+  flex: 1; min-width: 0; padding: 8px 10px; text-align: left; font-size: 14px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  background: none; border-color: transparent;
+}
+.room-open:hover { background: var(--panel); }
+.room-tile.active .room-open {
+  background: var(--accent); color: var(--accent-text); font-weight: 600;
+}
+/* Действия появляются под курсором: постоянные, они отъедали бы место у имени,
+   а нужны раз в жизни комнаты. Ложатся поверх конца имени, а не раздвигают
+   его — менять отступ на наведении значит дёргать текст под курсором. */
+.mini {
+  width: 22px; height: 22px; padding: 0; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; background: none; color: var(--muted);
+  transition: opacity .15s, color .15s;
+}
+.mini:hover { color: var(--text); background: none; }
+/* Действие поверх содержимого: видно под курсором, иначе отъедало бы место. */
+.room-act { position: absolute; opacity: 0; }
+.room-act:nth-of-type(2) { right: 26px; }
+.room-act:nth-of-type(3) { right: 4px; }
+.room-tile:hover .room-act, .room-act:focus-visible { opacity: 1; }
+.room-tile:hover .room-act { background: var(--panel); }
+.room-tile.active .room-act { color: var(--accent-text); }
+.room-tile.active:hover .room-act { background: var(--accent); }
+.room-tile.active .room-act:hover { color: var(--accent-text); }
+
+.room-add {
+  flex: none; padding: 6px; color: var(--muted); font-size: 18px;
+  background: none; border-style: dashed;
+}
+.room-rename { flex: 1; min-width: 0; padding: 7px 9px; font-size: 14px; }
+
 .stage-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 12px; gap: 10px; }
 
 .views { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -99,17 +188,6 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
   display: inline-flex; align-items: center; gap: 6px;
 }
 .views button .who { font-weight: 600; }
-/* На этой трансляции кто-то показывает курсором, а на сцене сейчас другая:
-   курсор рисуется только на своём кадре, поэтому подсказываем, куда смотреть. */
-.views button.pointed {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.views button.pointed::after {
-  content: ''; width: 6px; height: 6px; border-radius: 50%;
-  background: var(--accent); animation: blink 1.2s ease-in-out infinite;
-}
-@keyframes blink { 50% { opacity: .25; } }
 
 .stage {
   position: relative; flex: 1; min-height: 0;
@@ -125,7 +203,7 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
   max-width: calc(100% - 16px); pointer-events: none;
 }
 .cam-tile {
-  position: relative; width: 160px; border-radius: 10px; overflow: hidden;
+  position: relative; width: 160px; border-radius: var(--radius); overflow: hidden;
   background: #000; box-shadow: 0 4px 16px rgba(0, 0, 0, .5);
 }
 .cam-tile { pointer-events: auto; }
@@ -135,11 +213,10 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 }
 /* Крестик появляется под курсором: постоянный он спорил бы с подписью. */
 .tile-off {
-  position: absolute; top: 4px; right: 4px; width: 20px; height: 20px;
-  display: flex; align-items: center; justify-content: center;
-  padding: 0; border: none; border-radius: 6px; color: #fff;
-  background: rgba(0, 0, 0, .55); opacity: 0; transition: opacity .15s;
+  position: absolute; top: 4px; right: 4px; opacity: 0;
+  border-radius: var(--r-sm); color: #fff; background: rgba(0, 0, 0, .55);
 }
+.tile-off:hover { color: #fff; background: rgba(0, 0, 0, .75); }
 .cam-tile:hover .tile-off, .tile-off:focus-visible { opacity: 1; }
 .cam-tile span {
   position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 7px;
@@ -178,8 +255,7 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
   position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 12;
   min-width: 260px; max-width: min(340px, 92vw);
   display: flex; flex-direction: column; gap: 10px;
-  background: var(--panel); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 12px;
+  padding: 12px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
 }
 .pop .field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
@@ -207,13 +283,13 @@ body.resizing { cursor: col-resize; user-select: none; }
 .peers ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .peers li { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .peers img { width: 22px; height: 22px; border-radius: 50%; }
-.badge { background: var(--accent); color: var(--accent-text); border-radius: 20px; padding: 1px 7px; font-size: 12px; }
-.tag { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; }
+.badge { background: var(--accent); color: var(--accent-text); border-radius: 999px; padding: 1px 7px; font-size: 12px; }
+.tag { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 0 5px; }
 .tag.warn { color: #f0a020; border-color: #f0a020; }
 
 /* Говорящий участник подсвечивается фоном, а не цветом имени: имя красится
    личным цветом ника и перебивать его нельзя. */
-.peers li { padding: 2px 6px; margin: 0 -6px; border-radius: 8px; }
+.peers li { padding: 2px 6px; margin: 0 -6px; border-radius: var(--r-sm); }
 .peers li.speaking { background: color-mix(in srgb, #3ecf8e 18%, transparent); }
 .peers li.speaking img { box-shadow: 0 0 0 2px #3ecf8e; }
 /* Красным помечено только то, что выключено: микрофон, звук, замок. Идущая
@@ -229,17 +305,13 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 /* Громкость участника прямо в строке с ником. */
 .pv-mini { display: flex; align-items: center; gap: 4px; margin-left: auto; }
-.pv-mini .pv-icon {
-  padding: 0 2px; background: none; border: none; font-size: 13px; line-height: 1;
-}
-.pv-mini .pv-icon:hover { border: none; opacity: .7; }
+
 .peers li .rc {
   padding: 0 4px; background: none; border: 1px solid var(--border);
-  border-radius: 6px; font-size: 12px; line-height: 1.6;
+  border-radius: var(--r-sm); font-size: 12px; line-height: 1.6;
 }
 .peers li .rc.on { color: var(--accent); border-color: var(--accent); }
 /* Закрытый замок — тоже «выключено», и цвет у него общий с микрофоном. */
-.peers li .rc.shut { color: #ff6b6b; border-color: color-mix(in srgb, #ff6b6b 45%, transparent); }
 
 .pv-mini input[type="range"] {
   width: 62px; padding: 0; margin: 0; border: none; background: none;
@@ -314,7 +386,7 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
 /* Вложение в чате: имя, размер и кнопка со прогрессом загрузки. */
 .attach {
   display: flex; align-items: center; gap: 8px;
-  border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px;
   background: color-mix(in srgb, var(--text) 4%, transparent);
 }
 .attach .ico { width: 18px; height: 18px; flex: none; color: var(--muted); }
@@ -332,7 +404,7 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
 /* Картинка из чата: показываем целиком, но не даём растянуть колонку. */
 .chat-log .shot {
   display: block; margin-top: 6px; max-width: 100%; max-height: 240px;
-  border-radius: 10px; border: 1px solid var(--border); object-fit: contain;
+  border-radius: var(--radius); border: 1px solid var(--border); object-fit: contain;
   cursor: zoom-in;
 }
 
@@ -342,7 +414,7 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
   display: flex; align-items: center; justify-content: center; padding: 20px;
   background: rgba(0, 0, 0, .88);
 }
-.lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
+.lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--r-sm); }
 .attach .meta { min-width: 0; flex: 1; }
 .attach .name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attach .sub { color: var(--muted); font-size: 12px; }
@@ -359,7 +431,7 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
    поэтому цвет участника приезжает отдельной переменной. */
 .ptr span {
   background: var(--ptr, #5b8cff); color: #0b0d12;
-  font-size: 11px; font-weight: 600; padding: 1px 5px; border-radius: 6px;
+  font-size: 11px; font-weight: 600; padding: 1px 5px; border-radius: var(--r-sm);
   white-space: nowrap; margin-top: 10px;
 }
 .ptr span:empty { display: none; }
@@ -388,7 +460,7 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
 }
 .modal-card {
   width: min(460px, 100%); max-height: 86vh; overflow-y: auto;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 18px;
+  padding: 18px;
 }
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .modal-head h2 { margin: 0; font-size: 19px; }
@@ -403,7 +475,7 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
 
 .pick {
   user-select: all; word-break: break-all;
-  padding: 4px 8px; border-radius: 6px; background: var(--panel);
+  padding: 4px 8px; border-radius: var(--r-sm); background: var(--panel);
 }
 .toast .pick {
   display: block; margin-top: 4px; user-select: all; word-break: break-all;
@@ -414,7 +486,7 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
 
 .toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
-  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 10px 16px; box-shadow: 0 8px 30px rgba(0,0,0,.4); z-index: 20;
 }
 
@@ -444,6 +516,22 @@ body.fullscreen.idle .views { opacity: 0; pointer-events: none; }
 
 @media (max-width: 860px) {
   .layout { flex-direction: column; }
+  /* Разворот по наведению на телефоне не работает — там нет курсора. Список
+     ложится сверху строкой и прокручивается вбок. */
+  #rooms, #rooms:hover, #rooms:focus-within {
+    flex-direction: row; width: auto; margin-right: 0; padding: 8px;
+    border-right: none; border-bottom: 1px solid var(--border);
+    overflow-x: auto; overflow-y: hidden;
+  }
+  /* На узком экране панель комнат встаёт над карточкой, а не сбоку. */
+  #screen-join { grid-template-columns: 1fr; align-items: start; }
+  #rooms-join, .join-card-wrap { grid-column: 1; justify-self: stretch; }
+  #rooms-join { width: auto; max-height: 30dvh; }
+  .room-tile { flex: 0 0 auto; }
+  .room-open { max-width: 40vw; }
+  /* Пальцем «навести» нельзя — действия видно всегда. */
+  .room-act { opacity: 1; position: static; width: 26px; height: 26px; }
+  .room-tile:hover .room-open { padding-right: 10px; }
   .sidebar {
     width: auto; border-left: none; border-top: 1px solid var(--border);
     height: 40dvh; min-height: 180px; flex: none;
