@@ -7,7 +7,7 @@ import { Pointers } from './pointers.js';
 import { icon } from './icons.js';
 import { Hotkeys, ACTIONS, label as hotkeyLabel } from './hotkeys.js';
 import {
-  $, ui, toast, copy, fmtSize, clearStaleFlag,
+  $, ui, toast, copy, fmtSize, clearStaleFlag, showVideo,
 } from './ui.js';
 import {
   initChat, clearChat, addChat, sysMsg, renderAttachProgress, finishAttach,
@@ -43,6 +43,21 @@ function applyQuality() {
   mesh.retune();
 }
 settings.on(({ key }) => key.startsWith('stream') && applyQuality());
+
+// Камеру меняют, когда она уже включена: перезапускаем захват и подменяем
+// дорожку — собеседники не видят ни разрыва, ни пересогласования.
+settings.on(async ({ key }) => {
+  if (key !== 'camDevice' || !state.shares.has('cam')) return;
+  try {
+    const stream = await SHARES.cam.capture();
+    state.shares.get('cam').getTracks().forEach((t) => t.stop());
+    state.shares.set('cam', stream);
+    await mesh.replaceStream('cam', stream);
+    addScreen(viewKey(state.self.id, 'cam'), stream);
+  } catch (e) {
+    toast(`Камера не переключилась: ${micProblem(e)}`);
+  }
+});
 applyQuality();
 let pointers = null;   // создаётся после появления сцены в DOM
 
@@ -71,6 +86,7 @@ const state = {
 init();
 
 async function init() {
+  $('#btn-get-app').hidden = native.available;
   if (native.available) {
     await native.load();
     $('#server-row').hidden = false;
@@ -166,6 +182,8 @@ async function init() {
     el.insertAdjacentHTML('afterbegin', icon(el.dataset.icon));
   }
 
+  wireSidebar();
+  wirePopovers();
   buildPalette($('#join-palette'));
   buildPalette($('#set-palette'));
   wireJoin();
@@ -180,11 +198,13 @@ async function init() {
     toast,
     peers: () => state.peers,
     config: () => state.config,
+    hidden: () => [...hidden].map((k) => `${state.peers.get(viewPeer(k))?.name ?? '?'} (${viewKind(k) === 'cam' ? 'камера' : 'экран'})`),
     sunshine: () => state.sunshine,
     sunshineHint,
     enableMic,
   });
   wireHotkeys();
+  refreshDevices();
   initChat({
     ui,
     net,
@@ -271,6 +291,7 @@ async function loadServerConfig() {
     .then((r) => r.json())
     .catch(() => ({}));
   window.YERUVERSE_ICE = state.config.iceServers ?? [];
+  window.YERUVERSE_LAN = !!state.config.lan;
 }
 
 function wireJoin() {
@@ -294,12 +315,9 @@ function wireJoin() {
   // прятать её после одного показа — значит прятать от тех, кто вернулся к ней
   // через неделю.
   ui('#stream-tools').hidden = false;
-  const open = (url) => () => {
-    if (native.available) native.openUrl(url).catch(() => window.open(url, '_blank'));
-    else window.open(url, '_blank', 'noopener');
-  };
-  ui('#btn-get-sunshine').onclick = open('https://github.com/LizardByte/Sunshine/releases/latest');
-  ui('#btn-get-moonlight').onclick = open('https://moonlight-stream.org/');
+  ui('#btn-get-sunshine').onclick = () =>
+    openExternal('https://github.com/LizardByte/Sunshine/releases/latest');
+  ui('#btn-get-moonlight').onclick = () => openExternal('https://moonlight-stream.org/');
 
   // Обновления предлагаем на экране входа, а не посреди разговора.
   ui('#btn-update-later').onclick = () => ($('#update-notice').hidden = true);
@@ -323,6 +341,100 @@ function wireJoin() {
 function randomCode() {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   return [...bytes].map((b) => b.toString(36).padStart(2, '0')).join('').slice(0, 20);
+}
+
+/**
+ * Настройки, привязанные к кнопке: раскрываются над ней и закрываются от
+ * любого щелчка мимо. Всё, что не относится ни к одной кнопке — ник, цвет,
+ * сочетания, диагностика, — осталось в общем окне настроек.
+ */
+function wirePopovers() {
+  const pops = [...document.querySelectorAll('.pop')];
+  const carets = [...document.querySelectorAll('[data-pop]')];
+
+  const close = (except = null) => {
+    for (const pop of pops) {
+      if (pop === except) continue;
+      pop.hidden = true;
+      document.querySelector(`[data-pop="${pop.id}"]`)?.classList.remove('open');
+    }
+  };
+
+  for (const caret of carets) {
+    caret.onclick = (e) => {
+      e.stopPropagation();      // иначе тот же щелчок тут же и закроет панель
+      const pop = $(`#${caret.dataset.pop}`);
+      const show = pop.hidden;
+      close();
+      pop.hidden = !show;
+      caret.classList.toggle('open', show);
+      // Панель у правого края не должна уезжать за границу окна.
+      pop.style.left = '';
+      pop.style.right = '';
+      if (show && pop.getBoundingClientRect().right > window.innerWidth - 8) {
+        pop.style.left = 'auto';
+        pop.style.right = '0';
+      }
+    };
+  }
+
+  document.addEventListener('click', (e) => !e.target.closest('.pop') && close());
+  document.addEventListener('keydown', (e) => e.key === 'Escape' && close());
+}
+
+/**
+ * Боковую панель тянут за край: чат кому-то нужен пошире, кому-то не нужен
+ * вовсе. Размер запоминается — на узком экране это высота, на широком ширина.
+ */
+function wireSidebar() {
+  const grip = ui('#sidebar-grip');
+  const bar = $('#sidebar');
+  const vertical = () => window.matchMedia('(max-width: 860px)').matches;
+
+  const apply = (px) => {
+    if (!px) return;
+    // Панель не должна ни исчезнуть, ни съесть сцену целиком.
+    const room = (vertical() ? window.innerHeight : window.innerWidth) - 260;
+    const size = Math.max(200, Math.min(px, Math.max(200, room)));
+    bar.style[vertical() ? 'height' : 'width'] = `${size}px`;
+    bar.style[vertical() ? 'width' : 'height'] = '';
+  };
+  apply(settings.get('sidebarSize'));
+  window.addEventListener('resize', () => apply(settings.get('sidebarSize')));
+
+  grip.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    grip.classList.add('dragging');
+    document.body.classList.add('resizing');
+
+    const start = vertical() ? e.clientY : e.clientX;
+    const was = vertical() ? bar.offsetHeight : bar.offsetWidth;
+
+    const move = (ev) => {
+      // Панель справа и снизу, поэтому движение к ней уменьшает размер.
+      const delta = start - (vertical() ? ev.clientY : ev.clientX);
+      apply(was + delta);
+    };
+    const stop = () => {
+      grip.classList.remove('dragging');
+      document.body.classList.remove('resizing');
+      grip.removeEventListener('pointermove', move);
+      settings.set('sidebarSize', vertical() ? bar.offsetHeight : bar.offsetWidth);
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', stop, { once: true });
+    grip.addEventListener('pointercancel', stop, { once: true });
+  });
+}
+
+/**
+ * Внешняя ссылка. В приложении её открывает система: переход внутри окна увёл
+ * бы человека из комнаты, а вернуться оттуда нечем.
+ */
+function openExternal(url) {
+  if (native.available) native.openUrl(url).catch(() => window.open(url, '_blank'));
+  else window.open(url, '_blank', 'noopener');
 }
 
 /** Тихая проверка обновлений: молчим, пока нечего сказать. */
@@ -442,7 +554,29 @@ async function enableMic({ manual = false } = {}) {
  * На iPhone Fullscreen API для обычных элементов нет, там остаётся только
  * системный полноэкранный режим самого видео.
  */
+function fullscreenOn() {
+  return !!document.fullscreenElement || document.body.classList.contains('fullscreen');
+}
+
+/**
+ * Полный экран.
+ *
+ * В приложении разворачиваем само окно: в Android-вебвью Fullscreen API для
+ * обычных элементов не работает — показывать их поверх приложения там некому.
+ * С точки зрения человека разницы нет, но класс на body в этом случае ставим
+ * сами: событие fullscreenchange при таком развороте не приходит.
+ */
 async function toggleFullscreen() {
+  const on = !fullscreenOn();
+
+  if (native.available) {
+    try {
+      await native.setFullscreen(on);
+      applyFullscreen(on);
+      return;
+    } catch {}   // не вышло — пробуем обычным путём
+  }
+
   const host = $('.stage-wrap');
   try {
     if (document.fullscreenElement) {
@@ -450,6 +584,7 @@ async function toggleFullscreen() {
     } else if (host.requestFullscreen) {
       await host.requestFullscreen({ navigationUI: 'hide' });
     } else {
+      // Остаётся системный полноэкранный режим самого видео — так делает iPhone.
       const video = $('#stage video');
       if (video?.webkitEnterFullscreen) video.webkitEnterFullscreen();
       else toast('Полный экран здесь недоступен');
@@ -459,14 +594,15 @@ async function toggleFullscreen() {
   }
 }
 
-document.addEventListener('fullscreenchange', () => {
-  const on = !!document.fullscreenElement;
+function applyFullscreen(on) {
   const btn = $('#btn-full');
   btn.innerHTML = icon(on ? 'collapse' : 'expand');
   btn.title = on ? 'Выйти из полного экрана' : 'Во весь экран';
   document.body.classList.toggle('fullscreen', on);
   wakeControls();
-});
+}
+
+document.addEventListener('fullscreenchange', () => applyFullscreen(!!document.fullscreenElement));
 
 /**
  * В полном экране панель воспроизведения и переключатели прячутся, пока мышь
@@ -644,13 +780,9 @@ function renderViews() {
   const chips = [];
 
   for (const key of state.screens.keys()) {
+    if (viewKind(key) === 'cam' || hidden.has(key)) continue;   // камеры на своей полосе
     const peer = state.peers.get(viewPeer(key));
-    chips.push({
-      id: key,
-      icon: viewKind(key) === 'cam' ? 'camera' : 'screen',
-      label: peer?.name ?? 'Участник',
-      color: peer?.color,
-    });
+    chips.push({ id: key, icon: 'screen', label: peer?.name ?? 'Участник', color: peer?.color });
   }
 
   host.hidden = chips.length < 2;
@@ -886,12 +1018,43 @@ async function openMoonlight(id, host) {
 
 // Вид потока приходит подписью от отправителя: по составу дорожек экран и
 // камеру не различить.
+// Выключенные для себя трансляции: ключ вида `peer:kind`. Просьба уходит
+// владельцу, и он снимает дорожку именно с нашего соединения — экономится не
+// только процессор, но и канал.
+const hidden = new Set();
+
+mesh.on('message', ({ id, msg }) => {
+  if (msg?.ns === 'pause') mesh.pauseFor(id, msg.kind, !!msg.on);
+});
+
+/** Показывать этот поток или нет. Решение личное и другим зрителям не видно. */
+function setHidden(key, on) {
+  if (on) hidden.add(key);
+  else hidden.delete(key);
+  // Просьба идёт владельцу потока. Свой прячем только локально: соединения с
+  // самим собой нет, да и захват всё равно продолжается ради остальных.
+  if (viewPeer(key) !== state.self?.id) {
+    mesh.send(viewPeer(key), { ns: 'pause', kind: viewKind(key), on });
+  }
+
+  if (on && state.view === key) state.view = firstScreen();
+  // Вернули демонстрацию, а сцена пуста — показываем её, иначе выглядит так,
+  // будто включение не сработало.
+  if (!on && !state.view && viewKind(key) === 'screen') state.view = key;
+  renderViews();
+  renderCams();
+  renderStage();
+  renderPeers();
+}
+
 mesh.on('stream', ({ id, stream, kind }) => {
   if (kind === 'mic') {
     voice.attach(id, stream);
     return;
   }
-  addScreen(viewKey(id, kind), stream);
+  const key = viewKey(id, kind);
+  addScreen(key, stream);
+  if (hidden.has(key)) mesh.send(id, { ns: 'pause', kind, on: true });
 });
 
 /** Ключ трансляции одинаков у владельца и у зрителей — на нём сходятся курсоры. */
@@ -905,18 +1068,84 @@ function addScreen(key, stream) {
   // Поток может смениться (перезапустили демонстрацию) — обновим плеер на месте.
   if (state.view === key && state.player instanceof StreamPlayer) {
     state.player.setStream(stream);
-  } else if (!state.view) {
+  } else if (!state.view && viewKind(key) === 'screen') {
     state.view = key;          // смотреть всё равно нечего — покажем сразу
   }
   renderViews();
+  renderCams();
   renderStage();
 }
 
 function removeScreen(key) {
   if (!state.screens.delete(key)) return;
-  if (state.view === key) state.view = state.screens.keys().next().value ?? null;
+  if (state.view === key) state.view = firstScreen();
   renderViews();
+  renderCams();
   renderStage();
+}
+
+/** Первая доступная демонстрация экрана — камеры сцену не занимают. */
+function firstScreen() {
+  return [...state.screens.keys()].find((k) => viewKind(k) === 'screen' && !hidden.has(k)) ?? null;
+}
+
+// Плитки камер переживают перерисовку: пересоздать <video> значит заново
+// запустить декодирование и моргнуть картинкой на ровном месте.
+const camTiles = new Map();   // ключ трансляции -> плитка
+
+/**
+ * Камеры видны всегда и одновременно — независимо от того, чей экран на сцене.
+ * Свою в полосу не берём: собственное лицо и так знакомо, а лишний декодер на
+ * своей же машине не бесплатен.
+ */
+function renderCams() {
+  const host = $('#cams');
+  const live = [...state.screens.keys()].filter(
+    (k) => viewKind(k) === 'cam' && !hidden.has(k)
+  );
+
+  for (const [key, tile] of camTiles) {
+    if (live.includes(key)) continue;
+    tile.remove();
+    camTiles.delete(key);
+  }
+
+  for (const key of live) {
+    let tile = camTiles.get(key);
+    if (!tile) {
+      tile = document.createElement('div');
+      tile.className = 'cam-tile';
+      const video = document.createElement('video');
+      video.autoplay = true;
+      video.playsInline = true;
+      video.muted = true;      // звук камеры не захватывается, он идёт голосом
+      video.title = 'Открыть во весь экран';
+      video.onclick = () => showVideo(state.screens.get(key));
+
+      const off = document.createElement('button');
+      off.className = 'tile-off';
+      off.type = 'button';
+      off.title = 'Убрать у себя';
+      off.innerHTML = icon('close', { size: 12 });
+      off.onclick = () => setHidden(key, true);
+
+      tile.append(video, document.createElement('span'), off);
+      host.appendChild(tile);
+      camTiles.set(key, tile);
+    }
+    const video = tile.querySelector('video');
+    const stream = state.screens.get(key);
+    if (video.srcObject !== stream) {
+      video.srcObject = stream;
+      video.play().catch(() => {});
+    }
+    const mine = viewPeer(key) === state.self?.id;
+    tile.classList.toggle('mine', mine);
+    tile.querySelector('span').textContent = mine
+      ? 'Вы'
+      : (state.peers.get(viewPeer(key))?.name ?? 'Участник');
+  }
+  host.hidden = !live.length;
 }
 
 // ---------------------------------------------------------------- голос
@@ -991,6 +1220,8 @@ function wireRoom() {
 
   ui('#btn-full').onclick = toggleFullscreen;
 
+  ui('#btn-get-app').onclick = () =>
+    openExternal('https://github.com/ExRyuske/YeruVerse/releases/latest');
   ui('#btn-invite').onclick = invite;
   ui('#btn-leave').onclick = leaveRoom;
   ui('#chat-form').onsubmit = (e) => {
@@ -1055,11 +1286,17 @@ const SHARES = {
   cam: {
     button: '#btn-camera',
     presence: 'camera',
-    capture: () =>
-      navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, frameRate: { ideal: 30 }, facingMode: 'user' },
+    capture: () => {
+      const id = settings.get('camDevice');
+      return navigator.mediaDevices.getUserMedia({
+        // Выбранная камера — жёстким требованием: подставить вместо неё другую
+        // здесь хуже, чем честно отказать. Не выбрана — берём фронтальную.
+        video: id
+          ? { deviceId: { exact: id }, width: { ideal: 1280 }, frameRate: { ideal: 30 } }
+          : { width: { ideal: 1280 }, frameRate: { ideal: 30 }, facingMode: 'user' },
         audio: false,          // звук идёт голосовым каналом, дублировать незачем
-      }),
+      });
+    },
     missing: 'Камера недоступна: нужен https',
   },
 };
@@ -1224,15 +1461,25 @@ function renderPeers() {
       off.title = 'Не слышит остальных: звук выключен';
       li.appendChild(off);
     }
-    for (const [on, name, title] of [
-      [p.screen, 'screen', 'Транслирует экран'],
-      [p.camera, 'camera', 'Транслирует камеру'],
+    // Значок трансляции — заодно выключатель: чужую можно перестать получать
+    // вовсе, чтобы не тратить ни канал, ни процессор.
+    for (const [on, name, kind] of [
+      [p.screen, 'screen', 'screen'],
+      [p.camera, 'camera', 'cam'],
     ]) {
       if (!on) continue;
-      const tag = document.createElement('span');
-      tag.className = 'live-mark';
+      const key = viewKey(p.id, kind);
+      const off = hidden.has(key);
+      const mine = p.id === state.self?.id;
+      const tag = document.createElement('button');
+      tag.className = 'live-mark' + (off ? ' off' : '');
       tag.innerHTML = icon(name, { size: 14 });
-      tag.title = title;
+      tag.title = off
+        ? 'Выключено у вас — вернуть'
+        : mine
+          ? 'Убрать у себя из виду (остальные продолжат видеть)'
+          : 'Не получать эту трансляцию';
+      tag.onclick = () => setHidden(key, !off);
       li.appendChild(tag);
     }
 
@@ -1258,6 +1505,7 @@ function renderPeers() {
     list.appendChild(li);
   }
   $('#peer-count').textContent = state.peers.size;
+  renderCams();          // на плитках подписаны ники — они могли смениться
   applySpeaking();
 }
 

@@ -1,7 +1,7 @@
 # Короткие команды для типовых задач. Всё то же самое можно набрать руками —
 # см. README, здесь просто собраны рабочие сочетания флагов.
 
-.PHONY: help server web app app-debug android android-all android-prepare sign-apk icons icons-ui updater-key updater-pubkey docker docker-run deploy check clean
+.PHONY: help server lan web app app-debug android android-all android-prepare sign-apk icons icons-ui updater-key updater-pubkey docker docker-run deploy check clean
 
 APP_DIR := desktop/src-tauri
 ANDROID_HOME ?= $(or $(ANDROID_SDK_ROOT),$(HOME)/Library/Android/sdk)
@@ -16,6 +16,7 @@ APK := $(CURDIR)/yeruverse.apk
 
 help:
 	@echo "make server      — собрать и запустить сервер (веб-версия на :8080)"
+	@echo "make lan         — сервер для локальной сети: https на :8443, без интернета"
 	@echo "make app         — собрать установщик под текущую систему (.dmg/.msi/.AppImage)"
 	@echo "make app-debug   — запустить приложение без упаковки"
 	@echo "make android     — собрать и подписать APK под arm64 (нужны ANDROID_HOME и NDK_HOME)"
@@ -30,14 +31,17 @@ help:
 server:
 	cargo run --release
 
+# Комната для локальной сети: https со своим сертификатом, никакого интернета.
+lan:
+	LAN=1 cargo run --release
+
 web: server
 
 # Установщик под ту систему, на которой запущено: кросс-компиляции у Tauri нет.
 app: tauri-cli $(UPDATER_KEY)
-	cd $(APP_DIR) \
-	  && TAURI_SIGNING_PRIVATE_KEY="$$(cat $(UPDATER_KEY))" \
-	     TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(UPDATER_KEY_PASS)" \
-	     cargo tauri build
+	TAURI_SIGNING_PRIVATE_KEY="$$(cat $(UPDATER_KEY))" \
+	TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(UPDATER_KEY_PASS)" \
+	  scripts/build_app.sh
 	@echo "Готовые файлы: $(APP_DIR)/target/release/bundle/"
 
 app-debug:
@@ -63,15 +67,8 @@ android-prepare: tauri-cli $(KEYSTORE)
 
 # Выравниваем и подписываем свежайший из собранных пакетов.
 sign-apk:
-	@set -e; \
-	tools="$$(ls -d "$(ANDROID_HOME)"/build-tools/* 2>/dev/null | tail -1)"; \
-	if [ -z "$$tools" ]; then \
-	  echo "Не нашли build-tools в $(ANDROID_HOME) — задайте ANDROID_HOME"; exit 1; \
-	fi; \
-	raw="$$(ls -t $(APP_DIR)/gen/android/app/build/outputs/apk/*/release/*-unsigned.apk | head -1)"; \
-	"$$tools/zipalign" -f -p 4 "$$raw" "$(APK)"; \
-	"$$tools/apksigner" sign --ks "$(KEYSTORE)" --ks-pass "pass:$(KEY_PASS)" "$(APK)"; \
-	echo "APK: $(APK)"
+	@ANDROID_HOME="$(ANDROID_HOME)" KEYSTORE="$(KEYSTORE)" KEYSTORE_PASS="$(KEY_PASS)" \
+	  scripts/sign_apk.sh "$(APK)"
 
 $(KEYSTORE):
 	@mkdir -p "$(dir $@)"

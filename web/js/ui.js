@@ -50,11 +50,24 @@ export function clearStaleFlag() {
   try { sessionStorage.removeItem(RECOVERED); } catch {}
 }
 
+/**
+ * Куда вешать то, что должно быть поверх всего.
+ *
+ * В полноэкранном режиме браузер рисует только поддерево занявшего его
+ * элемента: узел, добавленный к body, существует, но не виден. Поэтому во
+ * весь экран поверх видео открывается только то, что живёт внутри него.
+ */
+export function overlayHost() {
+  return document.fullscreenElement ?? document.body;
+}
+
 let toastTimer;
 
 /** Подсказка внизу экрана. Длинным советам нужно больше времени на чтение. */
 export function toast(text, ms = 3500) {
   const el = $('#toast');
+  // Тот же случай: из body подсказку в полном экране не видно.
+  if (el.parentElement !== overlayHost()) overlayHost().appendChild(el);
   el.innerHTML = '';
   el.textContent = text;
   el.hidden = false;
@@ -89,6 +102,69 @@ function showCopyFallback(label, text) {
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (el.hidden = true), 15000);
+}
+
+/**
+ * Картинка во весь экран.
+ *
+ * Своё окно, а не `window.open`: тот в приложении открывает системный браузер, а
+ * на телефоне — новую вкладку, из которой ещё надо возвращаться. Закрывается
+ * щелчком или Escape.
+ */
+export function showImage(src, name = '') {
+  const box = document.createElement('div');
+  box.className = 'lightbox';
+
+  const img = document.createElement('img');
+  img.src = src;
+  img.alt = name;
+
+  const close = () => {
+    box.remove();
+    document.removeEventListener('keydown', onKey, true);
+  };
+  const onKey = (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();      // иначе Escape уйдёт дальше и закроет что-то ещё
+    close();
+  };
+
+  box.onclick = close;
+  document.addEventListener('keydown', onKey, true);
+  box.append(img);
+  overlayHost().appendChild(box);
+}
+
+/** Живой поток во весь экран. Закрывается щелчком или Escape, как и картинка. */
+export function showVideo(stream) {
+  if (!stream) return;
+  const box = document.createElement('div');
+  box.className = 'lightbox';
+
+  const video = document.createElement('video');
+  video.autoplay = true;
+  video.playsInline = true;
+  video.muted = true;        // звук уже идёт своим путём, второй раз не нужен
+  video.srcObject = stream;
+
+  const close = () => {
+    video.srcObject = null;  // иначе декодер продолжит работать в оторванном узле
+    box.remove();
+    document.removeEventListener('keydown', onKey, true);
+  };
+  const onKey = (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    close();
+  };
+
+  box.onclick = close;
+  document.addEventListener('keydown', onKey, true);
+  box.append(video);
+  overlayHost().appendChild(box);
+  video.play().catch(() => {});
 }
 
 export function fmtSize(b) {

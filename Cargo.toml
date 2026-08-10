@@ -14,6 +14,9 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 
 # Сборка релиза: один модуль кодогенерации и LTO дают меньший и более быстрый
 # бинарник; abort вместо раскрутки стека убирает таблицы размотки.

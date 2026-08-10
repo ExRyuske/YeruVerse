@@ -24,6 +24,7 @@ allow = [
   "input_key",
   "input_release",
   "open_url",
+  "set_fullscreen",
   "update_check",
   "update_install",
   "moonlight",

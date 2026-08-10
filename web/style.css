@@ -117,6 +117,37 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
   display: flex; align-items: center; justify-content: center;
 }
 .stage video, .stage iframe { width: 100%; height: 100%; display: block; border: 0; background: #000; }
+/* Камеры видны всегда, независимо от того, чей экран на сцене: разговор в
+   лицо — не то, что стоит прятать за переключателем. */
+.cams {
+  position: absolute; right: 8px; bottom: 8px; z-index: 6;
+  display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;
+  max-width: calc(100% - 16px); pointer-events: none;
+}
+.cam-tile {
+  position: relative; width: 160px; border-radius: 10px; overflow: hidden;
+  background: #000; box-shadow: 0 4px 16px rgba(0, 0, 0, .5);
+}
+.cam-tile { pointer-events: auto; }
+.cam-tile.mine { outline: 1px solid var(--accent); outline-offset: -1px; }
+.cam-tile video {
+  display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; cursor: zoom-in;
+}
+/* Крестик появляется под курсором: постоянный он спорил бы с подписью. */
+.tile-off {
+  position: absolute; top: 4px; right: 4px; width: 20px; height: 20px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0; border: none; border-radius: 6px; color: #fff;
+  background: rgba(0, 0, 0, .55); opacity: 0; transition: opacity .15s;
+}
+.cam-tile:hover .tile-off, .tile-off:focus-visible { opacity: 1; }
+.cam-tile span {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 7px;
+  font-size: 12px; background: linear-gradient(transparent, rgba(0, 0, 0, .75));
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+@media (max-width: 860px) { .cam-tile { width: 108px; } }
+
 .stage-empty { text-align: center; padding: 20px; }
 .stage-empty p { margin: 4px 0; }
 /* Карточка Sunshine: кнопка и адрес, к которому идёт Moonlight. */
@@ -125,16 +156,52 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 
 /* От ряда управления остался только полный экран: паузу и перемотку показывает
    сам плеер, и синхронизация слушает именно его кнопки. */
-.controls { display: flex; justify-content: flex-end; }
+/* Кнопка полного экрана — в противоположном углу от остальных: она относится
+   к самому окну сцены, а не к тому, что в нём показывают. */
+.src-row #btn-full { margin-left: auto; }
+
+/* Кнопка и её настройки — одна фигура: выбирать микрофон логично там же, где
+   его включают, а не в отдельном окне. */
+.with-pick { display: inline-flex; }
+.with-pick > button:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.caret {
+  width: 20px; padding: 0; flex: none;
+  border-left: none; border-top-left-radius: 0; border-bottom-left-radius: 0;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238b93a1' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: center; background-size: 9px;
+}
+.caret.open { border-color: var(--accent); }
+
+/* Раскрывается вверх: ряд стоит у нижнего края, вниз ей некуда. */
+.sources { position: relative; }
+.pop {
+  position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 12;
+  min-width: 260px; max-width: min(340px, 92vw);
+  display: flex; flex-direction: column; gap: 10px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
+}
+.pop .field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
+.pop p { margin: 0; }
 
 .sources { display: flex; flex-direction: column; gap: 8px; }
 .src-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .src-row #in-url { flex: 1; min-width: 180px; }
 
 .sidebar {
+  position: relative;
   width: 300px; flex: none; border-left: 1px solid var(--border);
   display: flex; flex-direction: column; min-height: 0;
 }
+/* Полоска по краю панели: тянут за неё, подсвечивается под курсором —
+   постоянная линия была бы лишним швом в интерфейсе. */
+.grip {
+  position: absolute; z-index: 6; background: transparent; transition: background .15s;
+  top: 0; bottom: 0; left: -3px; width: 7px; cursor: col-resize;
+}
+.grip:hover, .grip.dragging { background: var(--accent); }
+body.resizing { cursor: col-resize; user-select: none; }
 .peers { padding: 12px; border-bottom: 1px solid var(--border); max-height: 40%; overflow: auto; }
 .peers h3 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; color: var(--muted); letter-spacing: .04em; }
 .peers ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
@@ -153,6 +220,12 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
    трансляция — не «выключено», у неё обычный приглушённый цвет. */
 .peers li .off-mark { color: #ff6b6b; }
 .peers li .live-mark { color: var(--muted); }
+/* Значок трансляции — ещё и выключатель, поэтому ведёт себя как кнопка. */
+.peers li button.live-mark {
+  padding: 0; background: none; border: none; line-height: 1; cursor: pointer;
+}
+.peers li button.live-mark:hover { color: var(--accent); }
+.peers li .live-mark.off { color: #ff6b6b; }
 
 /* Громкость участника прямо в строке с ником. */
 .pv-mini { display: flex; align-items: center; gap: 4px; margin-left: auto; }
@@ -190,12 +263,12 @@ button:has(> .ico) { display: inline-flex; align-items: center; }
 .views button > .ico + span { margin-left: 6px; }
 /* Выключенный микрофон или звук — это не «неактивная кнопка», а состояние, о
    котором нужно помнить: красим тем же красным, что и выход из комнаты. */
-button.icon.off {
+button.off {
   color: #ff6b6b;
   border-color: color-mix(in srgb, #ff6b6b 55%, transparent);
   background: color-mix(in srgb, #ff6b6b 16%, var(--panel));
 }
-button.icon.off:hover:not(:disabled) { border-color: #ff6b6b; }
+button.off:hover:not(:disabled) { border-color: #ff6b6b; }
 button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
 /* Перечёркивание для выключенного микрофона и заглушённого звука. */
 
@@ -228,9 +301,15 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
 .chat-log > * { max-width: 100%; }
 .chat-log .who { color: var(--accent); font-weight: 600; margin-right: 5px; }
 .chat-log .sys { color: var(--muted); font-size: 13px; font-style: italic; }
-.chat-form { display: flex; gap: 6px; padding: 10px; border-top: 1px solid var(--border); padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+/* Поле и кнопки — один ряд одинаковых по высоте элементов: разнокалиберные
+   выглядели как случайно составленные. */
+.chat-form {
+  display: flex; align-items: stretch; gap: 6px; padding: 10px;
+  border-top: 1px solid var(--border);
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+}
 .chat-form input { flex: 1; min-width: 0; }
-.chat-form .icon { width: 38px; height: 38px; }
+.chat-form .icon { width: auto; height: auto; aspect-ratio: 1; padding: 0; }
 
 /* Вложение в чате: имя, размер и кнопка со прогрессом загрузки. */
 .attach {
@@ -254,7 +333,16 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
 .chat-log .shot {
   display: block; margin-top: 6px; max-width: 100%; max-height: 240px;
   border-radius: 10px; border: 1px solid var(--border); object-fit: contain;
+  cursor: zoom-in;
 }
+
+/* Картинка во весь экран — поверх всего, включая окно настроек. */
+.lightbox {
+  position: fixed; inset: 0; z-index: 40; cursor: zoom-out;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+  background: rgba(0, 0, 0, .88);
+}
+.lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
 .attach .meta { min-width: 0; flex: 1; }
 .attach .name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attach .sub { color: var(--muted); font-size: 12px; }
@@ -332,21 +420,26 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
 
 /* Полный экран: сцена занимает всё, лишнее убирается. */
 body.fullscreen .stage-wrap { padding: 0; gap: 0; background: #000; }
-body.fullscreen .sources { display: none; }
 body.fullscreen .stage { border-radius: 0; }
-/* Кнопка полного экрана уезжает в угол, а не растягивается полосой по низу:
-   полоса перекрывала нижнюю часть кадра и съедала клики. */
-body.fullscreen .controls {
-  position: absolute; top: 10px; right: 10px; z-index: 8;
+/* В полном экране всё управление уходит вниз, к краю кадра: сверху оно
+   закрывало бы то, на что смотрят, а внизу его ищут по привычке. */
+body.fullscreen .sources {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 8;
+  padding: 10px 14px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, .8));
   transition: opacity .25s;
 }
 body.fullscreen .views {
-  position: absolute; top: 10px; left: 10px; z-index: 8; transition: opacity .25s;
+  position: absolute; left: 0; right: 0; bottom: 58px; z-index: 8;
+  padding: 0 14px; transition: opacity .25s;
 }
+/* Камеры в полном экране поднимаются над рядом кнопок, чтобы не спорить с ним
+   за нижний угол. */
+body.fullscreen .cams { bottom: 96px; }
 /* Мышь стоит — панели гаснут: наведение на неподвижный курсор не заканчивается
    никогда, и они закрывали бы кадр всё время. Сам курсор при этом не прячем:
    пропавшая мышь читается как «всё зависло». */
-body.fullscreen.idle .controls,
+body.fullscreen.idle .sources,
 body.fullscreen.idle .views { opacity: 0; pointer-events: none; }
 
 @media (max-width: 860px) {
@@ -355,6 +448,9 @@ body.fullscreen.idle .views { opacity: 0; pointer-events: none; }
     width: auto; border-left: none; border-top: 1px solid var(--border);
     height: 40dvh; min-height: 180px; flex: none;
   }
+  /* В колонке панель тянут за верхний край, а не за боковой. */
+  .grip { top: -3px; left: 0; right: 0; width: auto; height: 7px; cursor: row-resize; }
+  body.resizing { cursor: row-resize; }
   .stage-wrap { flex: 1 1 auto; min-height: 0; }
   /* Сцена держит пропорции кадра, а не растягивается на всю высоту. */
   .stage { aspect-ratio: 16 / 9; flex: 0 1 auto; }
@@ -367,9 +463,9 @@ body.fullscreen.idle .views { opacity: 0; pointer-events: none; }
   /* Крупные цели для пальца и поля во всю ширину. */
   button, input, select { padding: 11px 14px; font-size: 15px; }
   .src-row { gap: 6px; }
-  .src-row > button { flex: 1 1 45%; }
-  .src-row #in-url { flex: 1 1 100%; }
-  .controls #btn-playpause { min-width: 60px; }
+  /* Подписи растягиваются, кнопки-иконки остаются квадратными. */
+  .src-row > button { flex: 1 1 30%; }
+  .src-row > button.icon { flex: 0 0 auto; }
 
   /* Ряд трансляций не переносится, а прокручивается вбок. */
   .views { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }

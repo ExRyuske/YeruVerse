@@ -36,9 +36,12 @@ env:
   RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
-  server:
-    name: сервер + образ
+  docker:
+    name: docker
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write        # образ уезжает в реестр самого GitHub
     steps:
       - uses: actions/checkout@v7
         with:
@@ -54,15 +57,38 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
 
       - uses: docker/setup-buildx-action@v4
+
+      # В реестр пускаем только с ветки и по тегу: в PR (тем более из форка)
+      # токен на запись не выдаётся, да и публиковать там нечего.
+      - uses: docker/login-action@v4
+        if: github.event_name == 'push'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # `latest` только с ветки по умолчанию, тег версии — с тега.
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
       - uses: docker/build-push-action@v7
         with:
           context: .
-          push: false
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   desktop:
-    name: приложение (${{ matrix.os }})
+    name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -71,51 +97,21 @@ jobs:
         # раннер macOS и так на Apple Silicon. Универсальный пакет компилировал
         # всё дважды — вдвое дольше ради машин, которых Apple не продаёт с 2020
         # года; Intel-маки остаются на ручной сборке.
-        os: [macos-latest, windows-latest]
+        include:
+          - { os: macos-latest, name: macOS }
+          - { os: windows-latest, name: Windows }
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.BUILD_REF }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: desktop/src-tauri
-
-      # Готовый бинарник вместо `cargo install`: тот собирал CLI из исходников
-      # по несколько минут в каждой задаче.
-      - uses: cargo-bins/cargo-binstall@main
-      - run: cargo binstall -y tauri-cli@^2
+      - uses: ./.github/actions/tauri
 
       - name: сборка установщика
-        working-directory: desktop/src-tauri
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          set -e
-          # Ключ подписи есть не всегда: в форках секреты недоступны. Без него
-          # собираем без пакетов обновления — иначе Tauri останавливает сборку,
-          # ведь публичный ключ в конфигурации есть, а приватного нет.
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            echo "::warning::нет TAURI_SIGNING_PRIVATE_KEY — собираем без пакетов обновления"
-            cargo tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
-            exit 0
-          fi
-
-          # Ключ — одна строка base64. Перенос строки или пробел, попавшие при
-          # копировании, ломают разбор с невразумительным «Missing comment in
-          # secret key», поэтому чистим сами и проверяем заранее.
-          TAURI_SIGNING_PRIVATE_KEY="$(printf %s "$TAURI_SIGNING_PRIVATE_KEY" | tr -d '[:space:]')"
-          export TAURI_SIGNING_PRIVATE_KEY
-          case "$TAURI_SIGNING_PRIVATE_KEY" in
-            dW50cnVzdGVkIGNvbW1lbnQ6*) ;;
-            *)
-              echo "::error::TAURI_SIGNING_PRIVATE_KEY не похож на ключ. Нужно всё содержимое файла ~/.yeruverse/updater.key целиком — одна длинная строка base64, начинается с dW50cnVzdGVkIGNvbW1lbnQ6. Не путайте с updater.key.pub и не вставляйте расшифрованный текст ключа."
-              exit 1
-              ;;
-          esac
-          cargo tauri build
+        run: scripts/build_app.sh
 
       # Установщики — людям, архивы с подписями — обновлятелю.
       - uses: actions/upload-artifact@v7
@@ -131,7 +127,7 @@ jobs:
           if-no-files-found: warn
 
   android:
-    name: приложение (Android)
+    name: Android
     runs-on: ubuntu-latest
     # Секреты — на уровне задачи: в условии шага контекст `secrets` недоступен,
     # а `env` доступен, и по нему шаг подписи понимает, есть ли чем подписывать.
@@ -161,15 +157,9 @@ jobs:
 
       # Только arm64: все живые телефоны на нём, а Rust собирается под каждую
       # архитектуру заново — на остальных трёх ушло бы вчетверо больше времени.
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/tauri
         with:
           targets: aarch64-linux-android
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: desktop/src-tauri
-
-      - uses: cargo-bins/cargo-binstall@main
-      - run: cargo binstall -y tauri-cli@^2
 
       - name: подготовка проекта
         run: |
@@ -184,14 +174,14 @@ jobs:
       # Ключ лежит в секретах: base64 от вашего ~/.yeruverse/android.jks.
       - name: подпись APK
         if: env.ANDROID_KEYSTORE != ''
+        env:
+          KEYSTORE: /tmp/android.jks
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
         run: |
           set -e
-          echo "$ANDROID_KEYSTORE" | base64 -d > /tmp/android.jks
-          tools="$(ls -d "$ANDROID_HOME"/build-tools/* | tail -1)"
-          raw="$(ls desktop/src-tauri/gen/android/app/build/outputs/apk/*/release/*-unsigned.apk | head -1)"
-          "$tools/zipalign" -f -p 4 "$raw" yeruverse.apk
-          "$tools/apksigner" sign --ks /tmp/android.jks --ks-pass "pass:$ANDROID_KEYSTORE_PASS" yeruverse.apk
-          rm -f /tmp/android.jks
+          echo "$ANDROID_KEYSTORE" | base64 -d > "$KEYSTORE"
+          scripts/sign_apk.sh yeruverse.apk
+          rm -f "$KEYSTORE"
 
       - uses: actions/upload-artifact@v7
         with:

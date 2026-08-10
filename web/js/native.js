@@ -56,6 +56,9 @@ export const native = {
 
   /** Прозрачное окно с курсорами поверх всех приложений. */
   setOverlay(enabled) { return this.invoke('overlay', { enabled }); },
+
+  /** Полный экран окном приложения: в Android-вебвью только так и работает. */
+  setFullscreen(on) { return this.invoke('set_fullscreen', { on }); },
   /** Событие в окно оверлея: позиция курсора или щелчок. */
   cursor(payload) {
     return window.__TAURI__?.event?.emit('cursor', payload) ?? Promise.resolve();

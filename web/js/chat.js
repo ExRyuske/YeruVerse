@@ -2,7 +2,7 @@
 // и карточка файла — сами байты качаются роем напрямую между участниками.
 
 import { icon } from './icons.js';
-import { $, toast, fmtSize, fmtClock } from './ui.js';
+import { $, toast, fmtSize, fmtClock, showImage } from './ui.js';
 
 /** Модуль не знает про глобальное состояние — всё нужное передаётся сюда. */
 let ctx = null;
@@ -161,6 +161,9 @@ function addAttachment(peer, meta, mine, at) {
     img.className = 'shot';
     img.alt = meta.name;
     img.loading = 'lazy';
+    img.title = 'Открыть во весь экран';
+    // Пока файл не собран, открывать нечего — src появится в finishAttach.
+    img.onclick = () => img.src && showImage(img.src, meta.name);
     row.appendChild(img);
 
     const own = ctx.swarm.get(meta.id)?.blobUrl;

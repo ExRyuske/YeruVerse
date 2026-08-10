@@ -29,6 +29,8 @@ const DEFAULTS = {
   color: '',          // пустой — выберется случайный при первом запуске
   voiceVolume: 1,
   micDevice: '',
+  camDevice: '',
+  sidebarSize: 0,     // ширина боковой панели в пикселях; 0 — по умолчанию
   outputDevice: '',   // куда выводить звук; пусто = системное по умолчанию
   denoise: 'rnnoise', // подавление шума: rnnoise | browser | off
   quality: 'medium',  // выбранный профиль; custom — свои значения ниже

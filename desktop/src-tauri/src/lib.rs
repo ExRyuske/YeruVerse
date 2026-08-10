@@ -349,6 +349,16 @@ async fn update_install() -> Result<(), String> {
     Err("обновление недоступно на этой платформе".into())
 }
 
+/// Полный экран средствами окна, а не страницы.
+///
+/// В Android-вебвью Fullscreen API для обычных элементов не работает — там нет
+/// обработчика, который показывал бы их поверх приложения. Зато само окно
+/// развернуть можно, и с точки зрения человека это ровно то же самое.
+#[tauri::command]
+fn set_fullscreen(window: WebviewWindow, on: bool) -> Result<(), String> {
+    window.set_fullscreen(on).map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------- указатели
 
 /// Прозрачное окно поверх всех приложений, в котором рисуются курсоры зрителей.
@@ -447,6 +457,7 @@ pub fn run() {
             sunshine_pin,
             open_url,
             moonlight,
+            set_fullscreen,
             update_check,
             update_install,
             input::set_control,

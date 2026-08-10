@@ -4,6 +4,7 @@
 pub mod hub;
 pub mod protocol;
 pub mod server;
+pub mod tls;
 pub mod turn;
 
 pub use server::{start, Config, Handle};

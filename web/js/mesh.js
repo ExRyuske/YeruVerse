@@ -3,19 +3,23 @@
 
 // Собираем конфиг в момент создания соединения: TURN приезжает из /config.json
 // уже после загрузки модуля, а у Cloudflare учётки ещё и короткоживущие.
+// В локальной сети внешние STUN недоступны и не нужны: соединение складывается
+// по адресам самой сети, а запросы наружу только тянут время на таймаутах.
 const iceConfig = () => ({
-  iceServers: [
-    // Несколько STUN от разных операторов: один может быть недоступен из сети
-    // конкретного зрителя, и тогда сработает следующий.
-    {
-      urls: [
-        'stun:stun.cloudflare.com:3478',
-        'stun:stun.l.google.com:19302',
-        'stun:stun1.l.google.com:19302',
+  iceServers: window.YERUVERSE_LAN
+    ? [...(window.YERUVERSE_ICE ?? [])]
+    : [
+        // Несколько STUN от разных операторов: один может быть недоступен из
+        // сети конкретного зрителя, и тогда сработает следующий.
+        {
+          urls: [
+            'stun:stun.cloudflare.com:3478',
+            'stun:stun.l.google.com:19302',
+            'stun:stun1.l.google.com:19302',
+          ],
+        },
+        ...(window.YERUVERSE_ICE ?? []),
       ],
-    },
-    ...(window.YERUVERSE_ICE ?? []),
-  ],
   bundlePolicy: 'max-bundle',
 });
 
@@ -124,6 +128,24 @@ class Conn {
     for (const sender of senders) this.mesh.tune(sender, kind);
   }
 
+  /**
+   * Приостановить или вернуть отправку этому собеседнику.
+   *
+   * `replaceTrack(null)` снимает дорожку с одного соединения, не трогая
+   * остальные и не требуя пересогласования: тот, кто выключил чужую камеру у
+   * себя, перестаёт получать её байты, а другие зрители ничего не замечают.
+   */
+  async pauseStream(kind, paused) {
+    const senders = this.senders.get(kind);
+    const stream = this.mesh.local.get(kind);
+    if (!senders?.length) return;
+    const track = paused ? null : (stream?.getVideoTracks()[0] ?? null);
+    for (const sender of senders) {
+      if (sender.track?.kind === 'audio') continue;    // голос глушат иначе
+      try { await sender.replaceTrack(track); } catch {}
+    }
+  }
+
   removeStream(kind) {
     for (const s of this.senders.get(kind) ?? []) {
       try { this.pc.removeTrack(s); } catch {}
@@ -218,6 +240,11 @@ export class Mesh extends EventTarget {
       this.conns.set(id, c);
     }
     return c;
+  }
+
+  /** Не присылать этому участнику наш поток — он выключил его у себя. */
+  pauseFor(id, kind, paused) {
+    this.conns.get(id)?.pauseStream(kind, paused);
   }
 
   /** Новый участник комнаты: соединение поднимает только инициатор. */

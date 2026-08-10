@@ -12,6 +12,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use axum_server::tls_rustls::RustlsConfig;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -31,14 +32,24 @@ pub struct Config {
     pub port: u16,
     pub web_dir: Option<PathBuf>,
     pub turn: Provider,
+    /// Комната для локальной сети: свой сертификат и никаких внешних сервисов.
+    pub lan: bool,
 }
 
 impl Config {
     pub fn from_env() -> Self {
+        let lan = matches!(std::env::var("LAN").as_deref(), Ok("1") | Ok("true"));
         Config {
-            port: std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080),
+            // В локальной сети порт по умолчанию другой: 8443 сразу говорит,
+            // что это https, и не спорит с обычным сервером на 8080.
+            port: std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(if lan {
+                8443
+            } else {
+                8080
+            }),
             web_dir: Some(std::env::var("WEB_DIR").unwrap_or_else(|_| "web".into()).into()),
             turn: Provider::from_env(),
+            lan,
         }
     }
 }
@@ -52,6 +63,8 @@ pub struct Handle {
 struct AppState {
     hub: Hub,
     turn: Turn,
+    /// В локальной сети наружу не ходим вовсе — ни за TURN, ни за STUN.
+    lan: bool,
 }
 
 /// Поднимает сервер и сразу возвращает управление.
@@ -61,8 +74,12 @@ pub async fn start(config: Config) -> std::io::Result<Handle> {
 
     let web_dir = config.web_dir.clone();
     let turn = Turn::new(config.turn.clone());
-    info!("TURN: {}", turn.describe());
-    let state = Arc::new(AppState { hub: Hub::new(), turn });
+    if config.lan {
+        info!("TURN: не нужен в локальной сети");
+    } else {
+        info!("TURN: {}", turn.describe());
+    }
+    let state = Arc::new(AppState { hub: Hub::new(), turn, lan: config.lan });
 
     let mut app = Router::new()
         .route("/ws", get(ws_handler))
@@ -84,9 +101,40 @@ pub async fn start(config: Config) -> std::io::Result<Handle> {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    info!("YeruVerse слушает http://{addr}");
+    if !config.lan {
+        info!("YeruVerse слушает http://{addr}");
+        let task = tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, app).await {
+                tracing::error!("сервер остановлен: {e}");
+            }
+        });
+        return Ok(Handle { addr, task });
+    }
+
+    // Локальная сеть: свой сертификат. Без https браузер не отдаст ни микрофон,
+    // ни захват экрана — для него `http://192.168.…` небезопасен, исключение
+    // сделано только для localhost.
+    //
+    // Криптопровайдер выбираем явно: в дереве зависимостей их может оказаться
+    // несколько, и тогда rustls отказывается гадать — падая уже на первом
+    // соединении, а не при запуске.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let pair = crate::tls::ensure(&crate::tls::state_dir())?;
+    let tls = RustlsConfig::from_pem(pair.cert_pem.into_bytes(), pair.key_pem.into_bytes())
+        .await
+        .map_err(std::io::Error::other)?;
+
+    let port = addr.port();
+    let shown = crate::tls::local_ip().map(|ip| ip.to_string()).unwrap_or_else(|| "…".into());
+    info!("YeruVerse в локальной сети: https://{shown}:{port}");
+    info!("браузер один раз предупредит о самоподписанном сертификате — это ожидаемо");
+
+    // axum-server поднимает свой слушатель, поэтому наш освобождаем.
+    drop(listener);
     let task = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
+        let bound = SocketAddr::from(([0, 0, 0, 0], port));
+        if let Err(e) = axum_server::bind_rustls(bound, tls).serve(app.into_make_service()).await {
             tracing::error!("сервер остановлен: {e}");
         }
     });
@@ -98,6 +146,12 @@ pub async fn start(config: Config) -> std::io::Result<Handle> {
 /// учётки короткоживущие, поэтому страница берёт их при загрузке, а не из
 /// зашитого конфига.
 async fn config_json(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    // В локальной сети внешние STUN и TURN не нужны и недоступны: соединение
+    // складывается по адресам самой сети, а запросы наружу только тянули бы
+    // время на таймаутах.
+    if state.lan {
+        return Json(json!({ "iceServers": [], "turn": false, "lan": true }));
+    }
     let ice = state.turn.ice_servers().await;
     let has_turn = ice
         .as_array()

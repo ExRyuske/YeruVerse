@@ -53,16 +53,19 @@ function wireSettings() {
   denoise.onchange = () => ctx.settings.set('denoise', denoise.value);
   bindCheck('#set-agc', 'autoGainControl');
 
-  ui('#set-mic').onchange = () => ctx.settings.set('micDevice', ui('#set-mic').value);
+  ui('#pick-mic').onchange = () => ctx.settings.set('micDevice', ui('#pick-mic').value);
+  ui('#pick-cam').onchange = () => ctx.settings.set('camDevice', ui('#pick-cam').value);
   wireStream();
 
-  ui('#set-output').onchange = () => {
-    ctx.settings.set('outputDevice', ui('#set-output').value);
+  ui('#pick-output').onchange = () => {
+    ctx.settings.set('outputDevice', ui('#pick-output').value);
   };
 
-  // Полоска уровня помогает понять, ловит ли микрофон голос и не задран ли порог.
+  // Полоска уровня помогает понять, ловит ли микрофон голос. Считаем её только
+  // когда она на виду: раз в 150 мс, и всё это ради одной строки текста.
+  const micPop = ui('#pop-mic');
   setInterval(() => {
-    if (modal.hidden) return;
+    if (micPop.hidden) return;
     ui('#mic-level').textContent = ctx.voice.enabled
       ? levelBar(ctx.voice.level) + (ctx.voice.muted ? '  (заглушён)' : '')
       : 'микрофон выключен';
@@ -255,7 +258,7 @@ async function renderDiagnostics() {
     `задержка:  ${Number.isFinite(ctx.net.rtt) ? Math.round(ctx.net.rtt) + ' мс' : '—'}`,
     `TURN:      ${ctx.config().turn ? 'есть' : 'НЕТ — часть зрителей не соединится'}`,
     `Sunshine:  ${ctx.sunshine() || 'не запущен'}`,
-    `рассинхрон: ${Math.abs(ctx.sync.drift) > 0.3 ? ctx.sync.drift.toFixed(1) + ' с' : 'нет'}`,
+    `выключено: ${ctx.hidden().join(', ') || 'ничего'}`,
     `микрофон:  ${ctx.voice.enabled ? (ctx.voice.muted ? 'включён, заглушён' : 'в эфире') : 'выключен'}`,
     `слышим:    ${ctx.voice.remotes.size} из ${Math.max(0, ctx.peers().size - 1)}`,
     '',
@@ -283,7 +286,7 @@ function levelBar(level) {
 
 /** Список устройств вывода. Переключение поддерживают не все движки. */
 async function refreshOutputs() {
-  const select = $('#set-output');
+  const select = $('#pick-output');
   const note = $('#output-note');
 
   if (!ctx.voice.canChooseOutput) {
@@ -293,6 +296,7 @@ async function refreshOutputs() {
       'Этот браузер не умеет выбирать устройство вывода — поменяйте его в системе.';
     return;
   }
+  note.textContent = '';
 
   const list = await ctx.voice.outputs().catch(() => []);
   select.disabled = false;
@@ -313,9 +317,38 @@ async function refreshOutputs() {
   select.value = ctx.settings.get('outputDevice');
 }
 
+/**
+ * Список камер. Названия появляются только после первого доступа к камере —
+ * до него система показывает голые идентификаторы, и «фронтальная» от «тыльной»
+ * не отличить. Поэтому до первого включения подписываем их сами.
+ */
+async function refreshCameras() {
+  const select = $('#pick-cam');
+  const list = await navigator.mediaDevices
+    ?.enumerateDevices()
+    .then((all) => all.filter((d) => d.kind === 'videoinput'))
+    .catch(() => []) ?? [];
+
+  select.innerHTML = '';
+  const auto = document.createElement('option');
+  auto.value = '';
+  auto.textContent = list.length ? 'По умолчанию' : 'Камер не найдено';
+  select.appendChild(auto);
+  select.disabled = !list.length;
+
+  list.forEach((d, i) => {
+    const o = document.createElement('option');
+    o.value = d.deviceId;
+    o.textContent = d.label || `Камера ${i + 1}`;
+    select.appendChild(o);
+  });
+  select.value = ctx.settings.get('camDevice');
+}
+
 export async function refreshDevices() {
   await refreshOutputs();
-  const select = $('#set-mic');
+  await refreshCameras();
+  const select = $('#pick-mic');
   const list = await ctx.voice.devices().catch(() => []);
   select.innerHTML = '';
 

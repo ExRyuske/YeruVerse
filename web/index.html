@@ -15,7 +15,6 @@
 
 <section id="screen-join" class="screen">
   <div class="join-card">
-    <h1>YeruVerse</h1>
     <label>Как вас зовут
       <input id="in-name" type="text" placeholder="Имя" maxlength="32" autocomplete="off">
     </label>
@@ -57,8 +56,8 @@
               title="Нажмите, чтобы показать и скопировать код комнаты">—</button>
     </div>
     <div class="grow"></div>
-    <button id="btn-mute" class="icon" data-icon="mic" title="Свой микрофон"></button>
-    <button id="btn-deafen" class="icon" data-icon="speaker" title="Заглушить остальных"></button>
+    <button id="btn-get-app" class="icon" data-icon="download" hidden
+            title="Скачать приложение"></button>
     <button id="btn-settings" class="icon" data-icon="gear" title="Настройки"></button>
     <button id="btn-invite" class="icon" data-icon="link" title="Скопировать ссылку-приглашение"></button>
     <button id="btn-leave" class="icon danger" data-icon="exit" title="Выйти из комнаты"></button>
@@ -66,27 +65,88 @@
 
   <main class="layout">
     <div class="stage-wrap">
-      <div id="views" class="views" hidden></div>
       <div id="stage" class="stage">
         <div id="stage-empty" class="stage-empty">
           <p class="muted">Пока смотреть нечего</p>
         </div>
+        <div id="cams" class="cams" hidden></div>
       </div>
 
-      <div class="controls">
-        <button id="btn-full" class="icon" data-icon="expand" title="Во весь экран"></button>
-      </div>
+      <div id="views" class="views" hidden></div>
 
       <div class="sources">
         <div class="src-row">
-          <button id="btn-screen" data-icon="screen"><span>Экран</span></button>
-          <button id="btn-camera" data-icon="camera"><span>Камера</span></button>
-          <button id="btn-pointer" class="ghost active" data-icon="pointer" title="Показывать курсоры участников поверх видео"><span>Указки</span></button>
+          <span class="with-pick">
+            <button id="btn-mute" class="icon" data-icon="mic" title="Свой микрофон"></button>
+            <button class="caret" type="button" data-pop="pop-mic" title="Микрофон и шумоподавление"></button>
+          </span>
+          <span class="with-pick">
+            <button id="btn-deafen" class="icon" data-icon="speaker" title="Заглушить остальных"></button>
+            <button class="caret" type="button" data-pop="pop-sound" title="Вывод и громкость"></button>
+          </span>
+          <span class="with-pick">
+            <button id="btn-screen" class="icon" data-icon="screen" title="Демонстрация экрана"></button>
+            <button class="caret" type="button" data-pop="pop-screen" title="Качество трансляции"></button>
+          </span>
+          <span class="with-pick">
+            <button id="btn-camera" class="icon" data-icon="camera" title="Камера"></button>
+            <button class="caret" type="button" data-pop="pop-cam" title="Выбор камеры"></button>
+          </span>
+          <button id="btn-pointer" class="icon ghost active" data-icon="pointer" title="Показывать курсоры участников поверх видео"></button>
+          <button id="btn-full" class="icon" data-icon="expand" title="Во весь экран"></button>
+        </div>
+
+        <div id="pop-mic" class="pop" hidden>
+          <label class="field">Микрофон
+            <select id="pick-mic"></select>
+          </label>
+          <label class="field">Подавление шума
+            <select id="set-denoise">
+              <option value="rnnoise">Нейросетью — RNNoise</option>
+              <option value="browser">Средствами браузера</option>
+              <option value="off">Без подавления</option>
+            </select>
+          </label>
+          <label class="check"><input id="set-ec" type="checkbox"> Эхоподавление</label>
+          <label class="check"><input id="set-agc" type="checkbox"> Автоматическое усиление</label>
+          <p class="muted small">Уровень: <span id="mic-level" class="mono">—</span></p>
+        </div>
+
+        <div id="pop-sound" class="pop" hidden>
+          <label class="field">Вывод звука
+            <select id="pick-output"></select>
+          </label>
+          <label class="field">Громкость голоса <output id="out-voice-vol"></output>
+            <input id="set-voice-vol" type="range" min="0" max="200">
+          </label>
+          <p class="muted small" id="output-note"></p>
+        </div>
+
+        <div id="pop-screen" class="pop" hidden>
+          <label class="field">Профиль качества
+            <select id="set-quality"></select>
+          </label>
+          <label class="field">Разрешение
+            <select id="set-height"></select>
+          </label>
+          <label class="field">Кадров в секунду <output id="out-fps"></output>
+            <input id="set-fps" type="range" min="10" max="120" step="5">
+          </label>
+          <label class="field">Битрейт <output id="out-bitrate"></output>
+            <input id="set-bitrate" type="range" min="1" max="25" step="0.5">
+          </label>
+        </div>
+
+        <div id="pop-cam" class="pop" hidden>
+          <label class="field">Камера
+            <select id="pick-cam"></select>
+          </label>
         </div>
       </div>
     </div>
 
     <aside id="sidebar" class="sidebar">
+      <div id="sidebar-grip" class="grip" title="Потяните, чтобы изменить размер"></div>
       <div class="peers">
         <h3>В комнате <span id="peer-count" class="badge">0</span></h3>
         <ul id="peer-list"></ul>
@@ -119,51 +179,6 @@
         </label>
         <label class="field">Цвет ника
           <div id="set-palette" class="palette"></div>
-        </label>
-      </section>
-
-      <section>
-        <h3>Звук</h3>
-        <label class="field">Громкость голоса <output id="out-voice-vol"></output>
-          <input id="set-voice-vol" type="range" min="0" max="200">
-        </label>
-      </section>
-
-      <section>
-        <h3>Звуковые устройства</h3>
-        <label class="field">Микрофон
-          <select id="set-mic"></select>
-        </label>
-        <label class="field">Вывод звука
-          <select id="set-output"></select>
-        </label>
-        <p class="muted small" id="output-note"></p>
-
-        <label class="field">Подавление шума
-          <select id="set-denoise">
-            <option value="rnnoise">Нейросетью — RNNoise</option>
-            <option value="browser">Средствами браузера</option>
-            <option value="off">Без подавления</option>
-          </select>
-        </label>
-        <label class="check"><input id="set-ec" type="checkbox"> Эхоподавление</label>
-        <label class="check"><input id="set-agc" type="checkbox"> Автоматическое усиление</label>
-        <p class="muted small">Уровень сигнала: <span id="mic-level" class="mono">—</span></p>
-      </section>
-
-      <section>
-        <h3>Трансляция</h3>
-        <label class="field">Профиль качества
-          <select id="set-quality"></select>
-        </label>
-        <label class="field">Разрешение
-          <select id="set-height"></select>
-        </label>
-        <label class="field">Кадров в секунду <output id="out-fps"></output>
-          <input id="set-fps" type="range" min="10" max="120" step="5">
-        </label>
-        <label class="field">Битрейт <output id="out-bitrate"></output>
-          <input id="set-bitrate" type="range" min="1" max="25" step="0.5">
         </label>
       </section>
 
