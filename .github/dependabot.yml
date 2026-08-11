@@ -12,7 +12,7 @@ updates:
     schedule:
       interval: weekly
     groups:
-      сервер:
+      server:
         patterns: ["*"]
     open-pull-requests-limit: 3
 
@@ -22,7 +22,7 @@ updates:
     schedule:
       interval: weekly
     groups:
-      оболочка:
+      shell:
         patterns: ["*"]
         exclude-patterns: ["tauri", "tauri-build", "tauri-plugin-*"]
       tauri:

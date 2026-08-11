@@ -557,15 +557,23 @@ body.fullscreen.idle .sources { opacity: 0; pointer-events: none; }
   #downloads { flex-direction: row; flex-wrap: wrap; }
   #downloads > h3, #downloads > p, #update-notice { flex-basis: 100%; }
   #downloads > button { flex: 1 1 30%; justify-content: center; }
-  .room-tile { flex: 0 0 auto; }
-  .room-open { max-width: 40vw; }
+  /* Узкие плитки — только у полосы в комнате, которая лежит строкой. На экране
+     входа панель во всю ширину, и там имя комнаты занимает эту ширину целиком:
+     обрезать его до 40% экрана было незачем. */
+  #rooms .room-tile { flex: 0 0 auto; }
+  #rooms .room-open { max-width: 40vw; }
   /* Пальцем «навести» нельзя — действия видно всегда. */
-  .room-act { opacity: 1; position: static; width: 26px; height: 26px; }
-  .room-tile:hover .room-open { padding-right: 10px; }
+  .room-act { opacity: 1; position: static; width: 32px; height: 32px; }
+  .room-tile:hover .room-act { background: none; }
+  /* Чату отдаём больше половины экрана.
+     Сцена на телефоне держит пропорции кадра — это примерно четверть высоты, —
+     и всё, что оставалось сверх 40%, уходило в чёрные поля вокруг видео. Читать
+     и писать при этом было негде: на переписку оставалось строк пять. */
   .sidebar {
     width: auto; border-left: none; border-top: 1px solid var(--border);
-    height: 40dvh; min-height: 180px; flex: none;
+    height: 55dvh; min-height: 240px; flex: none;
   }
+  .chat-log { font-size: 15px; }
   /* В колонке панель тянут за верхний край, а не за боковой. */
   .grip { top: -3px; left: 0; right: 0; width: auto; height: 7px; cursor: row-resize; }
   body.resizing { cursor: row-resize; }
@@ -597,6 +605,13 @@ body.fullscreen.idle .sources { opacity: 0; pointer-events: none; }
      правого края уезжали за границу. */
   .pop { left: 0; right: 0; min-width: 0; max-width: none; }
 
+  /* В полном экране на телефоне ряд кнопок в одну строку с переключателями
+     трансляций не помещается, и за краем экрана оказывалась последняя кнопка
+     ряда — выход из полного экрана. Отсюда перенос: переключатели строкой
+     выше, кнопки во всю ширину под ними. */
+  body.fullscreen .sources { flex-wrap: wrap; }
+  body.fullscreen .views { flex: 1 1 100%; order: -1; }
+  body.fullscreen .src-row { flex: 1 1 100%; justify-content: space-between; }
   /* Кнопки под пальцем выше, значит и полоса выше — камерам надо подняться. */
   body.fullscreen .cams { bottom: 76px; }
 

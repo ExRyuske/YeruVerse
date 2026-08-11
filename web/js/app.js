@@ -46,16 +46,24 @@ settings.on(({ key }) => key.startsWith('stream') && applyQuality());
 
 // Камеру меняют, когда она уже включена: перезапускаем захват и подменяем
 // дорожку — собеседники не видят ни разрыва, ни пересогласования.
+//
+// Старый захват отпускаем до нового, а не после. Система не отдаёт одно и то же
+// устройство дважды, и запрос поверх работающего падал с «занято другим
+// приложением» — на телефоне, где камера всего одна, это значило, что сменить
+// её нельзя вовсе.
 settings.on(async ({ key }) => {
   if (key !== 'camDevice' || !state.shares.has('cam')) return;
+  state.shares.get('cam').getTracks().forEach((t) => t.stop());
   try {
     const stream = await SHARES.cam.capture();
-    state.shares.get('cam').getTracks().forEach((t) => t.stop());
     state.shares.set('cam', stream);
     await mesh.replaceStream('cam', stream);
     addScreen(viewKey(state.self.id, 'cam'), stream);
   } catch (e) {
-    toast(`Камера не переключилась: ${micProblem(e)}`);
+    // Прежний поток уже мёртв, поэтому камеру честно выключаем: оставить
+    // остановленную дорожку значит показывать всем застывший кадр.
+    stopShare('cam');
+    toast(`Камера не включилась: ${deviceProblem(e)}`);
   }
 });
 applyQuality();
@@ -648,7 +656,7 @@ async function enableMic({ manual = false } = {}) {
     micDenied = false;
   } catch (e) {
     if (e?.name === 'NotAllowedError') micDenied = true;
-    toast(`Микрофон недоступен: ${micProblem(e)}`);
+    toast(`Микрофон недоступен: ${deviceProblem(e)}`);
   }
 }
 
@@ -1360,8 +1368,15 @@ function wireRoom() {
   setInterval(() => state.player?.resume(), 2000);
 }
 
-/** Разбираем отказ микрофона: причина почти всегда в контексте, а не в коде. */
-function micProblem(e) {
+/**
+ * Разбираем отказ в захвате: причина почти всегда в контексте, а не в коде.
+ *
+ * Про устройство говорим безлично — «устройство занято», а не «микрофон занят».
+ * Один и тот же разбор нужен и микрофону, и камере, а называть камеру
+ * микрофоном хуже, чем не называть никак: человек начинает искать поломку не
+ * там, где она есть.
+ */
+function deviceProblem(e) {
   if (!window.isSecureContext) {
     return `страница открыта по ${location.protocol.replace(':', '')} — нужен https`;
   }
@@ -1370,11 +1385,13 @@ function micProblem(e) {
   }
   switch (e?.name) {
     case 'NotAllowedError':
-      return 'доступ запрещён — разрешите микрофон для сайта в настройках браузера';
+      return 'доступ запрещён — разрешите его для сайта в настройках браузера';
     case 'NotFoundError':
-      return 'микрофон не найден';
+      return 'устройство не найдено';
     case 'NotReadableError':
-      return 'микрофон занят другим приложением';
+      return 'устройство занято другим приложением';
+    case 'OverconstrainedError':
+      return 'устройство не умеет то, что мы просим';
     default:
       return e?.message ?? String(e);
   }
@@ -1475,7 +1492,7 @@ async function toggleShare(kind) {
     if (kind === 'screen') watchFrames(stream);
     stream.getVideoTracks()[0].addEventListener('ended', () => stopShare(kind));
   } catch (e) {
-    if (e?.name !== 'NotAllowedError') toast(`${share.missing}: ${micProblem(e)}`);
+    if (e?.name !== 'NotAllowedError') toast(`${share.missing}: ${deviceProblem(e)}`);
   }
 }
 

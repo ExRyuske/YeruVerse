@@ -284,6 +284,27 @@ function levelBar(level) {
   return '▮'.repeat(n) + '▯'.repeat(12 - n);
 }
 
+/**
+ * Список устройств без повторов.
+ *
+ * Одно и то же устройство система показывает по нескольку раз: под собственным
+ * идентификатором и под псевдонимами `default` и `communications`. Отсюда и
+ * «Default — MacBook Air Speakers» рядом с «MacBook Air Speakers» — это одни и
+ * те же колонки. Псевдоним у нас уже есть свой, «Системное по умолчанию»,
+ * поэтому чужие только запутывают; остальные повторы отсеиваем по группе, в
+ * которую система сама сводит один физический прибор.
+ */
+function uniqueDevices(list) {
+  const seen = new Set();
+  return list.filter((d) => {
+    if (d.deviceId === 'default' || d.deviceId === 'communications') return false;
+    const key = d.groupId || d.label || d.deviceId;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 /** Список устройств вывода. Переключение поддерживают не все движки. */
 async function refreshOutputs() {
   const select = $('#pick-output');
@@ -301,23 +322,15 @@ async function refreshOutputs() {
   }
   note.textContent = '';
 
-  const list = await ctx.voice.outputs().catch(() => []);
+  const list = uniqueDevices(await ctx.voice.outputs().catch(() => []));
   select.disabled = false;
   select.innerHTML = '';
+  select.append(new Option('Системное по умолчанию', ''));
+  // Метки появляются только после того, как дали доступ к микрофону.
+  list.forEach((d, i) => select.append(new Option(d.label || `Устройство ${i + 1}`, d.deviceId)));
 
-  const auto = document.createElement('option');
-  auto.value = '';
-  auto.textContent = 'Системное по умолчанию';
-  select.appendChild(auto);
-
-  list.forEach((d, i) => {
-    const o = document.createElement('option');
-    o.value = d.deviceId;
-    // Метки появляются только после того, как дали доступ к микрофону.
-    o.textContent = d.label || `Устройство ${i + 1}`;
-    select.appendChild(o);
-  });
   select.value = ctx.settings.get('outputDevice');
+  if (!select.value) ctx.settings.set('outputDevice', '');
 }
 
 /**
@@ -330,17 +343,27 @@ async function refreshOutputs() {
  */
 async function refreshCameras() {
   const select = $('#pick-cam');
-  const list = await navigator.mediaDevices
-    ?.enumerateDevices()
-    .then((all) => all.filter((d) => d.kind === 'videoinput'))
-    .catch(() => []) ?? [];
+  const list = uniqueDevices(
+    (await navigator.mediaDevices?.enumerateDevices().catch(() => []) ?? [])
+      .filter((d) => d.kind === 'videoinput')
+  );
 
   select.innerHTML = '';
   select.append(new Option('По умолчанию', ''));
+  // Сторона — отдельной группой: это не устройства, а пожелание, и рядом с
+  // настоящими именами они читались бы как ещё две камеры.
   if (matchMedia('(pointer: coarse)').matches) {
-    select.append(new Option('Фронтальная', 'user'), new Option('Тыльная', 'environment'));
+    const side = document.createElement('optgroup');
+    side.label = 'Сторона';
+    side.append(new Option('Фронтальная', 'user'), new Option('Тыльная', 'environment'));
+    select.append(side);
   }
-  list.forEach((d, i) => select.append(new Option(d.label || `Камера ${i + 1}`, d.deviceId)));
+  if (list.length) {
+    const devices = document.createElement('optgroup');
+    devices.label = 'Устройства';
+    list.forEach((d, i) => devices.append(new Option(d.label || `Камера ${i + 1}`, d.deviceId)));
+    select.append(devices);
+  }
   select.disabled = select.options.length < 2;
 
   // Запомненной камеры может уже не быть — тогда список молча съезжает на
@@ -353,22 +376,14 @@ export async function refreshDevices() {
   await refreshOutputs();
   await refreshCameras();
   const select = $('#pick-mic');
-  const list = await ctx.voice.devices().catch(() => []);
+  const list = uniqueDevices(await ctx.voice.devices().catch(() => []));
   select.innerHTML = '';
+  select.append(new Option('По умолчанию', ''));
+  // Метки появляются только после того, как пользователь дал доступ.
+  list.forEach((d, i) => select.append(new Option(d.label || `Микрофон ${i + 1}`, d.deviceId)));
 
-  const auto = document.createElement('option');
-  auto.value = '';
-  auto.textContent = 'По умолчанию';
-  select.appendChild(auto);
-
-  list.forEach((d, i) => {
-    const o = document.createElement('option');
-    o.value = d.deviceId;
-    // Метки появляются только после того, как пользователь дал доступ.
-    o.textContent = d.label || `Микрофон ${i + 1}`;
-    select.appendChild(o);
-  });
   select.value = ctx.settings.get('micDevice');
+  if (!select.value) ctx.settings.set('micDevice', '');
 }
 
 

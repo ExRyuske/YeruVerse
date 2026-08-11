@@ -1,4 +1,4 @@
-name: сборка
+name: CI
 
 # Один workflow на всё: проверка веток-предложений, выпуск версии, сборка под
 # все системы и публикация релиза.
@@ -10,7 +10,7 @@ name: сборка
 #
 # Push в `main` выпускает версию сам. Не выпускать конкретный push можно строкой
 # `[skip release]` в сообщении коммита; правки одной документации не выпускаются
-# и без неё. `minor` и `major` — Actions → сборка → Run workflow.
+# и без неё. `minor` и `major` — Actions → CI → Run workflow.
 on:
   push:
     branches: [main]
@@ -48,7 +48,7 @@ jobs:
   # Версия поднимается до сборки, а не после: приложение сообщает о себе ту, что
   # зашита в Cargo.toml при компиляции, и манифест обновления сверяется с ней.
   version:
-    name: версия и тег
+    name: version
     if: github.event_name != 'pull_request' && !contains(github.event.head_commit.message, '[skip release]')
     runs-on: ubuntu-latest
     outputs:
@@ -76,13 +76,13 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add Cargo.toml Cargo.lock desktop/src-tauri/Cargo.toml desktop/src-tauri/Cargo.lock
           git commit -m "chore(release): $TAG"
-          git tag --annotate "$TAG" --message "Релиз $TAG"
+          git tag --annotate "$TAG" --message "Release $TAG"
           git push origin HEAD:main "$TAG"
 
   # Проверки сервера и образ для развёртывания. Отдельной релизной сборки нет:
   # её делает сам образ, а clippy проверяет то же дерево быстрее.
   docker:
-    name: сервер
+    name: server
     needs: version
     if: ${{ !cancelled() && needs.version.result != 'failure' }}
     runs-on: ubuntu-latest
@@ -204,7 +204,7 @@ jobs:
       # `gen/android` в репозиторий не входит: он генерируется и тут же
       # правится скриптом — права, Java 17, отступ под системные панели.
       - if: matrix.android
-        name: сборка APK
+        name: build APK
         run: |
           set -e
           sdkmanager --install "ndk;27.0.12077973"
@@ -220,7 +220,7 @@ jobs:
       # Неподписанный APK телефон не поставит — «пакет повреждён» это про него.
       # Ключ лежит в секретах: base64 от вашего ~/.yeruverse/android.jks.
       - if: matrix.android && env.ANDROID_KEYSTORE != ''
-        name: подпись APK
+        name: sign APK
         env:
           KEYSTORE: /tmp/android.jks
           KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
@@ -231,7 +231,7 @@ jobs:
           rm -f "$KEYSTORE"
 
       - if: ${{ !matrix.android }}
-        name: сборка установщика
+        name: build installer
         shell: bash
         run: scripts/build_app.sh
 
@@ -245,7 +245,7 @@ jobs:
           if-no-files-found: warn
 
   release:
-    name: релиз
+    name: release
     needs: [version, docker, app]
     if: needs.version.outputs.tag != ''
     runs-on: ubuntu-latest
