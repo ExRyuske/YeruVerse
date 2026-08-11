@@ -9,6 +9,16 @@ import { $, ui } from './ui.js';
 let ctx = null;
 
 /**
+ * Есть ли чем нажимать сочетания.
+ *
+ * На телефоне назначать их не на чем: экранная клавиатура вылезает только в
+ * поле ввода и никаких Ctrl+Alt не отдаёт. Спрашиваем не «телефон ли это», а
+ * есть ли точный указатель: планшет с клавиатурой и мышью сочетания получит,
+ * а телефон с одним касанием — нет.
+ */
+const hasKeyboard = () => matchMedia('(any-pointer: fine)').matches;
+
+/**
  * @param {object} deps  settings, voice, mesh, net, native, hotkeys, toast,
  *                       peers() — карта участников, config() — ответ сервера,
  *                       sunshine(), sunshineHint(), enableMic()
@@ -23,10 +33,14 @@ function wireSettings() {
   const modal = ui('#settings');
   const close = () => (modal.hidden = true);
 
+  // Раздел сочетаний на телефоне не показываем вовсе: настройка, которую там
+  // нечем ни задать, ни применить, — это просто мусор в окне.
+  ui('#hotkeys-section').hidden = !hasKeyboard();
+
   ui('#btn-settings').onclick = () => {
     modal.hidden = false;
     refreshDevices();
-    renderHotkeys();
+    if (hasKeyboard()) renderHotkeys();
   };
   ui('#btn-settings-close').onclick = () => {
     ctx.hotkeys.cancelRecording();
@@ -298,11 +312,35 @@ function uniqueDevices(list) {
   const seen = new Set();
   return list.filter((d) => {
     if (d.deviceId === 'default' || d.deviceId === 'communications') return false;
-    const key = d.groupId || d.label || d.deviceId;
+    // Имена придумывает система, а не мы. Безымянное устройство — это то, к
+    // которому ещё не выдан доступ: подписать его «Микрофон 2» значит предложить
+    // выбрать вслепую, а после первого включения система назовёт его сама.
+    if (!d.label) return false;
+    const key = d.groupId || d.label;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+}
+
+/**
+ * Заполняет список устройств.
+ *
+ * Первый пункт — не устройство, а его отсутствие: «как в системе». Всё
+ * остальное подписано ровно так, как называет их сама система.
+ *
+ * Сохранённый выбор сбрасываем, только если список непустой и выбранного в нём
+ * нет: пустой список означает не «устройство исчезло», а «доступ ещё не выдан»,
+ * и стирать по нему чужую настройку нельзя.
+ */
+function fillDevices(select, list, auto, key) {
+  select.innerHTML = '';
+  select.append(new Option(auto, ''));
+  for (const d of list) select.append(new Option(d.label, d.deviceId));
+  select.disabled = false;
+
+  select.value = ctx.settings.get(key);
+  if (!select.value && list.length) ctx.settings.set(key, '');
 }
 
 /** Список устройств вывода. Переключение поддерживают не все движки. */
@@ -312,7 +350,7 @@ async function refreshOutputs() {
 
   if (!ctx.voice.canChooseOutput) {
     select.disabled = true;
-    select.innerHTML = '<option>Куда и вся система</option>';
+    select.innerHTML = '<option>Как в системе</option>';
     // На движке WebKit — это Safari и окно приложения на macOS — выбирать
     // устройство нечем: звук идёт туда же, куда системный. Меняется он в
     // «Звук» системных настроек, и это не поломка, а единственный путь.
@@ -323,67 +361,27 @@ async function refreshOutputs() {
   note.textContent = '';
 
   const list = uniqueDevices(await ctx.voice.outputs().catch(() => []));
-  select.disabled = false;
-  select.innerHTML = '';
-  select.append(new Option('Системное по умолчанию', ''));
-  // Метки появляются только после того, как дали доступ к микрофону.
-  list.forEach((d, i) => select.append(new Option(d.label || `Устройство ${i + 1}`, d.deviceId)));
-
-  select.value = ctx.settings.get('outputDevice');
-  if (!select.value) ctx.settings.set('outputDevice', '');
+  fillDevices(select, list, 'Системное по умолчанию', 'outputDevice');
 }
 
 /**
- * Список камер.
- *
- * Названия появляются только после первого доступа к камере, а на телефоне до
- * него не видно и самого списка: одна безымянная запись, выбрать которую значит
- * попросить камеру по идентификатору, которого ещё нет, и получить отказ.
- * Поэтому там выбирают не устройство, а сторону — она известна всегда.
+ * Список камер. Имена система выдаёт только после первого доступа к камере, так
+ * что до него в списке одна строка — «как в системе». После включения камеры
+ * список наполняется сам: `refreshDevices` вызывается сразу после захвата.
  */
 async function refreshCameras() {
-  const select = $('#pick-cam');
   const list = uniqueDevices(
     (await navigator.mediaDevices?.enumerateDevices().catch(() => []) ?? [])
       .filter((d) => d.kind === 'videoinput')
   );
-
-  select.innerHTML = '';
-  select.append(new Option('По умолчанию', ''));
-  // Сторона — отдельной группой: это не устройства, а пожелание, и рядом с
-  // настоящими именами они читались бы как ещё две камеры.
-  if (matchMedia('(pointer: coarse)').matches) {
-    const side = document.createElement('optgroup');
-    side.label = 'Сторона';
-    side.append(new Option('Фронтальная', 'user'), new Option('Тыльная', 'environment'));
-    select.append(side);
-  }
-  if (list.length) {
-    const devices = document.createElement('optgroup');
-    devices.label = 'Устройства';
-    list.forEach((d, i) => devices.append(new Option(d.label || `Камера ${i + 1}`, d.deviceId)));
-    select.append(devices);
-  }
-  select.disabled = select.options.length < 2;
-
-  // Запомненной камеры может уже не быть — тогда список молча съезжает на
-  // «По умолчанию», и настройка должна съехать вместе с ним.
-  select.value = ctx.settings.get('camDevice');
-  if (!select.value) ctx.settings.set('camDevice', '');
+  fillDevices($('#pick-cam'), list, 'По умолчанию', 'camDevice');
 }
 
 export async function refreshDevices() {
   await refreshOutputs();
   await refreshCameras();
-  const select = $('#pick-mic');
   const list = uniqueDevices(await ctx.voice.devices().catch(() => []));
-  select.innerHTML = '';
-  select.append(new Option('По умолчанию', ''));
-  // Метки появляются только после того, как пользователь дал доступ.
-  list.forEach((d, i) => select.append(new Option(d.label || `Микрофон ${i + 1}`, d.deviceId)));
-
-  select.value = ctx.settings.get('micDevice');
-  if (!select.value) ctx.settings.set('micDevice', '');
+  fillDevices($('#pick-mic'), list, 'По умолчанию', 'micDevice');
 }
 
 

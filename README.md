@@ -109,8 +109,5 @@ desktop/src-tauri/   Tauri shell: input, hotkeys, overlay, Sunshine bridge
 scripts/             icons, Android project patches, build, signing, release
 ```
 
-Why anything is done the way it is lives in the comments next to the code —
-those are in Russian, as is the interface.
-
 Licences: **RNNoise** — BSD-3-Clause, **Font Awesome Free** — CC BY 4.0, both
 under `web/vendor/`.
