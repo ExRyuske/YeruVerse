@@ -1,6 +1,6 @@
 [package]
 name = "yeruverse-desktop"
-version = "0.1.2"
+version = "0.1.3"
 description = "Screens, voices and keyboards shared straight between people"
 repository = "https://github.com/ExRyuske/YeruVerse"
 edition = "2021"
