@@ -573,7 +573,6 @@ body.fullscreen.idle .sources { opacity: 0; pointer-events: none; }
     width: auto; border-left: none; border-top: 1px solid var(--border);
     height: 55dvh; min-height: 240px; flex: none;
   }
-  .chat-log { font-size: 15px; }
   /* В колонке панель тянут за верхний край, а не за боковой. */
   .grip { top: -3px; left: 0; right: 0; width: auto; height: 7px; cursor: row-resize; }
   body.resizing { cursor: row-resize; }
