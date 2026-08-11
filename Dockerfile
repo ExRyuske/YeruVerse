@@ -27,7 +27,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && cargo build --release --bin yeruverse \
  && cp target/release/yeruverse /usr/local/bin/yeruverse
 
-FROM alpine:3.20
+FROM alpine:3.24
 # Системный пользователь без пароля и шелла; wget для HEALTHCHECK уже в busybox.
 RUN adduser -S -H -u 10001 yeruverse
 WORKDIR /app
