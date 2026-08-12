@@ -1,6 +1,6 @@
 [package]
 name = "yeruverse"
-version = "0.1.4"
+version = "0.1.5"
 description = "Screens, voices and keyboards shared straight between people"
 repository = "https://github.com/ExRyuske/YeruVerse"
 edition = "2021"
