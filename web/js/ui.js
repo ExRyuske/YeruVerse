@@ -57,7 +57,7 @@ export function clearStaleFlag() {
  * элемента: узел, добавленный к body, существует, но не виден. Поэтому во
  * весь экран поверх видео открывается только то, что живёт внутри него.
  */
-export function overlayHost() {
+function overlayHost() {
   return document.fullscreenElement ?? document.body;
 }
 
@@ -143,10 +143,10 @@ export function showImage(src, name = '') {
  * `host` для того и нужен. Тогда рядом остаётся и чат, и список участников —
  * увеличенное лицо собеседника не повод убирать со стола всё остальное.
  */
-export function showVideo(stream, host = null) {
+export function showVideo(stream, host = null, { mirror = false } = {}) {
   if (!stream) return;
   const box = document.createElement('div');
-  box.className = host ? 'lightbox inside' : 'lightbox';
+  box.className = `${host ? 'lightbox inside' : 'lightbox'}${mirror ? ' mirror' : ''}`;
 
   const video = document.createElement('video');
   video.autoplay = true;

@@ -12,9 +12,6 @@ page is not allowed to do: system-wide hotkeys, pointers drawn over every
 window, injecting a guest's input, and a bridge to Sunshine. The Android build
 keeps the room alive while you are off reading something else.
 
-> Early days. Do not hand a room code — or your computer — to people you do not
-> trust.
-
 A room has exactly one secret: its **code**, which is also its address. Until
 you know the code the room simply does not exist; there is no second password
 to add. The code lives in the URL fragment (`#code`), so it never reaches the
@@ -36,7 +33,9 @@ capture, virtual gamepad, millisecond latency.
 
 The owner decides who gets in, **one person at a time**: every participant has
 a padlock next to their name. While it is closed, they do not even learn the
-Sunshine address.
+Sunshine address. An open padlock is permission, not a handover — the viewer
+still has to take control with the button under the stage, and until they do
+their mouse is only a pointer.
 
 ## Running it
 

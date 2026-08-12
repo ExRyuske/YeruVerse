@@ -186,11 +186,6 @@ export class Voice extends EventTarget {
     this.emit('change', this.status());
   }
 
-  async toggle() {
-    if (this.enabled) this.disable();
-    else await this.enable();
-  }
-
   /** Заглушить свой микрофон, не разрывая соединение. */
   setMuted(muted) {
     this.muted = muted;

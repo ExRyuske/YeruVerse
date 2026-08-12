@@ -5,9 +5,9 @@ import { Voice } from './voice.js';
 import { Settings, PALETTE } from './settings.js';
 import { Pointers } from './pointers.js';
 import { icon } from './icons.js';
-import { Hotkeys, ACTIONS, label as hotkeyLabel } from './hotkeys.js';
+import { Hotkeys } from './hotkeys.js';
 import {
-  $, ui, toast, copy, fmtSize, clearStaleFlag, showVideo,
+  $, ui, toast, copy, clearStaleFlag, showVideo,
 } from './ui.js';
 import {
   initChat, clearChat, addChat, sysMsg, renderAttachProgress, finishAttach,
@@ -42,7 +42,45 @@ function applyQuality() {
   mesh.videoFramerate = q.fps;
   mesh.retune();
 }
-settings.on(({ key }) => key.startsWith('stream') && applyQuality());
+
+/**
+ * Новые настройки — на живую трансляцию, без перезапуска.
+ *
+ * Битрейт и частоту кадров задаёт кодировщик, и там они меняются на лету. А вот
+ * разрешение — свойство самого захвата: пока дорожка отдаёт 1080 строк, никакие
+ * настройки кодировщика не сделают из них 720. Поэтому разрешение просим у
+ * дорожки отдельно.
+ *
+ * Если дорожка меняться отказалась — а это умеют не все движки, — захват
+ * перезапускается целиком. Тогда система снова спросит, что показывать: обидно,
+ * но лучше, чем настройка, которая молча ничего не делает.
+ */
+let retuneTimer;
+function retuneCapture() {
+  // Ползунок шлёт событие на каждый пиксель, а applyConstraints — операция не
+  // из дешёвых: ждём, пока человек отпустит.
+  clearTimeout(retuneTimer);
+  retuneTimer = setTimeout(async () => {
+    const track = state.shares.get('screen')?.getVideoTracks()[0];
+    if (!track || track.readyState !== 'live') return;
+    const q = streamSettings();
+    try {
+      await track.applyConstraints({
+        height: { ideal: q.height },
+        frameRate: { ideal: q.fps, max: q.fps },
+      });
+    } catch {
+      restartScreen();
+    }
+  }, 400);
+}
+
+settings.on(({ key }) => {
+  if (!key.startsWith('stream')) return;
+  applyQuality();
+  // Битрейт живёт только в кодировщике, дорожку он не касается.
+  if (key !== 'streamBitrate') retuneCapture();
+});
 
 // Камеру меняют, когда она уже включена: перезапускаем захват и подменяем
 // дорожку — собеседники не видят ни разрыва, ни пересогласования.
@@ -66,6 +104,9 @@ settings.on(async ({ key }) => {
     toast(`Камера не включилась: ${deviceProblem(e)}`);
   }
 });
+// Зеркало — дело показа, а не захвата: перерисовать плитки достаточно.
+settings.on(({ key }) => key === 'mirrorCam' && renderCams());
+
 applyQuality();
 let pointers = null;   // создаётся после появления сцены в DOM
 
@@ -138,11 +179,17 @@ async function init() {
 
   control.on('change', () => {
     pointers.grabInput = control.controlling;
+    renderControl();
     renderPeers();
   });
   control.on('granted-to-me', ({ from, on }) => {
     const who = state.peers.get(from)?.name ?? 'Участник';
-    toast(on ? `${who} пустил вас за свой компьютер` : `${who} забрал управление`);
+    toast(
+      on
+        ? `${who} пустил вас за свой компьютер — нажмите кнопку с курсором, чтобы взять управление`
+        : `${who} забрал управление`,
+      on ? 8000 : 3500
+    );
   });
   control.on('error', ({ message }) => toast(`Управление: ${message}`));
 
@@ -329,8 +376,9 @@ function wireJoin() {
     openExternal('https://github.com/LizardByte/Sunshine/releases/latest');
   ui('#btn-get-moonlight').onclick = () => openExternal('https://moonlight-stream.org/');
 
-  // Обновления предлагаем на экране входа, а не посреди разговора.
-  ui('#btn-update-later').onclick = () => ($('#update-notice').hidden = true);
+  // Обновления предлагаем на экране входа, а не посреди разговора. Кнопки
+  // «позже» нет: предложение и так стоит сбоку и ничего не загораживает, а
+  // спрятать его можно, просто войдя в комнату.
   ui('#btn-update').onclick = async () => {
     toast('Скачиваем обновление…', 30000);
     try {
@@ -538,7 +586,7 @@ function renderRoomList(host) {
     // и обработчик обрывался бы на нём молча.
     const rename = document.createElement('button');
     rename.type = 'button';
-    rename.className = 'mini room-act';
+    rename.className = 'mark room-act';
     rename.title = 'Переименовать';
     rename.innerHTML = icon('pen', { size: 11 });
     rename.onclick = () => {
@@ -561,7 +609,7 @@ function renderRoomList(host) {
 
     const forget = document.createElement('button');
     forget.type = 'button';
-    forget.className = 'mini room-act';
+    forget.className = 'mark room-act';
     forget.title = 'Забыть комнату';
     forget.innerHTML = icon('close', { size: 11 });
     forget.onclick = () => {
@@ -589,6 +637,9 @@ function renderRoomList(host) {
 function leaveRoom() {
   for (const kind of [...state.shares.keys()]) stopShare(kind);
   control.revokeAll().catch(() => {});
+  // Взятое управление не должно переживать выход: иначе в следующей комнате
+  // первый же открытый замок сразу отдал бы чужой компьютер нашей мыши.
+  control.setTaking(false);
   voice.disable();
   for (const id of [...voice.remotes.keys()]) voice.detach(id);
   swarm.clear();
@@ -855,6 +906,7 @@ function renderStage() {
   pointers?.setContext(state.view);
   pointers?.setSharing(!!state.view);
   control.target = viewKind(state.view) === 'screen' ? viewPeer(state.view) : null;
+  renderControl();
 
   if (state.mounted === state.view) {
     applyStreamVolume();
@@ -936,7 +988,7 @@ function streamVolumeSlider() {
 
   const btn = document.createElement('button');
   btn.type = 'button';
-  btn.className = 'mini';
+  btn.className = 'mark';
 
   const slider = document.createElement('input');
   slider.type = 'range';
@@ -968,8 +1020,13 @@ function streamVolumeSlider() {
   return wrap;
 }
 
-// Готовое вложение чата: рой собрал файл целиком.
-// угодно, а подписки накапливаться не должны.
+// Ход загрузки вложения. Раньше на это событие никто не подписывался, и кнопка
+// молчала до самого конца: на большом файле это выглядело как «ничего не
+// происходит», хотя рой в этот момент качал вовсю.
+swarm.on('progress', ({ id, have, total }) =>
+  renderAttachProgress(id, Math.round((have / Math.max(1, total)) * 100))
+);
+// Рой собрал файл целиком — кнопка превращается в «Сохранить».
 swarm.on('ready', ({ id, url, meta }) => finishAttach(id, url, meta));
 
 // ---------------------------------------------------------------- Sunshine
@@ -1246,7 +1303,10 @@ function renderCams() {
       video.title = 'Развернуть на всё окно трансляции';
       // Разворачиваем в пределах сцены, а не на весь экран: камера — часть
       // разговора, и ради неё незачем убирать со стола всё остальное.
-      video.onclick = () => showVideo(state.screens.get(key), $('#stage'));
+      video.onclick = () =>
+        showVideo(state.screens.get(key), $('#stage'), {
+          mirror: tile.classList.contains('mirror'),
+        });
 
       // Выключателя на самой плитке нет: тот же переключатель уже стоит возле
       // ника в списке участников, и две кнопки на одно действие только путают.
@@ -1262,6 +1322,9 @@ function renderCams() {
     }
     const mine = viewPeer(key) === state.self?.id;
     tile.classList.toggle('mine', mine);
+    // Зеркалим только себя: у собеседника на плитке не ваше лицо, и переворот
+    // там означал бы зеркальные надписи на его фоне без всякой причины.
+    tile.classList.toggle('mirror', mine && settings.get('mirrorCam'));
     tile.querySelector('span').textContent = mine
       ? 'Вы'
       : (state.peers.get(viewPeer(key))?.name ?? 'Участник');
@@ -1285,6 +1348,13 @@ voice.on('change', ({ enabled, muted, deafened }) => {
   soundButton('#btn-mute', 'mic', !enabled || muted, 'Микрофон');
   soundButton('#btn-deafen', 'speaker', deafened, 'Звук');
   net.send({ t: 'presence', voice: enabled, muted, deaf: deafened });
+
+  // Своё состояние ставим в списке сразу. Сервер вернёт ровно это же, но
+  // круговым путём, и до ответа метка возле своего ника отставала бы от кнопки
+  // внизу — а при обрыве связи не появилась бы вовсе.
+  const me = state.peers.get(state.self?.id);
+  if (me) Object.assign(me, { voice: enabled, muted, deaf: deafened });
+  renderPeers();
 });
 
 voice.on('blocked', () => toast('Нажмите в любом месте страницы, чтобы включить звук'));
@@ -1292,8 +1362,6 @@ voice.on('blocked', () => toast('Нажмите в любом месте стр�
 // ---------------------------------------------------------------- управление
 
 voice.on('devices', () => refreshDevices());
-// Ползунки громкости живут в списке участников — там же, где ники.
-voice.on('change', () => renderPeers());
 
 
 function destroyPlayer() {
@@ -1322,20 +1390,20 @@ function wireRoom() {
     voice.enabled ? voice.setMuted(!voice.muted) : enableMic({ manual: true });
   ui('#btn-deafen').onclick = () => voice.setDeafened(!voice.deafened);
 
-  ui('#btn-pointer').onclick = () => {
-    const on = !pointers.enabled;
-    pointers.setEnabled(on);
-    ui('#btn-pointer').classList.toggle('active', on);
-
-    if (native.caps.overlay && state.shares.has('screen')) {
-      native.setOverlay(on).catch(() => {});
-      if (!on) native.clearCursors().catch(() => {});
+  ui('#btn-control').onclick = () => {
+    if (!control.canTake) {
+      return toast(
+        'Управлять можно только тем компьютером, хозяин которого вас пустил: ' +
+          'попросите его открыть замок возле вашего ника',
+        7000
+      );
     }
+    const on = !control.taking;
+    control.setTaking(on);
     toast(
       on
-        ? 'Курсоры участников видны' +
-            (state.shares.has('screen') && native.caps.overlay ? ' — и поверх других окон' : '')
-        : 'Курсоры скрыты'
+        ? 'Управление у вас: мышь и клавиатура уходят на чужой компьютер'
+        : 'Управление возвращено — ваша мышь снова просто указка'
     );
   };
 
@@ -1354,6 +1422,7 @@ function wireRoom() {
     }
     renderRooms();
   };
+  renderControl();
   ui('#btn-invite').onclick = invite;
   ui('#btn-leave').onclick = leaveRoom;
   ui('#chat-form').onsubmit = (e) => {
@@ -1365,6 +1434,24 @@ function wireRoom() {
 
   // Живой поток не должен оставаться на паузе, чем бы её ни вызвали.
   setInterval(() => state.player?.resume(), 2000);
+}
+
+/**
+ * Кнопка управления. Она о зрителе, а не о хозяине: замок открывает хозяин, а
+ * брать управление или оставить мышь указкой — решает тот, кто смотрит.
+ * Погашена, пока брать нечего: замок закрыт или на сцене не чужой экран.
+ */
+function renderControl() {
+  const btn = ui('#btn-control');
+  const can = control.canTake;
+  const on = can && control.taking;
+  btn.disabled = !can;
+  btn.classList.toggle('active', on);
+  btn.title = !can
+    ? 'Управление чужим компьютером — когда его хозяин откроет вам замок'
+    : on
+      ? 'Вы управляете чужим компьютером — вернуть управление'
+      : 'Взять управление чужим компьютером';
 }
 
 /**
@@ -1482,7 +1569,7 @@ async function toggleShare(kind) {
     if (kind === 'cam') refreshDevices();
 
     // Оверлей поднимаем вместе с трансляцией — и только если указка включена.
-    if (native.caps.overlay && pointers.enabled) native.setOverlay(true).catch(() => {});
+    if (native.caps.overlay) native.setOverlay(true).catch(() => {});
     if (kind === 'screen') watchFrames(stream);
     stream.getVideoTracks()[0].addEventListener('ended', () => stopShare(kind));
   } catch (e) {
@@ -1562,6 +1649,26 @@ function watchFrames(stream) {
   }, 2000);
 }
 
+/**
+ * Перезапуск демонстрации с новыми настройками — запасной путь для движков, где
+ * живой захват настройки менять не даёт. Система снова спросит, что показывать:
+ * без этого вопроса захват экрана не начинается нигде и никогда.
+ */
+async function restartScreen() {
+  if (!state.shares.has('screen')) return;
+  stopShare('screen');
+  // Про отказ toggleShare рассказывает сам, поэтому смотрим на итог, а не ловим
+  // исключение: захват мог не начаться и молча — например, если окно выбора
+  // закрыли.
+  await toggleShare('screen');
+  toast(
+    state.shares.has('screen')
+      ? 'Трансляция перезапущена с новыми настройками'
+      : 'Настройки применятся, когда включите трансляцию заново',
+    6000
+  );
+}
+
 function stopShare(kind) {
   const stream = state.shares.get(kind);
   if (!stream) return;
@@ -1589,33 +1696,26 @@ function renderPeers() {
 
   for (const p of state.peers.values()) {
     const li = document.createElement('li');
-    if (p.photo) {
-      const img = document.createElement('img');
-      img.src = p.photo;
-      li.appendChild(img);
-    }
     const name = document.createElement('span');
     name.textContent = p.name + (p.id === state.self?.id ? ' (вы)' : '');
     name.style.color = p.color || 'inherit';
     li.appendChild(name);
 
     // Значок только у молчащих: включённый микрофон — это норма, и рисовать
-    // его возле каждого ника значит показывать одно и то же по кругу. Свои
-    // микрофон и звук возле своего же ника не показываем вовсе: их состояние
-    // видно по кнопкам внизу, и там же оно меняется.
+    // его возле каждого ника значит показывать одно и то же по кругу. Своё
+    // состояние показываем наравне с чужими: список должен читаться как список,
+    // а не как «все, кроме меня», — и заодно видно, каким тебя видят остальные.
     const mine = p.id === state.self?.id;
-    if (!mine) {
-      for (const [show, glyph, title] of [
-        [!p.voice || p.muted, 'mic-off', p.voice ? 'Микрофон заглушён' : 'Микрофон выключен'],
-        [p.deaf, 'speaker-off', 'Не слышит остальных: звук выключен'],
-      ]) {
-        if (!show) continue;
-        const mark = document.createElement('span');
-        mark.className = 'mark off';
-        mark.innerHTML = icon(glyph, { size: 14 });
-        mark.title = title;
-        li.appendChild(mark);
-      }
+    for (const [show, glyph, title] of [
+      [!p.voice || p.muted, 'mic-off', p.voice ? 'Микрофон заглушён' : 'Микрофон выключен'],
+      [p.deaf, 'speaker-off', 'Звук выключен — участников не слышно'],
+    ]) {
+      if (!show) continue;
+      const mark = document.createElement('span');
+      mark.className = 'mark off';
+      mark.innerHTML = icon(glyph, { size: 14 });
+      mark.title = title;
+      li.appendChild(mark);
     }
     // Значок трансляции — заодно выключатель: чужую можно перестать получать
     // вовсе, чтобы не тратить ни канал, ни процессор.

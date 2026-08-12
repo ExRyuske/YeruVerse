@@ -13,7 +13,7 @@
 // доходит до графа обработки не всегда, а до <audio> доходит всегда.
 
 /** Потолок усиления: дальше не громче, а грязнее. */
-export const MAX_GAIN = 5;
+const MAX_GAIN = 5;
 
 let shared = null;
 
@@ -21,7 +21,7 @@ let shared = null;
  * Общий контекст. Создаётся лениво — до жеста пользователя он родился бы в
  * состоянии suspended, и уровни всегда были бы нулевыми.
  */
-export function audioCtx() {
+function audioCtx() {
   if (!shared) shared = new (window.AudioContext || window.webkitAudioContext)();
   if (shared.state === 'suspended') shared.resume().catch(() => {});
   return shared;

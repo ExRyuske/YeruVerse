@@ -1,10 +1,10 @@
 :root {
-  --bg: var(--tg-theme-bg-color, #0f1115);
-  --panel: var(--tg-theme-secondary-bg-color, #171a21);
-  --text: var(--tg-theme-text-color, #e8eaed);
-  --muted: var(--tg-theme-hint-color, #8b93a1);
-  --accent: var(--tg-theme-button-color, #5b8cff);
-  --accent-text: var(--tg-theme-button-text-color, #fff);
+  --bg: #0f1115;
+  --panel: #171a21;
+  --text: #e8eaed;
+  --muted: #8b93a1;
+  --accent: #5b8cff;
+  --accent-text: #fff;
   --border: color-mix(in srgb, var(--text) 14%, transparent);
   --r-sm: 8px;         /* мелкие метки и значки */
   --radius: 12px;      /* кнопки, поля, карточки внутри панелей */
@@ -100,7 +100,6 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
   padding: 12px; display: flex; flex-direction: column; gap: 10px;
 }
 .notice p { margin: 0; color: var(--muted); }
-.notice .row { flex-wrap: wrap; }
 .row > button { flex: 1; }
 
 /* ---------- комната ---------- */
@@ -166,17 +165,10 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 }
 /* Действия появляются под курсором: постоянные, они отъедали бы место у имени,
    а нужны раз в жизни комнаты. Ложатся поверх конца имени, а не раздвигают
-   его — менять отступ на наведении значит дёргать текст под курсором. */
-.mini {
-  width: 22px; height: 22px; padding: 0; flex: none;
-  display: inline-flex; align-items: center; justify-content: center;
-  border: none; background: none; color: var(--muted);
-  transition: opacity .15s, color .15s;
-}
-.mini:hover { color: var(--text); background: none; }
-/* Действие поверх содержимого: видно под курсором, иначе отъедало бы место. */
+   его — менять отступ на наведении значит дёргать текст под курсором.
+   Сам значок — общий `.mark`, тот же, что в списке участников. */
 .room-act { position: absolute; opacity: 0; }
-.room-act:nth-of-type(2) { right: 26px; }
+.room-act:nth-of-type(2) { right: 28px; }
 .room-act:nth-of-type(3) { right: 4px; }
 .room-tile:hover .room-act, .room-act:focus-visible { opacity: 1; }
 .room-tile:hover .room-act { background: var(--panel); }
@@ -197,14 +189,13 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
   padding: 5px 11px; font-size: 13px; border-radius: 999px;
   display: inline-flex; align-items: center; gap: 6px;
 }
-.views button .who { font-weight: 600; }
 
 .stage {
   position: relative; flex: 1; min-height: 0;
   background: #000; border-radius: var(--radius); overflow: hidden;
   display: flex; align-items: center; justify-content: center;
 }
-.stage video, .stage iframe { width: 100%; height: 100%; display: block; border: 0; background: #000; }
+.stage video { width: 100%; height: 100%; display: block; border: 0; background: #000; }
 /* Камеры видны всегда, независимо от того, чей экран на сцене: разговор в
    лицо — не то, что стоит прятать за переключателем. */
 .cams {
@@ -221,6 +212,9 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 .cam-tile video {
   display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; cursor: zoom-in;
 }
+/* Своё изображение зеркалим — так же, как показывает зеркало. Собеседникам
+   картинка уходит неперевёрнутой: переворот живёт только в этом правиле. */
+.cam-tile.mirror video, .lightbox.mirror video { transform: scaleX(-1); }
 .cam-tile span {
   position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 7px;
   font-size: 12px; background: linear-gradient(transparent, rgba(0, 0, 0, .75));
@@ -230,9 +224,6 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 
 .stage-empty { text-align: center; padding: 20px; }
 .stage-empty p { margin: 4px 0; }
-/* Карточка Sunshine: кнопка и адрес, к которому идёт Moonlight. */
-.stage-empty .row { justify-content: center; align-items: center; margin-top: 12px; flex-wrap: wrap; }
-.stage-empty .row > button { flex: 0 0 auto; }
 
 /* От ряда управления остался только полный экран: паузу и перемотку показывает
    сам плеер, и синхронизация слушает именно его кнопки. */
@@ -266,7 +257,6 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 
 .sources { display: flex; flex-direction: column; gap: 8px; }
 .src-row { display: flex; gap: 8px; flex-wrap: wrap; }
-.src-row #in-url { flex: 1; min-width: 180px; }
 
 .sidebar {
   position: relative;
@@ -285,7 +275,6 @@ body.resizing { cursor: col-resize; user-select: none; }
 .peers h3 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; color: var(--muted); letter-spacing: .04em; }
 .peers ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .peers li { display: flex; align-items: center; gap: 8px; font-size: 14px; }
-.peers img { width: 22px; height: 22px; border-radius: 50%; }
 .badge { background: var(--accent); color: var(--accent-text); border-radius: 999px; padding: 1px 7px; font-size: 12px; }
 .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 0 5px; }
 .tag.warn { color: #f0a020; border-color: #f0a020; }
@@ -294,7 +283,6 @@ body.resizing { cursor: col-resize; user-select: none; }
    личным цветом ника и перебивать его нельзя. */
 .peers li { padding: 2px 6px; margin: 0 -6px; border-radius: var(--r-sm); }
 .peers li.speaking { background: color-mix(in srgb, #3ecf8e 18%, transparent); }
-.peers li.speaking img { box-shadow: 0 0 0 2px #3ecf8e; }
 /* Всё, что стоит в строке участника, — один значок одного размера: и метка
    состояния, и выключатель трансляции, и замок, и громкость. Разные рамки и
    размеры превращали строку в набор случайных элементов.
@@ -304,14 +292,13 @@ body.resizing { cursor: col-resize; user-select: none; }
   width: 24px; height: 24px; padding: 0; flex: none; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center;
   background: none; border: none; border-radius: var(--r-sm); color: var(--muted);
+  transition: opacity .15s, color .15s, background .15s;
 }
 button.mark:hover:not(:disabled) {
-  border: none; color: var(--text);
-  background: color-mix(in srgb, var(--text) 12%, transparent);
+  border: none; color: var(--text); background: var(--panel);
 }
 .mark.off { color: #ff6b6b; }
 .mark.on { color: var(--accent); }
-.mark:disabled { opacity: .4; }
 
 /* Громкость участника прямо в строке с ником. */
 .pv-mini { display: flex; align-items: center; gap: 2px; margin-left: auto; }
@@ -337,15 +324,17 @@ button:has(> .ico) { display: inline-flex; align-items: center; }
 .tag > .ico, .views .ico { vertical-align: -2px; }
 .views button > .ico + span { margin-left: 6px; }
 /* Выключенный микрофон или звук — это не «неактивная кнопка», а состояние, о
-   котором нужно помнить: красим тем же красным, что и выход из комнаты. */
-button.off {
+   котором нужно помнить: красим тем же красным, что и выход из комнаты.
+   Только у кнопок ряда источников: они с рамкой и фоном по своей природе, а
+   значку в списке участников такая коробка не положена — он там значок, а не
+   кнопка, и раскрашенным выбивался из ряда соседей. */
+button.icon.off {
   color: #ff6b6b;
   border-color: color-mix(in srgb, #ff6b6b 55%, transparent);
   background: color-mix(in srgb, #ff6b6b 16%, var(--panel));
 }
-button.off:hover:not(:disabled) { border-color: #ff6b6b; }
+button.icon.off:hover:not(:disabled) { border-color: #ff6b6b; }
 button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
-/* Перечёркивание для выключенного микрофона и заглушённого звука. */
 
 
 .hotkeys { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
@@ -553,7 +542,12 @@ body.fullscreen.idle .sources { opacity: 0; pointer-events: none; }
   }
   .join-card-wrap { order: -1; }
   .side-panel { width: auto; }
-  #rooms-join { max-height: 30dvh; }
+  /* Панель растёт, сколько нужно, а прокручивается весь экран входа.
+     Со своей высотой в 30dvh она превращалась во вложенную прокрутку: уже на
+     второй комнате список упирался в потолок, а кнопка «другая комната»
+     оказывалась за краем — и внутри тесной коробки её ещё надо было найти.
+     Двух прокруток на одном экране телефон не прощает. */
+  #rooms-join { max-height: none; }
   #downloads { flex-direction: row; flex-wrap: wrap; }
   #downloads > h3, #downloads > p, #update-notice { flex-basis: 100%; }
   #downloads > button { flex: 1 1 30%; justify-content: center; }
@@ -634,7 +628,6 @@ body.fullscreen.idle .sources { opacity: 0; pointer-events: none; }
   .peers ul::-webkit-scrollbar { display: none; }
   .peers li { flex: none; margin: 0; }
   .pv-mini { display: none; }        /* громкость крутят в настройках */
-  .pv-mini input[type="range"] { width: 84px; }
 }
 
 /* Совсем узкие экраны: имя комнаты не должно выдавливать кнопки. */

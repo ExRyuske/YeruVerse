@@ -77,13 +77,6 @@ listen('cursor', ({ payload }) => {
     setTimeout(() => ping.remove(), 900);
   }
 });
-
-// Курсор, о котором давно ничего не слышно, убираем — иначе он повиснет на
-// экране навсегда, если зритель просто закрыл вкладку.
-listen('cursors-clear', () => {
-  for (const el of cursors.values()) el.remove();
-  cursors.clear();
-});
 </script>
 </body>
 </html>

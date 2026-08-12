@@ -69,6 +69,7 @@ function wireSettings() {
 
   ui('#pick-mic').onchange = () => ctx.settings.set('micDevice', ui('#pick-mic').value);
   ui('#pick-cam').onchange = () => ctx.settings.set('camDevice', ui('#pick-cam').value);
+  bindCheck('#set-mirror', 'mirrorCam');
   wireStream();
 
   ui('#pick-output').onchange = () => {
@@ -266,15 +267,21 @@ function renderHotkeys() {
 /** Что видно про соединения — первое, куда смотреть, когда «не слышно». */
 async function renderDiagnostics() {
   const lines = [
-    `сервер:    ${ctx.net.connected ? 'на связи' : 'нет связи'}  ${ctx.net.base}`,
-    `контекст:  ${window.isSecureContext ? 'защищённый' : 'НЕ защищённый — микрофона не будет'}`,
+    `сервер:     ${ctx.net.connected ? 'на связи' : 'нет связи'}  ${ctx.net.base}`,
+    // «Защищённый контекст» — это термин браузера, и в строке диагностики он
+    // спрашивает больше, чем отвечает. Пишем то, ради чего строка здесь стоит.
+    `устройства: ${
+      window.isSecureContext
+        ? 'доступны — страница по https'
+        : 'НЕДОСТУПНЫ — без https браузер не даёт ни микрофон, ни камеру'
+    }`,
     `приложение: ${describeNative()}`,
-    `задержка:  ${Number.isFinite(ctx.net.rtt) ? Math.round(ctx.net.rtt) + ' мс' : '—'}`,
-    `TURN:      ${ctx.config().turn ? 'есть' : 'НЕТ — часть зрителей не соединится'}`,
-    `Sunshine:  ${ctx.sunshine() || 'не запущен'}`,
-    `выключено: ${ctx.hidden().join(', ') || 'ничего'}`,
-    `микрофон:  ${ctx.voice.enabled ? (ctx.voice.muted ? 'включён, заглушён' : 'в эфире') : 'выключен'}`,
-    `слышим:    ${ctx.voice.remotes.size} из ${Math.max(0, ctx.peers().size - 1)}`,
+    `задержка:   ${Number.isFinite(ctx.net.rtt) ? Math.round(ctx.net.rtt) + ' мс' : '—'}`,
+    `TURN:       ${ctx.config().turn ? 'есть' : 'НЕТ — часть зрителей не соединится'}`,
+    `Sunshine:   ${ctx.sunshine() || 'не запущен'}`,
+    `выключено:  ${ctx.hidden().join(', ') || 'ничего'}`,
+    `микрофон:   ${ctx.voice.enabled ? (ctx.voice.muted ? 'включён, заглушён' : 'в эфире') : 'выключен'}`,
+    `слышим:     ${ctx.voice.remotes.size} из ${Math.max(0, ctx.peers().size - 1)}`,
     '',
   ];
 

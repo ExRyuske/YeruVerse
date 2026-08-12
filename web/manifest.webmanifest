@@ -1,7 +1,7 @@
 {
   "name": "YeruVerse",
   "short_name": "YeruVerse",
-  "description": "YeruVerse",
+  "description": "Комната, в которой показывают свой экран, разговаривают и при желании пускают друг друга за компьютер.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

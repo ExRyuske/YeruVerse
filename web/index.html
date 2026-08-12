@@ -24,7 +24,7 @@
       <label>Цвет ника
         <div id="join-palette" class="palette"></div>
       </label>
-      <label id="link-row">Ссылка или код комнаты
+      <label>Ссылка или код комнаты
         <div class="row">
           <input id="in-link" type="text" placeholder="ссылка или код" autocomplete="off">
           <button id="btn-link" type="button" class="primary">Войти</button>
@@ -42,10 +42,7 @@
     <h3>Загрузки</h3>
     <div id="update-notice" class="notice" hidden>
       <p class="small">Вышла версия <b id="update-version"></b>.</p>
-      <div class="row">
-        <button id="btn-update" type="button" class="primary">Обновить</button>
-        <button id="btn-update-later" type="button" class="ghost">Позже</button>
-      </div>
+      <button id="btn-update" type="button" class="primary">Обновить</button>
     </div>
     <button id="btn-get-app-join" type="button" class="ghost" data-icon="download"><span>Приложение</span></button>
     <button id="btn-get-sunshine" type="button" class="ghost" data-icon="screen"><span>Sunshine</span></button>
@@ -104,7 +101,7 @@
             <button id="btn-camera" class="icon" data-icon="camera" title="Камера"></button>
             <button class="caret" type="button" data-pop="pop-cam" title="Выбор камеры"></button>
           </span>
-          <button id="btn-pointer" class="icon ghost active" data-icon="pointer" title="Показывать курсоры участников поверх видео"></button>
+          <button id="btn-control" class="icon" data-icon="pointer" title="Взять управление чужим компьютером"></button>
           <button id="btn-full" class="icon" data-icon="expand" title="Во весь экран"></button>
         </div>
 
@@ -153,6 +150,7 @@
           <label class="field">Камера
             <select id="pick-cam"></select>
           </label>
+          <label class="check"><input id="set-mirror" type="checkbox"> Зеркалить своё изображение</label>
         </div>
       </div>
     </div>

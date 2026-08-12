@@ -63,9 +63,6 @@ export const native = {
   cursor(payload) {
     return window.__TAURI__?.event?.emit('cursor', payload) ?? Promise.resolve();
   },
-  clearCursors() {
-    return window.__TAURI__?.event?.emit('cursors-clear') ?? Promise.resolve();
-  },
 
   /** Sunshine: `{ running, address, canPair }`. */
   sunshine() { return this.invoke('sunshine'); },

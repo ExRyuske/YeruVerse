@@ -23,6 +23,10 @@ export class RemoteControl extends EventTarget {
     this.native = native;
     this.granted = new Set();     // кому я разрешил управлять собой
     this.myGrants = new Set();    // кто разрешил управлять собой мне
+    // Открытый замок — это разрешение, а не приказ. Пока зритель не взял
+    // управление сам, его мышь над трансляцией остаётся указкой: иначе первое
+    // же движение начинало возить курсор по чужому столу.
+    this.taking = false;
     this.screen = null;           // размер экрана хоста в пикселях
     this._lastMove = 0;
 
@@ -71,9 +75,24 @@ export class RemoteControl extends EventTarget {
 
   // ---------------------------------------------------------------- зритель
 
-  /** Могу ли я сейчас управлять тем, что вижу. */
-  get controlling() {
+  /** Есть ли что брать: хозяин открыл замок, и его экран сейчас на сцене. */
+  get canTake() {
     return this.target ? this.myGrants.has(this.target) : false;
+  }
+
+  /** Управляю ли я прямо сейчас. */
+  get controlling() {
+    return this.taking && this.canTake;
+  }
+
+  /** Взять управление или вернуть его хозяину. Решение зрителя. */
+  setTaking(on) {
+    if (this.taking === on) return;
+    // Отпускаем зажатое, пока ещё управляем: после снятия флага сообщение уже
+    // не уйдёт, и на чужом компьютере осталась бы нажатая клавиша.
+    if (!on) this.sendRelease();
+    this.taking = on;
+    this.emit('change', {});
   }
 
   /**
@@ -81,7 +100,16 @@ export class RemoteControl extends EventTarget {
    * по его кадру и для чужого экрана бессмысленны.
    */
   set target(id) {
-    if (this._target && this._target !== id) this.sendRelease();
+    if (this._target && this._target !== id) {
+      // Управление берут для конкретного компьютера. Перешли смотреть другую
+      // трансляцию — и оно не должно перетечь туда само, даже если тот участник
+      // тоже открыл замок.
+      this.sendRelease();
+      this.taking = false;
+      this._target = id ?? null;
+      this.emit('change', {});
+      return;
+    }
     this._target = id ?? null;
   }
   get target() { return this._target ?? null; }

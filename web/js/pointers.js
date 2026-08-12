@@ -14,11 +14,9 @@ export class Pointers {
   constructor(mesh, stage) {
     this.mesh = mesh;
     this.stage = stage;
-    // Чужие курсоры показываем сразу: смысл указки в том, чтобы её не искать.
-    // Свой курсор уходит, пока мы смотрим чью-то трансляцию, — независимо от
-    // этого флага, иначе транслирующий не увидел бы никого, пока каждый зритель
-    // не догадается включить показ у себя.
-    this.enabled = true;
+    // Чужие курсоры видны всегда: смысл указки в том, чтобы её не искать, и
+    // выключателя у неё нет — транслирующий иначе не увидел бы никого, пока
+    // каждый зритель не догадается включить показ у себя.
     this.sharePointer = false;
     this.peerOf = () => null;
     this.onRemote = null;   // чужой курсор: нужен оверлею поверх всех окон
@@ -69,11 +67,6 @@ export class Pointers {
     if (this.context === context) return;
     this.context = context;
     for (const id of [...this.cursors.keys()]) this.drop(id);
-  }
-
-  setEnabled(on) {
-    this.enabled = on;
-    if (!on) for (const id of [...this.cursors.keys()]) this.drop(id);
   }
 
   /** Смотрим чужую трансляцию — значит, есть куда показывать курсором. */
@@ -131,7 +124,7 @@ export class Pointers {
     // чужих меток и метка собственного клика зависят от кнопки.
     if (this.sharePointer) {
       this._send({ type, x: +p.x.toFixed(4), y: +p.y.toFixed(4), v: this.context });
-      if (type === 'click' && this.enabled) this._ping(p.x, p.y, this.peerOf('self'));
+      if (type === 'click') this._ping(p.x, p.y, this.peerOf('self'));
     }
     if (type === 'm') this.onMove?.(p.x, p.y);
   }
@@ -163,7 +156,6 @@ export class Pointers {
 
     // Внутри приложения рисуем только то, что показывают на текущей сцене.
     if ((msg.v ?? null) !== this.context) return this.drop(id);
-    if (!this.enabled) return;
 
     const f = this._frame();
     const left = f.left - f.stage.left + msg.x * f.width;

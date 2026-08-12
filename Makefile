@@ -1,7 +1,7 @@
 # Короткие команды для типовых задач. Всё то же самое можно набрать руками —
 # см. README, здесь просто собраны рабочие сочетания флагов.
 
-.PHONY: help server web app app-debug android android-all android-prepare sign-apk icons icons-ui updater-key updater-pubkey docker docker-run deploy check clean
+.PHONY: help server app app-debug android android-all android-prepare sign-apk icons icons-ui updater-key updater-pubkey docker docker-run deploy check clean
 
 APP_DIR := desktop/src-tauri
 ANDROID_HOME ?= $(or $(ANDROID_SDK_ROOT),$(HOME)/Library/Android/sdk)
@@ -30,7 +30,6 @@ help:
 server:
 	cargo run --release
 
-web: server
 
 # Установщик под ту систему, на которой запущено: кросс-компиляции у Tauri нет.
 app: tauri-cli $(UPDATER_KEY)
@@ -112,7 +111,7 @@ docker-run: docker
 	docker run --rm -p 8080:8080 yeruverse
 
 deploy:
-	docker compose up -d --build
+	docker compose up -d
 
 check:
 	cargo fmt --check
