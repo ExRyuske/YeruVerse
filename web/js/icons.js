@@ -43,10 +43,14 @@ const PATHS = {
  * Ширина у контуров Font Awesome разная, а высота всегда 512. Чтобы в ряду
  * кнопок они смотрелись одинаково, каждый вписывается в квадрат по своей
  * большей стороне — иначе узкие выглядели бы крупнее широких.
+ *
+ * Размер здесь не задаётся: его решает место, куда значок попал, — правилами
+ * для `.ico` в style.css. Пока размер передавали аргументом, каждое место
+ * вызова угадывало его само, и по проекту разошлось шесть разных чисел.
  */
-export function icon(name, { size = 18 } = {}) {
+export function icon(name) {
   const found = PATHS[name];
   if (!found) return '';
   const [box, d] = found;
-  return `<svg viewBox="${box}" class="ico" width="${size}" height="${size}" aria-hidden="true"><path d="${d}"/></svg>`;
+  return `<svg viewBox="${box}" class="ico" aria-hidden="true"><path d="${d}"/></svg>`;
 }

@@ -39,6 +39,35 @@ export function canChooseOutput() {
 const players = new Set();   // всё, что сейчас звучит, — им назначаем устройство
 let sink = '';
 
+/**
+ * Звук, которому не дали начаться.
+ *
+ * Голос собеседника приходит сам, без всякого нажатия, а движки такое запускать
+ * не дают: вебвью Android запрещает это прямой настройкой, Safari — политикой
+ * автозапуска. Раньше всё шло через WebAudio, которому хватало одного касания за
+ * всё время, а элемент требует разрешения на каждый запуск. Поэтому неудачу
+ * запоминаем и повторяем при первом же касании страницы.
+ */
+const blocked = new Set();
+
+/** Повторить то, что не запустилось. Функция сама решает, что ей нужно. */
+export function retryOnGesture(fn) {
+  blocked.add(fn);
+}
+
+function unlock() {
+  if (shared?.state === 'suspended') shared.resume().catch(() => {});
+  for (const fn of [...blocked]) {
+    Promise.resolve()
+      .then(fn)
+      .then(() => blocked.delete(fn))
+      .catch(() => {});
+  }
+}
+for (const event of ['pointerdown', 'keydown', 'touchend']) {
+  document.addEventListener(event, unlock, { capture: true, passive: true });
+}
+
 /** Куда выводить звук — сразу всему приложению. */
 export async function setOutput(deviceId) {
   sink = deviceId || '';
@@ -91,10 +120,16 @@ export function playback(stream) {
   document.body.appendChild(el);
   const level = volume(el, stream);
 
+  const play = () => el.play();
   return {
-    play: () => el.play(),
+    play: () =>
+      play().catch((e) => {
+        retryOnGesture(play);
+        throw e;                       // наверх уходит «звук заблокирован»
+      }),
     set: (v) => level.set(v),
     close() {
+      blocked.delete(play);
       level.close();
       el.srcObject = null;
       el.remove();

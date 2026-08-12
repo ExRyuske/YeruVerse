@@ -43,6 +43,25 @@ fn server_file(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     Some(dir.join("server.txt"))
 }
 
+/// Отвечает ли адрес.
+///
+/// Смотрим соединением, а не строкой: `http://localhost.8080` — точка вместо
+/// двоеточия — разбирается безупречно, это правильный адрес узла с именем
+/// «localhost.8080». Просто такого узла нет.
+fn reachable(url: &tauri::Url) -> bool {
+    use std::net::ToSocketAddrs;
+
+    let (Some(host), Some(port)) = (url.host_str(), url.port_or_known_default()) else {
+        return false;
+    };
+    let Ok(addrs) = (host, port).to_socket_addrs() else {
+        return false; // имя не разрешилось — идти некуда
+    };
+    addrs
+        .take(2)
+        .any(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_millis(1200)).is_ok())
+}
+
 fn saved_server(app: &tauri::AppHandle) -> String {
     server_file(app)
         .and_then(|p| std::fs::read_to_string(p).ok())
@@ -60,12 +79,21 @@ fn current_server(app: tauri::AppHandle) -> String {
 #[tauri::command]
 fn set_server(app: tauri::AppHandle, window: WebviewWindow, url: String) -> Result<(), String> {
     let url = url.trim().trim_end_matches('/').to_string();
+
+    // Пустое поле — не ошибка, а «вернуться к серверу по умолчанию». Заодно это
+    // способ выбраться, не трогая файлы, если сохранён адрес, который молчит.
+    let url = if url.is_empty() { DEFAULT_SERVER.to_string() } else { url };
+
     let parsed: tauri::Url = url.parse().map_err(|_| "не похоже на адрес".to_string())?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("нужен http или https".into());
     }
     if let Some(path) = server_file(&app) {
-        let _ = std::fs::write(path, &url);
+        if url == DEFAULT_SERVER {
+            let _ = std::fs::remove_file(path);
+        } else {
+            let _ = std::fs::write(path, &url);
+        }
     }
     window.navigate(parsed).map_err(|e| e.to_string())
 }
@@ -478,13 +506,32 @@ pub fn run() {
             input::input_release,
         ])
         .setup(|app| {
-            // Ушли на сохранённый сервер, если он отличается от адреса по умолчанию.
+            // Уходим на сохранённый сервер, только если он отвечает. Молчит —
+            // остаёмся на адресе по умолчанию: сервер мог переехать, лечь или
+            // оказаться опечаткой, и во всех трёх случаях белое окно без единой
+            // кнопки — худший из возможных исходов. Поле «Сервер комнат» тогда
+            // на виду, и адрес можно поправить или стереть.
             let url = saved_server(app.handle());
-            if url != DEFAULT_SERVER {
-                if let (Some(w), Ok(u)) = (app.get_webview_window("main"), url.parse()) {
-                    let _ = w.navigate(u);
-                }
+            if url == DEFAULT_SERVER {
+                return Ok(());
             }
+            let Ok(parsed) = url.parse::<tauri::Url>() else {
+                return Ok(());
+            };
+            // Проверка стучится в сеть, поэтому уходит в свой поток: иначе окно
+            // не показалось бы, пока она не закончится.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                if !reachable(&parsed) {
+                    return;
+                }
+                let win = handle.clone();
+                let _ = handle.run_on_main_thread(move || {
+                    if let Some(w) = win.get_webview_window("main") {
+                        let _ = w.navigate(parsed);
+                    }
+                });
+            });
             Ok(())
         })
         .run(tauri::generate_context!())

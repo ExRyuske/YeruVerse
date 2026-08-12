@@ -115,6 +115,7 @@ import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 
 // Правку накатывает scripts/android_patch.py — руками она переживёт ровно до
 // следующей генерации проекта.
@@ -143,12 +144,19 @@ class MainActivity : TauriActivity() {{
 
   override fun onPause() {{
     super.onPause()
+    if (!inRoom()) return
     // Запускать отсюда, а не из фона: с Android 12 службу с микрофоном нельзя
     // поднять, когда приложение уже свёрнуто, а onPause — ещё передний план.
-    if (inRoom()) {{
+    //
+    // И всё равно под try: правил, по которым система отказывает, с каждой
+    // версией больше, а отказ она оформляет исключением. Разговор, не переживший
+    // сворачивания, — это неудобство; вылет приложения посреди разговора — нет.
+    try {{
       val intent = Intent(this, RoomService::class.java)
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
       else startService(intent)
+    }} catch (e: Throwable) {{
+      Log.w("YeruVerse", "служба комнаты не поднялась", e)
     }}
   }}
 
@@ -169,11 +177,19 @@ class MainActivity : TauriActivity() {{
    * записи. Не смогли выяснить — считаем, что в комнате: лишнее уведомление
    * простительно, оборванный разговор нет.
    */
-  private fun inRoom(): Boolean = try {{
-    val audio = getSystemService(AUDIO_SERVICE) as AudioManager
-    audio.activeRecordingConfigurations.isNotEmpty()
-  }} catch (e: Throwable) {{
-    true
+  private fun inRoom(): Boolean {{
+    // Без выданного доступа к микрофону служба с типом «микрофон» системе не
+    // положена: она не «не запустится», а бросит исключение и уронит окно.
+    if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+          != PackageManager.PERMISSION_GRANTED) {{
+      return false
+    }}
+    return try {{
+      val audio = getSystemService(AUDIO_SERVICE) as AudioManager
+      audio.activeRecordingConfigurations.isNotEmpty()
+    }} catch (e: Throwable) {{
+      true
+    }}
   }}
 }}
 '''
@@ -191,6 +207,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 
 // Файл создаёт scripts/android_patch.py — правки руками переживут ровно до
 // следующей генерации проекта.
@@ -204,7 +221,16 @@ class RoomService : Service() {{
   override fun onBind(intent: Intent?): IBinder? = null
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {{
-    goForeground(note())
+    // Отказ системы — не повод падать: молча уходим, комната просто не переживёт
+    // сворачивания. Правила для служб переднего плана меняются от версии к
+    // версии, и предугадать их все здесь нечем.
+    try {{
+      goForeground(note())
+    }} catch (e: Throwable) {{
+      Log.w("YeruVerse", "передний план не дали", e)
+      stopSelf()
+      return START_NOT_STICKY
+    }}
 
     // Одного лишь переднего плана мало: без этого замка процессор уходит спать
     // вместе с экраном, и звук начинает рваться.

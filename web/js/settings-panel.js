@@ -18,6 +18,12 @@ let ctx = null;
  */
 const hasKeyboard = () => matchMedia('(any-pointer: fine)').matches;
 
+const DENOISE = {
+  rnnoise: 'нейросетью — RNNoise',
+  browser: 'средствами движка',
+  off: 'НЕТ — ни модель, ни движок не взялись',
+};
+
 /**
  * @param {object} deps  settings, voice, mesh, net, native, hotkeys, toast,
  *                       peers() — карта участников, config() — ответ сервера,
@@ -243,7 +249,7 @@ function renderHotkeys() {
     const clear = document.createElement('button');
     clear.type = 'button';
     clear.className = 'clear ghost';
-    clear.innerHTML = icon('close', { size: 14 });
+    clear.innerHTML = icon('close');
     clear.title = 'Вернуть сочетание по умолчанию';
     clear.onclick = () => {
       ctx.hotkeys.reset(action.id);
@@ -281,6 +287,9 @@ async function renderDiagnostics() {
     `Sunshine:   ${ctx.sunshine() || 'не запущен'}`,
     `выключено:  ${ctx.hidden().join(', ') || 'ничего'}`,
     `микрофон:   ${ctx.voice.enabled ? (ctx.voice.muted ? 'включён, заглушён' : 'в эфире') : 'выключен'}`,
+    // Что подавляет шум на самом деле: выбор в настройках и то, что получилось,
+    // расходятся ровно там, где это важнее всего заметить.
+    `шумодав:    ${DENOISE[ctx.voice.denoising] ?? ctx.voice.denoising}`,
     `слышим:     ${ctx.voice.remotes.size} из ${Math.max(0, ctx.peers().size - 1)}`,
     '',
   ];

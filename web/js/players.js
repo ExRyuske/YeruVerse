@@ -4,7 +4,7 @@
 // перемотки. Поэтому здесь нет ни позиции, ни паузы, ни движка синхронизации:
 // поток идёт как идёт, а всё управление свелось к громкости.
 
-import { volume } from './audio.js';
+import { volume, retryOnGesture } from './audio.js';
 
 export class StreamPlayer {
   constructor(container, stream) {
@@ -31,8 +31,15 @@ export class StreamPlayer {
    */
   _play() {
     this.el.play().catch(() => {
+      // Со звуком не пустили — играем без него: картинка нужнее. И просим
+      // вернуть звук при первом касании страницы, иначе трансляция так и
+      // останется немой до конца разговора.
       this.el.muted = true;
       this.el.play().catch(() => {});
+      retryOnGesture(() => {
+        this.el.muted = false;
+        return this.el.play();
+      });
     });
   }
 

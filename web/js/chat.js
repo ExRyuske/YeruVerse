@@ -128,7 +128,7 @@ function addAttachment(peer, meta, mine, at) {
 
   const card = document.createElement('div');
   card.className = 'attach';
-  if (!isImage(meta)) card.innerHTML = icon('file', { size: 18 });
+  if (!isImage(meta)) card.innerHTML = icon('file');
 
   const info = document.createElement('div');
   info.className = 'meta';
@@ -199,7 +199,7 @@ export function finishAttach(id, url, meta) {
   const link = document.createElement('a');
   link.href = url;
   link.download = meta.name;
-  link.innerHTML = icon('download', { size: 14 });
+  link.innerHTML = icon('download');
   link.append(' Сохранить');
   link.className = 'tag';
 

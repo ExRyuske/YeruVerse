@@ -122,7 +122,6 @@ const state = {
   everJoined: false,
   recentLeaves: new Map(),
   config: {},
-  draggingVolume: false,
   joined: false,
   code: '',          // единственный секрет комнаты; на сервер уходит производное
   sunshine: null,       // адрес нашего Sunshine, если он запущен
@@ -533,6 +532,7 @@ function join(code) {
   history.replaceState(null, '', `${location.pathname}#${encodeURIComponent(state.code)}`);
 
   renderRooms();
+  pollSunshine();
 }
 
 /**
@@ -588,7 +588,7 @@ function renderRoomList(host) {
     rename.type = 'button';
     rename.className = 'mark room-act';
     rename.title = 'Переименовать';
-    rename.innerHTML = icon('pen', { size: 11 });
+    rename.innerHTML = icon('pen');
     rename.onclick = () => {
       const field = document.createElement('input');
       field.className = 'room-rename';
@@ -611,7 +611,7 @@ function renderRoomList(host) {
     forget.type = 'button';
     forget.className = 'mark room-act';
     forget.title = 'Забыть комнату';
-    forget.innerHTML = icon('close', { size: 11 });
+    forget.innerHTML = icon('close');
     forget.onclick = () => {
       settings.forgetRoom(room.code);
       renderRooms();
@@ -658,6 +658,9 @@ function leaveRoom() {
   state.peerEls.clear();
   state.recentLeaves.clear();
   sunshineHosts.clear();
+  // Кому я разрешил зайти на свой компьютер — вместе с комнатой и заканчивается.
+  // Список переживал выход, хотя те люди остались в покинутой комнате.
+  allowed.clear();
   renderViews();
 
   $('#peer-list').innerHTML = '';
@@ -962,11 +965,14 @@ function renderViews() {
   // Ряд нужен и когда трансляция одна: переключать нечего, но в том же ряду
   // живёт её громкость, и вместе с рядом она пропадала.
   host.hidden = !chips.length;
-  host.innerHTML = '';
+
+  const vol = host.querySelector('.pv-mini');
+  for (const el of [...host.children]) if (el !== vol) el.remove();
+
   for (const c of chips) {
     const b = document.createElement('button');
     b.className = 'ghost' + (c.id === state.view ? ' active' : '');
-    b.innerHTML = icon(c.icon, { size: 16 });
+    b.innerHTML = icon(c.icon);
     const text = document.createElement('span');
     text.textContent = c.label;
     b.appendChild(text);
@@ -976,48 +982,24 @@ function renderViews() {
       renderViews();
       renderStage();
     };
-    host.appendChild(b);
+    host.insertBefore(b, vol);
   }
-  if (state.view) host.appendChild(streamVolumeSlider());
+  if (!state.view) vol?.remove();
+  else if (vol) vol.sync();
+  else host.appendChild(streamVolumeSlider());
 }
 
 /** Громкость трансляции, которая сейчас на сцене. Запоминается по имени. */
 function streamVolumeSlider() {
-  const wrap = document.createElement('span');
-  wrap.className = 'pv-mini';
-
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'mark';
-
-  const slider = document.createElement('input');
-  slider.type = 'range';
-  slider.min = 0;
-  slider.max = 200;
-  slider.value = Math.round(settings.streamVolumeOf(streamName(state.view)) * 100);
-
-  const show = () => {
-    const v = Number(slider.value);
-    btn.innerHTML = icon(v === 0 ? 'speaker-off' : 'speaker', { size: 14 });
-    wrap.title = `Громкость трансляции ${v}%`;
-  };
-  slider.oninput = () => {
-    settings.setStreamVolume(streamName(state.view), Number(slider.value) / 100);
-    applyStreamVolume();
-    show();
-  };
-
-  let before = 1;
-  btn.onclick = () => {
-    const now = Number(slider.value);
-    if (now > 0) before = now;
-    slider.value = now > 0 ? 0 : before;
-    slider.oninput();
-  };
-
-  show();
-  wrap.append(btn, slider);
-  return wrap;
+  return volumeSlider({
+    max: 200,
+    label: 'Громкость трансляции',
+    get: () => settings.streamVolumeOf(streamName(state.view)),
+    set: (v) => {
+      settings.setStreamVolume(streamName(state.view), v);
+      applyStreamVolume();
+    },
+  });
 }
 
 // Ход загрузки вложения. Раньше на это событие никто не подписывался, и кнопка
@@ -1118,8 +1100,13 @@ async function setAllowed(id, on) {
  * открыто всегда, — поэтому спрашиваем сервер комнат: он смотрит на нас ровно
  * так, как посмотрит зритель из интернета.
  */
+let reachedAt = 0;
+let reached = {};
+
 async function pollSunshine() {
-  if (!native.available) return;
+  // Адрес Sunshine нужен только в комнате: вне её раздавать его некому, а мост
+  // приложения незачем дёргать каждые полминуты просто так.
+  if (!native.available || !state.joined) return;
   const { running, address } = await native.sunshine().catch(() => ({}));
   if (!running || !address) {
     if (state.sunshine) {
@@ -1130,9 +1117,16 @@ async function pollSunshine() {
     return;
   }
 
-  const reach = await fetch(new URL('/reach', serverBase()), { cache: 'no-store' })
-    .then((r) => r.json())
-    .catch(() => ({}));
+  // Виден ли Sunshine снаружи, решают проброс портов на роутере и адрес
+  // провайдера — они меняются раз в недели, а не раз в полминуты. Спрашиваем
+  // сервер не чаще раза в пять минут, иначе это просто фоновый запрос по кругу.
+  if (Date.now() - reachedAt > 5 * 60 * 1000) {
+    reached = await fetch(new URL('/reach', serverBase()), { cache: 'no-store' })
+      .then((r) => r.json())
+      .catch(() => ({}));
+    reachedAt = Date.now();
+  }
+  const reach = reached;
   // Наружу отдаём публичный адрес, только если он и правда отвечает; иначе
   // локальный — в своей сети он рабочий, а из интернета не сработает ничего.
   const host = reach.open && reach.ip ? reach.ip : address;
@@ -1359,6 +1353,17 @@ voice.on('change', ({ enabled, muted, deafened }) => {
 
 voice.on('blocked', () => toast('Нажмите в любом месте страницы, чтобы включить звук'));
 
+// Шумодав отвалился на ходу. Сказать об этом важнее, чем кажется: молча
+// подменённая обработка звучит иначе, и человек ищет причину в микрофоне.
+voice.on('denoise-fallback', ({ to }) =>
+  toast(
+    to === 'browser'
+      ? 'Шумодав RNNoise замолчал — перешли на подавление средствами системы'
+      : 'Шумодав RNNoise замолчал, подавления шума больше нет',
+    8000
+  )
+);
+
 // ---------------------------------------------------------------- управление
 
 voice.on('devices', () => refreshDevices());
@@ -1439,13 +1444,13 @@ function wireRoom() {
 /**
  * Кнопка управления. Она о зрителе, а не о хозяине: замок открывает хозяин, а
  * брать управление или оставить мышь указкой — решает тот, кто смотрит.
- * Погашена, пока брать нечего: замок закрыт или на сцене не чужой экран.
  */
 function renderControl() {
   const btn = ui('#btn-control');
   const can = control.canTake;
   const on = can && control.taking;
-  btn.disabled = !can;
+  // Не гасим: погашенная кнопка в ряду одинаковых выглядит поломкой, а не
+  // подсказкой. Нажатие и так объясняет, чего не хватает, — это полезнее.
   btn.classList.toggle('active', on);
   btn.title = !can
     ? 'Управление чужим компьютером — когда его хозяин откроет вам замок'
@@ -1688,81 +1693,127 @@ function stopShare(kind) {
 
 // ---------------------------------------------------------------- UI-мелочи
 
+/**
+ * Список участников.
+ *
+ * Строки переживают перерисовку, а не создаются заново. Раньше список стирался
+ * целиком на каждое изменение присутствия, и ползунок громкости исчезал прямо
+ * из-под пальца — ради этого стоял флаг «сейчас тянут», который просто отменял
+ * перерисовку. Список замирал: пока крутишь громкость, в нём не видно ни кто
+ * вошёл, ни кто выключил микрофон.
+ */
 function renderPeers() {
-  if (state.draggingVolume) return;
   const list = $('#peer-list');
-  list.innerHTML = '';
-  state.peerEls.clear();
+
+  for (const [id, li] of state.peerEls) {
+    if (state.peers.has(id)) continue;
+    li.remove();
+    state.peerEls.delete(id);
+  }
 
   for (const p of state.peers.values()) {
-    const li = document.createElement('li');
-    const name = document.createElement('span');
-    name.textContent = p.name + (p.id === state.self?.id ? ' (вы)' : '');
-    name.style.color = p.color || 'inherit';
-    li.appendChild(name);
-
-    // Значок только у молчащих: включённый микрофон — это норма, и рисовать
-    // его возле каждого ника значит показывать одно и то же по кругу. Своё
-    // состояние показываем наравне с чужими: список должен читаться как список,
-    // а не как «все, кроме меня», — и заодно видно, каким тебя видят остальные.
-    const mine = p.id === state.self?.id;
-    for (const [show, glyph, title] of [
-      [!p.voice || p.muted, 'mic-off', p.voice ? 'Микрофон заглушён' : 'Микрофон выключен'],
-      [p.deaf, 'speaker-off', 'Звук выключен — участников не слышно'],
-    ]) {
-      if (!show) continue;
-      const mark = document.createElement('span');
-      mark.className = 'mark off';
-      mark.innerHTML = icon(glyph, { size: 14 });
-      mark.title = title;
-      li.appendChild(mark);
+    let li = state.peerEls.get(p.id);
+    if (!li) {
+      li = newPeerRow();
+      state.peerEls.set(p.id, li);
+      list.appendChild(li);
     }
-    // Значок трансляции — заодно выключатель: чужую можно перестать получать
-    // вовсе, чтобы не тратить ни канал, ни процессор.
-    for (const [on, name, kind] of [
-      [p.screen, 'screen', 'screen'],
-      [p.camera, 'camera', 'cam'],
-    ]) {
-      if (!on) continue;
-      const key = viewKey(p.id, kind);
-      const off = hidden.has(key);
-      const tag = document.createElement('button');
-      tag.type = 'button';
-      tag.className = 'mark' + (off ? ' off' : '');
-      tag.innerHTML = icon(name, { size: 14 });
-      tag.title = off
-        ? 'Выключено у вас — вернуть'
-        : mine
-          ? 'Убрать у себя из виду (остальные продолжат видеть)'
-          : 'Не получать эту трансляцию';
-      tag.onclick = () => setHidden(key, !off);
-      li.appendChild(tag);
-    }
-
-    // Ползунок появляется у тех, кого мы реально слышим.
-    if (p.id !== state.self?.id && voice.remotes.has(p.id)) {
-      li.appendChild(peerVolumeSlider(p.id));
-    }
-
-    if (p.id !== state.self?.id) {
-      // Кому можно за мой компьютер — решаю я, поимённо.
-      if (state.sunshine) li.appendChild(allowButton(p.id));
-      // А к кому можно мне — те, кто уже разрешил.
-      if (sunshineHosts.has(p.id)) li.appendChild(moonlightButton(p.id));
-      if (state.paused && control.granted.has(p.id)) {
-        const tag = document.createElement('span');
-        tag.className = 'tag warn';
-        tag.textContent = 'на паузе';
-        li.appendChild(tag);
-      }
-    }
-
-    state.peerEls.set(p.id, li);
-    list.appendChild(li);
+    updatePeerRow(li, p);
   }
+
   $('#peer-count').textContent = state.peers.size;
   renderCams();          // на плитках подписаны ники — они могли смениться
   applySpeaking();
+}
+
+/**
+ * Каркас строки. Значки внутри меняются часто, а сама строка и ползунок
+ * громкости живут, пока человек в комнате. Обёртки прозрачны для раскладки
+ * (`display: contents`), поэтому ряд выглядит так же, как если бы значки лежали
+ * в строке сами по себе.
+ */
+function newPeerRow() {
+  const li = document.createElement('li');
+  for (const cls of ['peer-name', 'peer-marks', 'peer-acts']) {
+    const part = document.createElement('span');
+    part.className = cls;
+    li.appendChild(part);
+  }
+  return li;
+}
+
+function updatePeerRow(li, p) {
+  const mine = p.id === state.self?.id;
+  const name = li.querySelector('.peer-name');
+  const marks = li.querySelector('.peer-marks');
+  const acts = li.querySelector('.peer-acts');
+
+  const label = p.name + (mine ? ' (вы)' : '');
+  if (name.textContent !== label) name.textContent = label;
+  name.style.color = p.color || 'inherit';
+
+  // Значок только у молчащих: включённый микрофон — это норма, и рисовать его
+  // возле каждого ника значит показывать одно и то же по кругу. Своё состояние
+  // показываем наравне с чужими: список должен читаться как список, а не как
+  // «все, кроме меня», — и заодно видно, каким тебя видят остальные.
+  const icons = [];
+  for (const [show, glyph, title] of [
+    [!p.voice || p.muted, 'mic-off', p.voice ? 'Микрофон заглушён' : 'Микрофон выключен'],
+    [p.deaf, 'speaker-off', 'Звук выключен — участников не слышно'],
+  ]) {
+    if (!show) continue;
+    const mark = document.createElement('span');
+    mark.className = 'mark off';
+    mark.innerHTML = icon(glyph);
+    mark.title = title;
+    icons.push(mark);
+  }
+
+  // Значок трансляции — заодно выключатель: чужую можно перестать получать
+  // вовсе, чтобы не тратить ни канал, ни процессор.
+  for (const [on, glyph, kind] of [
+    [p.screen, 'screen', 'screen'],
+    [p.camera, 'camera', 'cam'],
+  ]) {
+    if (!on) continue;
+    const key = viewKey(p.id, kind);
+    const off = hidden.has(key);
+    const tag = document.createElement('button');
+    tag.type = 'button';
+    tag.className = 'mark' + (off ? ' off' : '');
+    tag.innerHTML = icon(glyph);
+    tag.title = off
+      ? 'Выключено у вас — вернуть'
+      : mine
+        ? 'Убрать у себя из виду (остальные продолжат видеть)'
+        : 'Не получать эту трансляцию';
+    tag.onclick = () => setHidden(key, !off);
+    icons.push(tag);
+  }
+  marks.replaceChildren(...icons);
+
+  // Ползунок появляется у тех, кого мы реально слышим, и живёт, пока слышим.
+  const heard = !mine && voice.remotes.has(p.id);
+  let vol = li.querySelector('.pv-mini');
+  if (heard && !vol) li.insertBefore((vol = peerVolumeSlider(p.id)), acts);
+  else if (!heard && vol) vol.remove();
+  else vol?.sync();
+
+  const actions = [];
+  if (!mine) {
+    // Кому можно за мой компьютер — решаю я, поимённо. Замок нужен и без
+    // Sunshine: он же открывает простое управление по WebRTC.
+    if (native.caps.remoteControl) actions.push(allowButton(p.id));
+    // А к кому можно мне — те, кто уже разрешил.
+    if (sunshineHosts.has(p.id)) actions.push(moonlightButton(p.id));
+    if (state.paused && control.granted.has(p.id)) {
+      const tag = document.createElement('span');
+      tag.className = 'tag warn';
+      tag.textContent = 'на паузе';
+      actions.push(tag);
+    }
+  }
+  acts.replaceChildren(...actions);
 }
 
 /** Кнопка «подключиться к этому компьютеру Moonlight'ом». */
@@ -1770,7 +1821,7 @@ function moonlightButton(id) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'mark';
-  btn.innerHTML = icon('gamepad', { size: 15 });
+  btn.innerHTML = icon('gamepad');
   btn.title = 'Экран и управление через Moonlight';
   btn.onclick = () => openMoonlight(id, sunshineHosts.get(id));
   return btn;
@@ -1782,7 +1833,7 @@ function allowButton(id) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'mark' + (on ? ' on' : '');
-  btn.innerHTML = icon(on ? 'unlock' : 'lock', { size: 15 });
+  btn.innerHTML = icon(on ? 'unlock' : 'lock');
   btn.title = on
     ? 'Забрать доступ к моему компьютеру'
     : 'Разрешить подключаться к моему компьютеру';
@@ -1790,8 +1841,14 @@ function allowButton(id) {
   return btn;
 }
 
-/** Компактный ползунок громкости участника рядом с его ником. */
-function peerVolumeSlider(id) {
+/**
+ * Компактный ползунок громкости: кнопка-выключатель и шкала рядом.
+ *
+ * Один на два случая — голос участника и звук трансляции. Отличались они только
+ * пределом и тем, куда сохранять значение, а кода было по тридцать строк на
+ * каждый, слово в слово.
+ */
+function volumeSlider({ max, label, get, set }) {
   const wrap = document.createElement('span');
   wrap.className = 'pv-mini';
 
@@ -1802,22 +1859,16 @@ function peerVolumeSlider(id) {
   const slider = document.createElement('input');
   slider.type = 'range';
   slider.min = 0;
-  slider.max = 400;
-  slider.value = Math.round(settings.peerVolumeOf(id) * 100);
+  slider.max = max;
 
   const show = () => {
     const v = Number(slider.value);
-    btn.innerHTML = icon(v === 0 ? 'speaker-off' : 'speaker', { size: 14 });
-    wrap.title = `Громкость ${v}%`;
+    btn.innerHTML = icon(v === 0 ? 'speaker-off' : 'speaker');
+    wrap.title = `${label} ${v}%`;
   };
 
-  // Перерисовка списка во время перетаскивания сбрасывала бы ползунок.
-  slider.addEventListener('pointerdown', () => (state.draggingVolume = true));
-  for (const ev of ['pointerup', 'pointercancel', 'blur']) {
-    slider.addEventListener(ev, () => setTimeout(() => (state.draggingVolume = false), 100));
-  }
   slider.oninput = () => {
-    settings.setPeerVolume(id, Number(slider.value) / 100);
+    set(Number(slider.value) / 100);
     show();
   };
 
@@ -1829,9 +1880,30 @@ function peerVolumeSlider(id) {
     slider.oninput();
   };
 
-  show();
+  /**
+   * Подтянуть сохранённое значение. Шкалу под пальцем не трогаем: громкость
+   * могла обновиться из-за чужого события ровно в этот момент, и дёрнуть её
+   * назад было бы хуже, чем показать на кадр устаревшее число.
+   */
+  wrap.sync = () => {
+    if (document.activeElement === slider) return;
+    slider.value = Math.round(get() * 100);
+    show();
+  };
+
+  wrap.sync();
   wrap.append(btn, slider);
   return wrap;
+}
+
+/** Громкость голоса участника. Держится по нику, а не по идентификатору. */
+function peerVolumeSlider(id) {
+  return volumeSlider({
+    max: 400,
+    label: 'Громкость',
+    get: () => settings.peerVolumeOf(id),
+    set: (v) => settings.setPeerVolume(id, v),
+  });
 }
 
 function applySpeaking() {

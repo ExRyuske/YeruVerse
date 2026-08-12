@@ -29,7 +29,12 @@ export class Pointers {
     // Что сейчас на сцене. Курсоры показываем только тем, кто смотрит то же
     // самое: иначе при двух трансляциях метки перемешаются.
     this.context = null;
-    this.cursors = new Map();   // peerId -> { el, seen }
+    this.cursors = new Map();   // peerId -> узел курсора в окне приложения
+    // Когда от участника последний раз что-то приходило. Отдельно от `cursors`:
+    // курсор может жить на слое поверх других окон, не имея узла в приложении,
+    // и без этой отметки он либо висел бы вечно, либо пропадал, стоит человеку
+    // перестать шевелить мышью.
+    this.seen = new Map();
     this._last = 0;
 
     const layer = document.createElement('div');
@@ -59,14 +64,14 @@ export class Pointers {
     mesh.on('peer-close', ({ id }) => this.drop(id));
 
     // Курсоры гаснут сами; когда их нет, и проверять нечего.
-    setInterval(() => this.cursors.size && this._expire(), 1000);
+    setInterval(() => this.seen.size && this._expire(), 1000);
   }
 
   /** Сменилось то, что показано на сцене — чужие курсоры больше не про это. */
   setContext(context) {
     if (this.context === context) return;
     this.context = context;
-    for (const id of [...this.cursors.keys()]) this.drop(id);
+    for (const id of [...this.cursors.keys()]) this._hide(id);
   }
 
   /** Смотрим чужую трансляцию — значит, есть куда показывать курсором. */
@@ -76,29 +81,76 @@ export class Pointers {
     if (!on) this._send({ type: 'out' });
   }
 
+  /**
+   * Курсор пропал совсем: участник ушёл, увёл мышь со сцены или замолчал.
+   * Об этом узнают оба места показа — и окно приложения, и прозрачный слой
+   * поверх других окон.
+   */
   drop(id) {
-    this.cursors.get(id)?.el.remove();
-    this.cursors.delete(id);
+    this._hide(id);
+    this.seen.delete(id);
     this.onRemote?.(id, { gone: true });
   }
 
-  /** Прямоугольник реального кадра внутри сцены (video рисуется с object-fit: contain). */
+  /**
+   * Убрать курсор только из окна приложения.
+   *
+   * «Показывают не на то, что у меня открыто» — это не «курсора больше нет».
+   * Слой поверх других окон живёт своей жизнью: он показывает тех, кто тычет в
+   * мой экран, и моя собственная сцена к этому отношения не имеет. Пока это
+   * было одним действием, каждое входящее сообщение рисовало курсор на слое и
+   * тут же его стирало — двадцать пять раз в секунду. Курсор мигал, а щелчки
+   * оставляли за собой вереницу кругов.
+   */
+  _hide(id) {
+    this.cursors.get(id)?.remove();
+    this.cursors.delete(id);
+  }
+
+  /**
+   * Прямоугольник реального кадра внутри сцены (video рисуется с
+   * object-fit: contain).
+   *
+   * Именно прямой потомок сцены: `video` в ней теперь не один. В углу лежит
+   * полоса камер, и каждая плитка — тоже `video`, причём в разметке они идут
+   * раньше плеера. Простой поиск находил первую попавшуюся камеру и мерил кадр
+   * по ней: координаты считались по её пропорциям, курсоры уезжали, а часть
+   * сцены вовсе переставала их принимать — со стороны это выглядит как
+   * подтормаживание. Развёрнутая камера лежит внутри своей обёртки и сюда тоже
+   * не попадает.
+   */
   _frame() {
+    // Замер кэшируем на десятую долю секунды. Каждый чужой курсор двигает свой
+    // узел, а следующий тут же спрашивает размеры сцены — браузер вынужден
+    // пересчитывать раскладку между записью и чтением, и на нескольких курсорах
+    // это заметно дёргает картинку. Раскладка меняется от разворота окна и
+    // поворота телефона, а не тридцать раз в секунду, поэтому свежесть в 100 мс
+    // здесь избыточна с запасом.
+    const now = performance.now();
+    if (this._frameAt && now - this._frameAt < 100) return this._frameCache;
+    this._frameAt = now;
+
     const stage = this.stage.getBoundingClientRect();
-    const v = this.stage.querySelector('video');
+    const v = this.stage.querySelector(':scope > video');
     if (v?.videoWidth && v?.videoHeight) {
       const scale = Math.min(stage.width / v.videoWidth, stage.height / v.videoHeight);
       const w = v.videoWidth * scale;
       const h = v.videoHeight * scale;
-      return {
+      return (this._frameCache = {
         left: stage.left + (stage.width - w) / 2,
         top: stage.top + (stage.height - h) / 2,
         width: w,
         height: h,
         stage,
-      };
+      });
     }
-    return { left: stage.left, top: stage.top, width: stage.width, height: stage.height, stage };
+    return (this._frameCache = {
+      left: stage.left,
+      top: stage.top,
+      width: stage.width,
+      height: stage.height,
+      stage,
+    });
   }
 
   /** Доля кадра под курсором или null, если курсор вне кадра. */
@@ -153,9 +205,10 @@ export class Pointers {
     // в игру, а не в приложение, и его собственная сцена может быть занята чем
     // угодно — но зрители-то показывают именно на его экран.
     this.onRemote?.(id, msg, peer);
+    this.seen.set(id, Date.now());
 
     // Внутри приложения рисуем только то, что показывают на текущей сцене.
-    if ((msg.v ?? null) !== this.context) return this.drop(id);
+    if ((msg.v ?? null) !== this.context) return this._hide(id);
 
     const f = this._frame();
     const left = f.left - f.stage.left + msg.x * f.width;
@@ -163,20 +216,18 @@ export class Pointers {
 
     if (msg.type === 'click') this._ping(msg.x, msg.y, peer);
 
-    let cur = this.cursors.get(id);
-    if (!cur) {
-      const el = document.createElement('div');
+    let el = this.cursors.get(id);
+    if (!el) {
+      el = document.createElement('div');
       el.className = 'ptr';
       el.innerHTML =
         '<svg viewBox="0 0 12 18" width="14" height="20"><path d="M1 1l10 8-4.5.6L9 15l-2 .9-2.4-5.3L1 13z"/></svg><span></span>';
       this.layer.appendChild(el);
-      cur = { el, seen: 0 };
-      this.cursors.set(id, cur);
+      this.cursors.set(id, el);
     }
-    cur.seen = Date.now();
-    cur.el.style.setProperty('--ptr', peer?.color ?? '#5b8cff');
-    cur.el.querySelector('span').textContent = peer?.name ?? '';
-    cur.el.style.transform = `translate(${left}px, ${top}px)`;
+    el.style.setProperty('--ptr', peer?.color ?? '#5b8cff');
+    el.querySelector('span').textContent = peer?.name ?? '';
+    el.style.transform = `translate(${left}px, ${top}px)`;
   }
 
   /** Короткая пульсирующая метка в точке клика. */
@@ -193,8 +244,8 @@ export class Pointers {
 
   _expire() {
     const now = Date.now();
-    for (const [id, c] of this.cursors) {
-      if (now - c.seen > STALE_MS) this.drop(id);
+    for (const [id, at] of this.seen) {
+      if (now - at > STALE_MS) this.drop(id);
     }
   }
 }

@@ -300,6 +300,14 @@ button.mark:hover:not(:disabled) {
 .mark.off { color: #ff6b6b; }
 .mark.on { color: var(--accent); }
 
+/* Значки внутри строки участника стоят вплотную, а группы отделены общим
+   отступом ряда. Пока они были прямыми участниками ряда, между каждыми двумя
+   значками зияли те же восемь пикселей, что и между ником и значками, — строка
+   растягивалась вдвое без всякой причины.
+   Пустая группа скрывается: иначе отступ ряда считался бы и вокруг неё. */
+.peer-marks, .peer-acts { display: flex; align-items: center; gap: 2px; }
+.peer-marks:empty, .peer-acts:empty { display: none; }
+
 /* Громкость участника прямо в строке с ником. */
 .pv-mini { display: flex; align-items: center; gap: 2px; margin-left: auto; }
 
@@ -317,7 +325,13 @@ button.icon {
   display: inline-flex; align-items: center; justify-content: center;
   width: 36px; height: 36px; padding: 0; flex: none;
 }
-.ico { fill: currentColor; flex: none; }
+/* Размер значка задаёт место, где он стоит, а не место вызова. Контекстов
+   ровно три: большая кнопка-квадрат, чип с подписью и мелкий значок в строке.
+   Пока размер приезжал аргументом, по проекту разошлось шесть разных чисел от
+   11 до 18, и соседние значки отличались на пиксель-другой. */
+.ico { width: 18px; height: 18px; fill: currentColor; flex: none; }
+.mark .ico, .tag > .ico, .hotkeys .clear .ico { width: 14px; height: 14px; }
+.views button > .ico { width: 16px; height: 16px; }
 /* Кнопки с подписью: иконка слева, текст следом. */
 button > .ico + span { margin-left: 7px; }
 button:has(> .ico) { display: inline-flex; align-items: center; }
@@ -382,7 +396,7 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
   border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px;
   background: color-mix(in srgb, var(--text) 4%, transparent);
 }
-.attach .ico { width: 18px; height: 18px; flex: none; color: var(--muted); }
+.attach .ico { color: var(--muted); }
 /* Над комнатой держат файл. Подсказка не должна ловить события мышью —
    иначе она же и перехватила бы бросок. */
 #screen-room.dropping::after {
