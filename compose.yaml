@@ -18,10 +18,6 @@ services:
       # TURN у Cloudflare: сервер сам выпускает короткоживущие учётки.
       CF_TURN_KEY_ID: ${CF_TURN_KEY_ID:-}
       CF_TURN_API_TOKEN: ${CF_TURN_API_TOKEN:-}
-      # Любой другой провайдер со статическими учётками — как запасной вариант.
-      TURN_URL: ${TURN_URL:-}
-      TURN_USER: ${TURN_USER:-}
-      TURN_PASS: ${TURN_PASS:-}
     expose:
       - "8080"
 

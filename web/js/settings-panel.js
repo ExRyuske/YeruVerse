@@ -1,12 +1,16 @@
-// Панель настроек и диагностика. Модуль ничего не знает про состояние комнаты
-// напрямую — всё, что ему нужно, приходит в initSettingsPanel.
+// Общее окно настроек, всплывающие настройки у кнопок и диагностика: всё, что
+// спрашивают про сам разговор, а не про то, что в нём происходит.
 
+import { hotkeys, mesh, native, net, settings, voice } from './core.js';
+import { state } from './state.js';
 import { icon } from './icons.js';
 import { PRESETS, HEIGHTS } from './settings.js';
 import { ACTIONS, label as hotkeyLabel } from './hotkeys.js';
-import { $, ui } from './ui.js';
-
-let ctx = null;
+import { modelTitle } from './denoise.js';
+import { $, toast, ui } from './ui.js';
+import { hiddenLabels } from './stage.js';
+import { sunshineHint } from './sunshine.js';
+import { enableMic } from './devices.js';
 
 /**
  * Есть ли чем нажимать сочетания.
@@ -19,18 +23,14 @@ let ctx = null;
 const hasKeyboard = () => matchMedia('(any-pointer: fine)').matches;
 
 const DENOISE = {
-  rnnoise: 'нейросетью — RNNoise',
   browser: 'средствами движка',
   off: 'НЕТ — ни модель, ни движок не взялись',
 };
 
-/**
- * @param {object} deps  settings, voice, mesh, net, native, hotkeys, toast,
- *                       peers() — карта участников, config() — ответ сервера,
- *                       sunshine(), sunshineHint(), enableMic()
- */
-export function initSettingsPanel(deps) {
-  ctx = deps;
+/** Что подавляет шум прямо сейчас: модель — по имени, остальное — словами. */
+const denoiseTitle = (kind) => DENOISE[kind] ?? `нейросетью — ${modelTitle(kind)}`;
+
+export function initSettingsPanel() {
   wireSettings();
   wireSunshine();
 }
@@ -49,37 +49,37 @@ function wireSettings() {
     if (hasKeyboard()) renderHotkeys();
   };
   ui('#btn-settings-close').onclick = () => {
-    ctx.hotkeys.cancelRecording();
+    hotkeys.cancelRecording();
     close();
   };
   modal.addEventListener('click', (e) => e.target === modal && close());
   document.addEventListener('keydown', (e) => e.key === 'Escape' && close());
 
   const name = ui('#set-name');
-  name.value = ctx.settings.get('name');
+  name.value = settings.get('name');
   // oninput, а не onchange: настройка должна сохраниться, даже если окно
   // закрыли, не убирая фокус с поля.
   name.oninput = () => {
     const n = name.value.trim();
-    ctx.settings.set('name', n);
-    if (n) ctx.net.profile(n, ctx.settings.get('color'));
+    settings.set('name', n);
+    if (n) net.profile(n, settings.get('color'));
   };
 
   bindRange('#set-voice-vol', '#out-voice-vol', 'voiceVolume');
   bindCheck('#set-ec', 'echoCancellation');
 
   const denoise = ui('#set-denoise');
-  denoise.value = ctx.settings.get('denoise');
-  denoise.onchange = () => ctx.settings.set('denoise', denoise.value);
+  denoise.value = settings.get('denoise');
+  denoise.onchange = () => settings.set('denoise', denoise.value);
   bindCheck('#set-agc', 'autoGainControl');
 
-  ui('#pick-mic').onchange = () => ctx.settings.set('micDevice', ui('#pick-mic').value);
-  ui('#pick-cam').onchange = () => ctx.settings.set('camDevice', ui('#pick-cam').value);
+  ui('#pick-mic').onchange = () => settings.set('micDevice', ui('#pick-mic').value);
+  ui('#pick-cam').onchange = () => settings.set('camDevice', ui('#pick-cam').value);
   bindCheck('#set-mirror', 'mirrorCam');
   wireStream();
 
   ui('#pick-output').onchange = () => {
-    ctx.settings.set('outputDevice', ui('#pick-output').value);
+    settings.set('outputDevice', ui('#pick-output').value);
   };
 
   // Полоска уровня помогает понять, ловит ли микрофон голос. Считаем её только
@@ -87,8 +87,8 @@ function wireSettings() {
   const micPop = ui('#pop-mic');
   setInterval(() => {
     if (micPop.hidden) return;
-    ui('#mic-level').textContent = ctx.voice.enabled
-      ? levelBar(ctx.voice.level) + (ctx.voice.muted ? '  (заглушён)' : '')
+    ui('#mic-level').textContent = voice.enabled
+      ? levelBar(voice.level) + (voice.muted ? '  (заглушён)' : '')
       : 'микрофон выключен';
   }, 150);
 
@@ -114,38 +114,38 @@ function wireStream() {
   }
 
   const show = () => {
-    preset.value = ctx.settings.get('quality');
-    height.value = String(ctx.settings.get('streamHeight'));
-    $('#set-fps').value = ctx.settings.get('streamFps');
-    $('#set-bitrate').value = ctx.settings.get('streamBitrate');
-    $('#out-fps').textContent = `${ctx.settings.get('streamFps')} к/с`;
-    $('#out-bitrate').textContent = `${ctx.settings.get('streamBitrate')} Мбит/с`;
+    preset.value = settings.get('quality');
+    height.value = String(settings.get('streamHeight'));
+    $('#set-fps').value = settings.get('streamFps');
+    $('#set-bitrate').value = settings.get('streamBitrate');
+    $('#out-fps').textContent = `${settings.get('streamFps')} к/с`;
+    $('#out-bitrate').textContent = `${settings.get('streamBitrate')} Мбит/с`;
   };
 
   preset.onchange = () => {
     const p = PRESETS[preset.value];
-    ctx.settings.set('quality', preset.value);
+    settings.set('quality', preset.value);
     if (p?.fps) {
-      ctx.settings.set('streamHeight', p.height);
-      ctx.settings.set('streamFps', p.fps);
-      ctx.settings.set('streamBitrate', p.bitrate);
+      settings.set('streamHeight', p.height);
+      settings.set('streamFps', p.fps);
+      settings.set('streamBitrate', p.bitrate);
     }
     show();
   };
 
-  const custom = () => ctx.settings.set('quality', 'custom');
+  const custom = () => settings.set('quality', 'custom');
   height.onchange = () => {
-    ctx.settings.set('streamHeight', Number(height.value));
+    settings.set('streamHeight', Number(height.value));
     custom();
     show();
   };
   $('#set-fps').oninput = () => {
-    ctx.settings.set('streamFps', Number($('#set-fps').value));
+    settings.set('streamFps', Number($('#set-fps').value));
     custom();
     show();
   };
   $('#set-bitrate').oninput = () => {
-    ctx.settings.set('streamBitrate', Number($('#set-bitrate').value));
+    settings.set('streamBitrate', Number($('#set-bitrate').value));
     custom();
     show();
   };
@@ -153,26 +153,23 @@ function wireStream() {
   show();
 }
 
-function bindRange(sel, outSel, key, after) {
+/** Ползунок «в процентах»: в настройках доля, на экране целые проценты. */
+function bindRange(sel, outSel, key) {
   const el = $(sel);
   const out = $(outSel);
-  const show = () => (out.textContent = `${Math.round(ctx.settings.get(key) * 100)}%`);
-  el.value = Math.round(ctx.settings.get(key) * 100);
+  const show = () => (out.textContent = `${Math.round(settings.get(key) * 100)}%`);
+  el.value = Math.round(settings.get(key) * 100);
   show();
   el.oninput = () => {
-    ctx.settings.set(key, Number(el.value) / 100);
+    settings.set(key, Number(el.value) / 100);
     show();
-    after?.();
   };
 }
 
-function bindCheck(sel, key, after) {
+function bindCheck(sel, key) {
   const el = $(sel);
-  el.checked = ctx.settings.get(key);
-  el.onchange = () => {
-    ctx.settings.set(key, el.checked);
-    after?.();
-  };
+  el.checked = settings.get(key);
+  el.onchange = () => settings.set(key, el.checked);
 }
 
 /**
@@ -184,48 +181,48 @@ function bindCheck(sel, key, after) {
 function wireSunshine() {
   // Sunshine бывает только на настольной системе — на телефоне этот раздел
   // спрашивал бы пароль от того, чего там нет.
-  if (!ctx.native.caps.remoteControl) return;
+  if (!native.caps.remoteControl) return;
   $('#sunshine-section').hidden = false;
-  $('#sunshine-reach').textContent = ctx.sunshineHint();
+  $('#sunshine-reach').textContent = sunshineHint();
   $('#btn-sun-save').onclick = async () => {
     try {
-      await ctx.native.sunshineCreds($('#set-sun-user').value.trim(), $('#set-sun-pass').value);
+      await native.sunshineCreds($('#set-sun-user').value.trim(), $('#set-sun-pass').value);
       $('#set-sun-pass').value = '';
-      ctx.toast('Сохранено: сопряжение с Moonlight теперь пройдёт без ручного PIN');
+      toast('Сохранено: сопряжение с Moonlight теперь пройдёт без ручного PIN');
     } catch (e) {
-      ctx.toast(`Не вышло: ${e.message ?? e}`);
+      toast(`Не вышло: ${e.message ?? e}`);
     }
   };
 }
 
 /** Действия горячих клавиш — те же, что у кнопок в шапке. */
 export function wireHotkeys() {
-  ctx.hotkeys.on('mic', () =>
-    ctx.voice.enabled ? ctx.voice.setMuted(!ctx.voice.muted) : ctx.enableMic({ manual: true })
+  hotkeys.on('mic', () =>
+    voice.enabled ? voice.setMuted(!voice.muted) : enableMic({ manual: true })
   );
-  ctx.hotkeys.on('deafen', () => ctx.voice.setDeafened(!ctx.voice.deafened));
-  // «Перехватить управление» вешает app.js: там живёт состояние комнаты.
+  hotkeys.on('deafen', () => voice.setDeafened(!voice.deafened));
+  // «Перехватить управление» вешает control-ui.js: это его дело целиком.
 
   // Молчать, пока зажато. По отпускании возвращаем то состояние, что было:
   // если человек и так был заглушён, кнопка не должна его «разглушить».
   let before = null;
-  ctx.hotkeys.on('push-mute', (down) => {
+  hotkeys.on('push-mute', (down) => {
     if (down) {
-      before = ctx.voice.muted;
-      ctx.voice.setMuted(true);
+      before = voice.muted;
+      voice.setMuted(true);
     } else if (before !== null) {
-      ctx.voice.setMuted(before);
+      voice.setMuted(before);
       before = null;
     }
   });
 
-  if (!ctx.native.caps.globalHotkeys) return;
+  if (!native.caps.globalHotkeys) return;
 
   // В приложении те же сочетания регистрируются системно — иначе они работали
   // бы только когда окно в фокусе, а нужны они как раз из игры.
-  const sync = () => ctx.native.setHotkeys(ctx.hotkeys.globalCombos()).catch(() => {});
-  ctx.hotkeys.onChange = sync;
-  ctx.native.onHotkey(({ id, down }) => ctx.hotkeys.fire(id, down));
+  const sync = () => native.setHotkeys(hotkeys.globalCombos()).catch(() => {});
+  hotkeys.onChange = sync;
+  native.onHotkey(({ id, down }) => hotkeys.fire(id, down));
   sync();
 }
 
@@ -244,7 +241,7 @@ function renderHotkeys() {
     const combo = document.createElement('button');
     combo.type = 'button';
     combo.className = 'combo';
-    combo.textContent = hotkeyLabel(ctx.hotkeys.get(action.id));
+    combo.textContent = hotkeyLabel(hotkeys.get(action.id));
 
     const clear = document.createElement('button');
     clear.type = 'button';
@@ -252,16 +249,16 @@ function renderHotkeys() {
     clear.innerHTML = icon('close');
     clear.title = 'Вернуть сочетание по умолчанию';
     clear.onclick = () => {
-      ctx.hotkeys.reset(action.id);
+      hotkeys.reset(action.id);
       renderHotkeys();
     };
 
     combo.onclick = async () => {
       combo.classList.add('recording');
       combo.textContent = 'нажмите клавиши…';
-      const next = await ctx.hotkeys.record();
+      const next = await hotkeys.record();
       combo.classList.remove('recording');
-      if (next) ctx.hotkeys.set(action.id, next);
+      if (next) hotkeys.set(action.id, next);
       renderHotkeys();
     };
 
@@ -273,7 +270,7 @@ function renderHotkeys() {
 /** Что видно про соединения — первое, куда смотреть, когда «не слышно». */
 async function renderDiagnostics() {
   const lines = [
-    `сервер:     ${ctx.net.connected ? 'на связи' : 'нет связи'}  ${ctx.net.base}`,
+    `сервер:     ${net.connected ? 'на связи' : 'нет связи'}  ${net.base}`,
     // «Защищённый контекст» — это термин браузера, и в строке диагностики он
     // спрашивает больше, чем отвечает. Пишем то, ради чего строка здесь стоит.
     `устройства: ${
@@ -282,31 +279,31 @@ async function renderDiagnostics() {
         : 'НЕДОСТУПНЫ — без https браузер не даёт ни микрофон, ни камеру'
     }`,
     `приложение: ${describeNative()}`,
-    `задержка:   ${Number.isFinite(ctx.net.rtt) ? Math.round(ctx.net.rtt) + ' мс' : '—'}`,
-    `TURN:       ${ctx.config().turn ? 'есть' : 'НЕТ — часть зрителей не соединится'}`,
-    `Sunshine:   ${ctx.sunshine() || 'не запущен'}`,
-    `выключено:  ${ctx.hidden().join(', ') || 'ничего'}`,
-    `микрофон:   ${ctx.voice.enabled ? (ctx.voice.muted ? 'включён, заглушён' : 'в эфире') : 'выключен'}`,
+    `задержка:   ${Number.isFinite(net.rtt) ? Math.round(net.rtt) + ' мс' : '—'}`,
+    `TURN:       ${state.config.turn ? 'есть' : 'НЕТ — часть зрителей не соединится'}`,
+    `Sunshine:   ${state.sunshine || 'не запущен'}`,
+    `выключено:  ${hiddenLabels().join(', ') || 'ничего'}`,
+    `микрофон:   ${voice.enabled ? (voice.muted ? 'включён, заглушён' : 'в эфире') : 'выключен'}`,
     // Что подавляет шум на самом деле: выбор в настройках и то, что получилось,
     // расходятся ровно там, где это важнее всего заметить.
-    `шумодав:    ${DENOISE[ctx.voice.denoising] ?? ctx.voice.denoising}`,
-    `слышим:     ${ctx.voice.remotes.size} из ${Math.max(0, ctx.peers().size - 1)}`,
+    `шумодав:    ${denoiseTitle(voice.denoising)}`,
+    `слышим:     ${voice.remotes.size} из ${Math.max(0, state.peers.size - 1)}`,
     '',
   ];
 
-  const rows = await ctx.mesh.diagnostics();
+  const rows = await mesh.diagnostics();
   if (!rows.length) lines.push('соединений с участниками нет');
   for (const r of rows) {
-    const name = ctx.peers().get(r.id)?.name ?? r.id.slice(0, 6);
+    const name = state.peers.get(r.id)?.name ?? r.id.slice(0, 6);
     lines.push(`${name}: ${r.state}/${r.ice} · канал ${r.ctl} · путь ${r.path} · дорожек ${r.tracks}`);
   }
   $('#diag').textContent = lines.join('\n');
 }
 
 function describeNative() {
-  if (!ctx.native.available) return 'нет, обычный браузер';
-  if (ctx.native.error) return `мост не отвечает: ${ctx.native.error}`;
-  return ctx.native.caps.platform;
+  if (!native.available) return 'нет, обычный браузер';
+  if (native.error) return `мост не отвечает: ${native.error}`;
+  return native.caps.platform;
 }
 
 function levelBar(level) {
@@ -355,8 +352,8 @@ function fillDevices(select, list, auto, key) {
   for (const d of list) select.append(new Option(d.label, d.deviceId));
   select.disabled = false;
 
-  select.value = ctx.settings.get(key);
-  if (!select.value && list.length) ctx.settings.set(key, '');
+  select.value = settings.get(key);
+  if (!select.value && list.length) settings.set(key, '');
 }
 
 /** Список устройств вывода. Переключение поддерживают не все движки. */
@@ -364,7 +361,7 @@ async function refreshOutputs() {
   const select = $('#pick-output');
   const note = $('#output-note');
 
-  if (!ctx.voice.canChooseOutput) {
+  if (!voice.canChooseOutput) {
     select.disabled = true;
     select.innerHTML = '<option>Как в системе</option>';
     // На движке WebKit — это Safari и окно приложения на macOS — выбирать
@@ -376,7 +373,7 @@ async function refreshOutputs() {
   }
   note.textContent = '';
 
-  const list = uniqueDevices(await ctx.voice.outputs().catch(() => []));
+  const list = uniqueDevices(await voice.outputs().catch(() => []));
   fillDevices(select, list, 'Системное по умолчанию', 'outputDevice');
 }
 
@@ -396,7 +393,7 @@ async function refreshCameras() {
 export async function refreshDevices() {
   await refreshOutputs();
   await refreshCameras();
-  const list = uniqueDevices(await ctx.voice.devices().catch(() => []));
+  const list = uniqueDevices(await voice.devices().catch(() => []));
   fillDevices($('#pick-mic'), list, 'По умолчанию', 'micDevice');
 }
 

@@ -1,5 +1,6 @@
-//! HTTP + WebSocket сервер комнат. Живёт отдельно от `main`, чтобы его можно
-//! было поднять внутри десктопного приложения, а не только как отдельный демон.
+//! HTTP + WebSocket сервер комнат. Живёт отдельно от `main` и умеет слушать
+//! порт 0: так его поднимают тесты (см. `tests/server.rs`), и так же его можно
+//! запустить внутри другого приложения, а не только отдельным демоном.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -24,6 +25,7 @@ use tracing::info;
 use crate::hub::{now_ms, Hub, Peer};
 use crate::protocol::{ClientMsg, PeerInfo};
 use crate::turn::{Provider, Turn};
+use crate::updates::Updates;
 
 /// Настройки запуска. `web_dir: None` — статику не отдаём (десктоп подаёт её сам).
 #[derive(Debug, Clone, Default)]
@@ -52,6 +54,7 @@ pub struct Handle {
 struct AppState {
     hub: Hub,
     turn: Turn,
+    updates: Updates,
 }
 
 /// Поднимает сервер и сразу возвращает управление.
@@ -62,11 +65,12 @@ pub async fn start(config: Config) -> std::io::Result<Handle> {
     let web_dir = config.web_dir.clone();
     let turn = Turn::new(config.turn.clone());
     info!("TURN: {}", turn.describe());
-    let state = Arc::new(AppState { hub: Hub::new(), turn });
+    let state = Arc::new(AppState { hub: Hub::new(), turn, updates: Updates::new() });
 
     let mut app = Router::new()
         .route("/ws", get(ws_handler))
         .route("/config.json", get(config_json))
+        .route("/update.json", get(update_json))
         .route("/reach", get(reach))
         .route(
             "/healthz",
@@ -107,6 +111,13 @@ async fn config_json(State(state): State<Arc<AppState>>) -> Json<serde_json::Val
         })
         .unwrap_or(false);
     Json(json!({ "iceServers": ice, "turn": has_turn }))
+}
+
+/// Последняя выпущенная версия приложения — для тех сборок, которые не умеют
+/// обновляться сами. Настольная спрашивает свой плагин обновлений и сюда не
+/// ходит; Android узнаёт версию отсюда и открывает ссылку на APK системой.
+async fn update_json(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(state.updates.latest().await)
 }
 
 /// Виден ли снаружи порт Sunshine у того, кто спрашивает.
@@ -192,6 +203,13 @@ async fn secure_headers(req: Request, next: Next) -> Response {
 /// однажды это нарушит. С такой политикой внедрённый скрипт просто не
 /// запустится: ни встроенный, ни подключённый со стороны.
 ///
+/// `wasm-unsafe-eval` — про шумодав, и без него он молчал. Chromium (а значит и
+/// вебвью Android) считает сборку WebAssembly генерацией кода и запрещает её,
+/// если политика этого прямо не разрешила. Ломалось это тихо: узел обработки в
+/// графе есть, дорожка живая, присутствие говорит «микрофон включён» — а
+/// собеседники слышат тишину, потому что модель внутри так и не поднялась.
+/// Разрешение касается только WebAssembly: `eval` для JS по-прежнему закрыт.
+///
 /// `blob:` нужен картинкам и видео: файлы из чата и потоки участников живут
 /// именно так. `frame-ancestors 'none'` запрещает встраивать комнату в чужую
 /// страницу — иначе её можно накрыть прозрачным слоем и ловить нажатия.
@@ -200,7 +218,7 @@ base-uri 'none'; \
 object-src 'none'; \
 frame-ancestors 'none'; \
 form-action 'none'; \
-script-src 'self'; \
+script-src 'self' 'wasm-unsafe-eval'; \
 style-src 'self'; \
 img-src 'self' data: blob:; \
 media-src 'self' blob:; \
@@ -243,24 +261,18 @@ async fn client_loop(socket: WebSocket, state: Arc<AppState>) {
             }
         };
 
+        // Пока комната не названа, разговаривать не о чем: единственное, что
+        // принимается до входа, — это сам вход и замер задержки.
         match msg {
             ClientMsg::Join { room, name, color } => {
                 if room_id.is_some() {
                     continue; // повторный join в том же сокете игнорируем
                 }
                 let room = sanitize_room(&room);
-
-                let display = clamp(name.unwrap_or_default().trim(), 32);
-                let display = if display.is_empty() {
-                    format!("Гость-{}", &peer_id[..4])
-                } else {
-                    display
-                };
-
                 let peer = Peer {
                     info: PeerInfo {
                         id: peer_id.clone(),
-                        name: display,
+                        name: display_name(name, &peer_id),
                         color: sanitize_color(color.as_deref()),
                         voice: false,
                         muted: false,
@@ -275,60 +287,13 @@ async fn client_loop(socket: WebSocket, state: Arc<AppState>) {
                 room_id = Some(room);
             }
 
-            ClientMsg::Signal { to, data } => {
-                let Some(room) = room_id.as_deref() else { continue };
-                state.hub.send_to(
-                    room,
-                    &to,
-                    &json!({ "t": "signal", "from": peer_id, "data": data }),
-                );
-            }
-
             ClientMsg::Ping { at } => {
-                let _ = tx.send(json!({ "t": "pong", "at": at, "srv": now_ms() }).to_string());
+                let _ = tx.send(json!({ "t": "pong", "at": at }).to_string());
             }
 
-            ClientMsg::Chat { text } => {
+            in_room => {
                 let Some(room) = room_id.as_deref() else { continue };
-                let text = clamp(text.trim(), 500);
-                if text.is_empty() {
-                    continue;
-                }
-                state.hub.broadcast(
-                    room,
-                    &json!({ "t": "chat", "from": peer_id, "text": text, "srv": now_ms() }),
-                    None,
-                );
-            }
-
-            ClientMsg::Profile { name, color } => {
-                let Some(room) = room_id.as_deref() else { continue };
-                let name = name.map(|n| clamp(n.trim(), 32));
-                let color = color.as_deref().map(|c| sanitize_color(Some(c)));
-                if let Some(info) = state.hub.set_profile(room, &peer_id, name, color) {
-                    state.hub.broadcast(room, &json!({ "t": "presence", "peer": info }), None);
-                }
-            }
-
-            ClientMsg::File { meta } => {
-                let Some(room) = room_id.as_deref() else { continue };
-                // Карточка приходит от клиента и попадает в чужой интерфейс,
-                // поэтому ограничиваем её размер; содержимое рисуется текстом.
-                if meta.to_string().len() > 4096 {
-                    continue;
-                }
-                state.hub.broadcast(
-                    room,
-                    &json!({ "t": "file", "from": peer_id, "meta": meta, "srv": now_ms() }),
-                    None,
-                );
-            }
-
-            ClientMsg::Presence(presence) => {
-                let Some(room) = room_id.as_deref() else { continue };
-                if let Some(info) = state.hub.set_presence(room, &peer_id, presence) {
-                    state.hub.broadcast(room, &json!({ "t": "presence", "peer": info }), None);
-                }
+                handle_in_room(&state, room, &peer_id, in_room);
             }
         }
     }
@@ -339,6 +304,64 @@ async fn client_loop(socket: WebSocket, state: Arc<AppState>) {
     }
     drop(tx);
     let _ = writer.await;
+}
+
+/// Всё, что имеет смысл только внутри комнаты. Сюда попадает уже вошедший
+/// участник: проверку «а в комнате ли он» делает вызывающий, один раз на все
+/// сообщения сразу.
+fn handle_in_room(state: &AppState, room: &str, peer_id: &str, msg: ClientMsg) {
+    match msg {
+        ClientMsg::Signal { to, data } => {
+            state.hub.send_to(room, &to, &json!({ "t": "signal", "from": peer_id, "data": data }));
+        }
+
+        ClientMsg::Chat { text } => {
+            let text = limit(text.trim(), 500);
+            if text.is_empty() {
+                return;
+            }
+            let msg = json!({ "t": "chat", "from": peer_id, "text": text, "srv": now_ms() });
+            state.hub.broadcast(room, &msg);
+        }
+
+        ClientMsg::Profile { name, color } => {
+            let name = name.map(|n| limit(n.trim(), 32));
+            let color = color.as_deref().map(|c| sanitize_color(Some(c)));
+            if let Some(info) = state.hub.set_profile(room, peer_id, name, color) {
+                state.hub.broadcast(room, &json!({ "t": "presence", "peer": info }));
+            }
+        }
+
+        ClientMsg::File { meta } => {
+            // Карточка приходит от клиента и попадает в чужой интерфейс,
+            // поэтому ограничиваем её размер; содержимое рисуется текстом.
+            if meta.to_string().len() > 4096 {
+                return;
+            }
+            let msg = json!({ "t": "file", "from": peer_id, "meta": meta, "srv": now_ms() });
+            state.hub.broadcast(room, &msg);
+        }
+
+        ClientMsg::Presence(presence) => {
+            if let Some(info) = state.hub.set_presence(room, peer_id, presence) {
+                state.hub.broadcast(room, &json!({ "t": "presence", "peer": info }));
+            }
+        }
+
+        // Вход и замер задержки разобраны до комнаты.
+        ClientMsg::Join { .. } | ClientMsg::Ping { .. } => {}
+    }
+}
+
+/// Имя в списке участников. Пустое поле — не ошибка: человек мог войти по
+/// ссылке, ни о чём не спрашивая, и в комнате его всё равно надо как-то звать.
+fn display_name(name: Option<String>, peer_id: &str) -> String {
+    let given = limit(name.unwrap_or_default().trim(), 32);
+    if given.is_empty() {
+        format!("Гость-{}", &peer_id[..4])
+    } else {
+        given
+    }
 }
 
 /// Метка комнаты для логов. Код комнаты — это секрет: попав в журнал, он даёт
@@ -368,7 +391,9 @@ fn sanitize_room(raw: &str) -> String {
     }
 }
 
-fn clamp(s: &str, max_chars: usize) -> String {
+/// Обрезка по символам, а не по байтам: в кириллице их по два на букву, и по
+/// байтам ник обрывался бы вдвое раньше — а то и посреди символа.
+fn limit(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }
 
@@ -382,5 +407,58 @@ fn sanitize_color(raw: Option<&str>) -> String {
         c.to_ascii_lowercase()
     } else {
         DEFAULT.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Код комнаты становится ключом в памяти и меткой в логе: всё, что могло
+    /// бы значить в них что-то своё, до нас доезжать не должно.
+    #[test]
+    fn room_code_survives_only_as_plain_text() {
+        assert_eq!(sanitize_room("Комната/../etc"), "etc");
+        assert_eq!(sanitize_room("My-Room_1"), "my-room_1");
+        assert_eq!(sanitize_room("a b c"), "abc");
+        assert_eq!(sanitize_room(&"x".repeat(200)).len(), 96);
+        // Пустой код — это не ошибка входа, а новая случайная комната.
+        assert_eq!(sanitize_room("://?#").len(), 8);
+    }
+
+    /// Цвет уезжает в чужой style — только строгий `#rrggbb`.
+    #[test]
+    fn color_is_either_a_hex_triplet_or_the_default() {
+        assert_eq!(sanitize_color(Some("#AABBCC")), "#aabbcc");
+        assert_eq!(sanitize_color(Some("red")), "#5b8cff");
+        assert_eq!(sanitize_color(Some("#abc")), "#5b8cff");
+        assert_eq!(sanitize_color(Some("#00ff00;x")), "#5b8cff");
+        assert_eq!(sanitize_color(None), "#5b8cff");
+    }
+
+    /// Метка для логов должна отличать комнаты и не выдавать их кодов.
+    #[test]
+    fn log_tag_hides_the_code() {
+        let tagged = tag("секретная-комната");
+        assert_eq!(tagged.len(), 8);
+        assert!(tagged.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(tagged, tag("секретная-комната"));
+        assert_ne!(tagged, tag("другая-комната"));
+    }
+
+    /// Обрезаем по символам: в кириллице их по два байта.
+    #[test]
+    fn limit_counts_characters() {
+        assert_eq!(limit("Вячеслав", 4), "Вяче");
+        assert_eq!(limit("abc", 10), "abc");
+        assert_eq!(limit("", 10), "");
+    }
+
+    #[test]
+    fn nameless_guest_still_gets_a_name() {
+        assert_eq!(display_name(None, "abcdef123456"), "Гость-abcd");
+        assert_eq!(display_name(Some("   ".into()), "abcdef123456"), "Гость-abcd");
+        assert_eq!(display_name(Some("  Аня ".into()), "abcdef123456"), "Аня");
+        assert_eq!(display_name(Some("и".repeat(50)), "abcdef123456").chars().count(), 32);
     }
 }

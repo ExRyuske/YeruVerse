@@ -22,10 +22,13 @@ chat history, no accounts, no cookies.
 ## In a room
 
 Screen and camera share independently, several streams at once, each with its
-own remembered volume. Voice goes over a full WebRTC mesh with RNNoise
-suppression. Chat takes pasted images and dropped files, which download from a
-swarm of peers rather than from the server. Everyone's pointer is visible over
-the video.
+own remembered volume. Voice goes over a full WebRTC mesh, with a choice of
+noise suppression: **RNNoise** by default — tiny and instant — or
+**DeepFilterNet 3**, which is far better on real noise and downloads its 18 MB
+model once, only if you pick it. Both run on your own machine, from files served
+by your own server. Chat takes pasted images and dropped files, which download
+from a swarm of peers rather than from the server. Everyone's pointer is visible
+over the video.
 
 Two ways to drive someone else's machine: **WebRTC input** straight from the
 browser, and **Sunshine + Moonlight** when it has to be a game — full-screen
@@ -59,8 +62,7 @@ only accepted from the same key.
 | Variable | Purpose |
 |---|---|
 | `PORT`, `WEB_DIR` | HTTP port and static directory |
-| `CF_TURN_KEY_ID`, `CF_TURN_API_TOKEN` | TURN via Cloudflare (recommended) |
-| `TURN_URL`, `TURN_USER`, `TURN_PASS`, `TURN_TTL` | any other TURN provider |
+| `CF_TURN_KEY_ID`, `CF_TURN_API_TOKEN`, `TURN_TTL` | TURN via Cloudflare |
 
 ## Deploying
 
@@ -74,16 +76,23 @@ lives in `ghcr.io/exryuske/yeruverse`; GitHub packages are private by default,
 so until you make it public `docker compose up` answers `unauthorized`.
 
 **TURN** is what saves the connections that cannot be made directly — mobile
-carriers and corporate networks hand out symmetric NAT. You do not need your own
-coturn: the server mints short-lived Cloudflare credentials itself. Check with
-`curl -s https://your-domain/config.json` — it should say `"turn": true`.
+carriers and corporate networks hand out symmetric NAT. Cloudflare is the only
+provider here, and on purpose: it mints short-lived credentials, while any other
+one would mean a permanent login and password handed to every browser in the
+room. STUN is Cloudflare's and Google's open servers, wired into the page. Check
+with `curl -s https://your-domain/config.json` — it should say `"turn": true`.
 
 ## Releasing
 
 **`git push` to `main` is the whole procedure.** CI bumps the patch version,
 tags it, builds the image, the installers and the APK, and publishes the
-release. The app checks `releases/latest/download/latest.json` every six hours
-and verifies the package signature against a built-in key.
+release.
+
+Every build checks for updates every six hours. The desktop app installs them
+itself, verifying the package signature against a built-in key. Android cannot:
+packages there are installed by the system, so the app compares its version with
+the one the room server reads out of `latest.json`, and opens the APK link —
+the rest is the system's usual install prompt.
 
 By hand only for `minor`/`major` (Actions → CI → Run workflow) or to skip a
 release (`[skip release]` in the commit message).
@@ -103,10 +112,21 @@ otherwise the installers are built unsigned and nothing can ever update:
 
 ```
 src/                 server: WebSocket, in-memory rooms, ICE credentials
-web/js/              front end: networking, WebRTC, voice, chat, pointers
+web/js/              front end, one module per part of the room
 desktop/src-tauri/   Tauri shell: input, hotkeys, overlay, Sunshine bridge
 scripts/             icons, Android project patches, build, signing, release
 ```
+
+The front end has no bundler: the browser loads the modules itself. `core.js`
+holds the long-lived objects (socket, WebRTC mesh, voice, settings), `state.js`
+the room as data, and every other module owns one visible part of it — the
+stage, the participant list, the chat, the shares, the Sunshine bridge. They
+never call each other's drawing directly: a module says what it can repaint,
+and the rest ask by name through `render.js`.
+
+`make check` runs formatting, clippy, the tests and `scripts/check_web.py` —
+the last one reads the modules and verifies that every import exists, every
+`#id` is in the markup and nothing imports in a circle.
 
 Licences: **RNNoise** — BSD-3-Clause, **Font Awesome Free** — CC BY 4.0, both
 under `web/vendor/`.

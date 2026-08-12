@@ -28,11 +28,11 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REPO = 'ExRyuske/YeruVerse'
-CARGO = ROOT / 'desktop/src-tauri/Cargo.toml'
+APP = ROOT / 'desktop/src-tauri'
 
 PACKAGES = (
     (ROOT / 'Cargo.toml', ROOT / 'Cargo.lock', 'yeruverse'),
-    (ROOT / 'desktop/src-tauri/Cargo.toml', ROOT / 'desktop/src-tauri/Cargo.lock', 'yeruverse-desktop'),
+    (APP / 'Cargo.toml', APP / 'Cargo.lock', 'yeruverse-desktop'),
 )
 VERSION = re.compile(r'^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$')
 
@@ -89,7 +89,6 @@ TARGETS = [
 ]
 
 
-
 def cmd_bump(args: argparse.Namespace) -> None:
     versions = [package_version(manifest, name) for manifest, _, name in PACKAGES]
     if len(set(versions)) != 1:
@@ -111,7 +110,7 @@ def cmd_manifest(args: argparse.Namespace) -> None:
     # Cargo.toml. Разойдись они — обновлятель увидит новую версию, скачает
     # пакет, тот представится старой, и предложение появится снова. И так по
     # кругу, пока кто-нибудь не догадается сверить два числа.
-    built = re.search(r'^version = "([^"]+)"', CARGO.read_text(), re.M)
+    built = re.search(r'^version = "([^"]+)"', (APP / 'Cargo.toml').read_text(), re.M)
     if not built:
         raise SystemExit('не нашли версию в Cargo.toml приложения')
     if built.group(1) != version:

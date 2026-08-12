@@ -1,23 +1,15 @@
 // Полносвязная WebRTC-сеть между зрителями. Через неё идут и куски файла,
 // и демонстрация экрана — сервер видит только SDP/ICE.
 
-// Собираем конфиг в момент создания соединения: TURN приезжает из /config.json
-// уже после загрузки модуля, а у Cloudflare учётки ещё и короткоживущие.
-const iceConfig = () => ({
-  iceServers: [
-    // Несколько STUN от разных операторов: один может быть недоступен из сети
-    // конкретного зрителя, и тогда сработает следующий.
-    {
-      urls: [
-        'stun:stun.cloudflare.com:3478',
-        'stun:stun.l.google.com:19302',
-        'stun:stun1.l.google.com:19302',
-      ],
-    },
-    ...(window.YERUVERSE_ICE ?? []),
+// Несколько STUN от разных операторов: один может быть недоступен из сети
+// конкретного зрителя, и тогда сработает следующий.
+const STUN = {
+  urls: [
+    'stun:stun.cloudflare.com:3478',
+    'stun:stun.l.google.com:19302',
+    'stun:stun1.l.google.com:19302',
   ],
-  bundlePolicy: 'max-bundle',
-});
+};
 
 class Conn {
   constructor(mesh, id) {
@@ -32,7 +24,7 @@ class Conn {
     this.data = null;
     this.senders = new Map();   // 'mic' | 'screen' -> RTCRtpSender[]
 
-    const pc = new RTCPeerConnection(iceConfig());
+    const pc = new RTCPeerConnection(mesh.iceConfig());
     this.pc = pc;
 
     pc.onicecandidate = ({ candidate }) => {
@@ -205,6 +197,10 @@ export class Mesh extends EventTarget {
     this.seen = new Map();     // id потока -> { peer, stream }, пришедшие раньше подписи
     this.videoBitrate = 8_000_000;   // потолок для трансляции, бит/с
     this.videoFramerate = 60;
+    // TURN приезжает из /config.json уже после загрузки модуля, а у Cloudflare
+    // учётки ещё и короткоживущие: список обновляют снаружи, а читается он в
+    // момент создания соединения.
+    this.iceServers = [];
     net.addEventListener('signal', (e) => {
       const { from, data } = e.detail;
       this._ensure(from).onSignal(data);
@@ -225,6 +221,10 @@ export class Mesh extends EventTarget {
   }
 
   get selfId() { return this.net.selfId; }
+
+  iceConfig() {
+    return { iceServers: [STUN, ...this.iceServers], bundlePolicy: 'max-bundle' };
+  }
 
   emit(type, detail) { this.dispatchEvent(new CustomEvent(type, { detail })); }
   on(type, fn) { this.addEventListener(type, (e) => fn(e.detail)); }
@@ -325,7 +325,7 @@ export class Mesh extends EventTarget {
     if (kind === 'mic' || !sender?.track) return;
     try {
       // Подсказка кодировщику: в потоке движение, а не статичный документ.
-      sender.track.contentHint = kind === 'cam' ? 'motion' : 'motion';
+      sender.track.contentHint = 'motion';
 
       const params = sender.getParameters();
       params.encodings ??= [{}];

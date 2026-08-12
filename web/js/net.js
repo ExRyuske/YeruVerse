@@ -1,6 +1,5 @@
-// Тонкий транспорт до сервера: комната, команды плеера, чат и транзит
-// WebRTC-сигналинга. Плюс синхронизация часов с сервером — вся логика
-// позиционирования опирается на единое серверное время, а не на Date.now().
+// Тонкий транспорт до сервера: вход в комнату, чат, карточки файлов и транзит
+// WebRTC-сигналинга. Всё остальное идёт мимо него, напрямую между участниками.
 
 export class Net extends EventTarget {
   constructor() {
@@ -9,7 +8,6 @@ export class Net extends EventTarget {
     this.base = location.origin;   // в десктопе указывает на выбранный сервер
     this.selfId = null;
     this.room = null;
-    this.offset = 0;      // serverNow ≈ Date.now() + offset
     this.rtt = Infinity;
     this._samples = [];
     this._queue = [];
@@ -19,11 +17,6 @@ export class Net extends EventTarget {
 
   get connected() {
     return this.ws && this.ws.readyState === WebSocket.OPEN;
-  }
-
-  /** Серверное время в миллисекундах, скорректированное на смещение часов. */
-  now() {
-    return Date.now() + this.offset;
   }
 
   connect({ base, room, name, color }) {
@@ -106,15 +99,12 @@ export class Net extends EventTarget {
     this.send({ t: 'ping', at: Date.now() });
   }
 
-  _onPong({ at, srv }) {
-    const rtt = Date.now() - at;
-    // Классическая NTP-оценка: сервер отметил время примерно на середине RTT.
-    this._samples.push({ rtt, offset: srv + rtt / 2 - Date.now() });
+  _onPong({ at }) {
+    this._samples.push(Date.now() - at);
     if (this._samples.length > 12) this._samples.shift();
-    // Берём образец с наименьшим RTT — он меньше всех искажён джиттером.
-    const best = this._samples.reduce((a, b) => (b.rtt < a.rtt ? b : a));
-    this.offset = best.offset;
-    this.rtt = best.rtt;
+    // Показываем наименьший из последних замеров: он меньше всех искажён
+    // джиттером, а скачущее вдвое число в подсказке ни о чём не говорит.
+    this.rtt = Math.min(...this._samples);
     this.dispatchEvent(new CustomEvent('status', { detail: { online: true, rtt: this.rtt } }));
   }
 

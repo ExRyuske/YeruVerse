@@ -1,12 +1,15 @@
-//! Откуда брать TURN. Свой coturn держать не обязательно: у Cloudflare он
-//! бесплатен до 1000 ГБ в месяц и раздаёт короткоживущие ключи, которые не
-//! страшно отдавать в браузер.
+//! Откуда брать TURN.
 //!
-//! Поддерживаются три варианта:
-//! * `cloudflare` — сервер сам просит у API свежие учётки и кэширует их;
-//! * `static` — любой другой провайдер (Metered, Twilio, Xirsys, свой coturn),
-//!   у которого учётки постоянные;
-//! * ничего — работает только прямое соединение через STUN.
+//! Вариантов ровно два: Cloudflare — или ничего, только STUN. Своего coturn нет
+//! и не предвидится: у Cloudflare TURN бесплатен до 1000 ГБ в месяц и раздаёт
+//! короткоживущие учётки, которые не страшно отдавать в браузер. Поддержка
+//! произвольного провайдера со статическими учётками отсюда убрана намеренно:
+//! постоянные логин и пароль всё равно уезжают в чужой браузер, где их может
+//! прочитать кто угодно, а починить это, не выпуская короткоживущих ключей,
+//! нельзя.
+//!
+//! Список STUN зашит на стороне страницы: это открытые серверы Cloudflare и
+//! Google, учётных данных им не нужно.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -18,18 +21,14 @@ use tracing::warn;
 /// Как долго держим выданные учётки, прежде чем просить новые.
 const REFRESH_BEFORE: Duration = Duration::from_secs(60 * 30);
 
-#[derive(Debug, Clone)]
-pub struct Static {
-    pub urls: String,
-    pub username: String,
-    pub credential: String,
-}
+/// Адрес, по которому Cloudflare выпускает учётки.
+const CF_ENDPOINT: &str = "https://rtc.live.cloudflare.com/v1/turn/keys";
 
 #[derive(Debug, Clone, Default)]
 pub enum Provider {
+    /// Только STUN: прямое соединение или ничего.
     #[default]
     None,
-    Static(Static),
     Cloudflare {
         key_id: String,
         token: String,
@@ -38,29 +37,19 @@ pub enum Provider {
 }
 
 impl Provider {
-    /// Конфигурация читается из окружения; Cloudflare имеет приоритет.
     pub fn from_env() -> Self {
-        let cf_key = std::env::var("CF_TURN_KEY_ID").ok().filter(|s| !s.is_empty());
-        let cf_token = std::env::var("CF_TURN_API_TOKEN").ok().filter(|s| !s.is_empty());
-        if let (Some(key_id), Some(token)) = (cf_key, cf_token) {
-            let ttl = std::env::var("TURN_TTL").ok().and_then(|t| t.parse().ok()).unwrap_or(86400);
-            return Provider::Cloudflare { key_id, token, ttl };
-        }
-
-        match std::env::var("TURN_URL").ok().filter(|s| !s.is_empty()) {
-            Some(urls) => Provider::Static(Static {
-                urls,
-                username: std::env::var("TURN_USER").unwrap_or_default(),
-                credential: std::env::var("TURN_PASS").unwrap_or_default(),
-            }),
-            None => Provider::None,
-        }
+        let key_id = std::env::var("CF_TURN_KEY_ID").ok().filter(|s| !s.is_empty());
+        let token = std::env::var("CF_TURN_API_TOKEN").ok().filter(|s| !s.is_empty());
+        let (Some(key_id), Some(token)) = (key_id, token) else {
+            return Provider::None;
+        };
+        let ttl = std::env::var("TURN_TTL").ok().and_then(|t| t.parse().ok()).unwrap_or(86400);
+        Provider::Cloudflare { key_id, token, ttl }
     }
 
     pub fn describe(&self) -> &'static str {
         match self {
             Provider::None => "нет (только STUN — часть зрителей не соединится)",
-            Provider::Static(_) => "статические учётные данные",
             Provider::Cloudflare { .. } => "Cloudflare, короткоживущие учётки",
         }
     }
@@ -90,35 +79,24 @@ impl Turn {
     }
 
     /// Список ICE-серверов в том виде, в каком его ждёт RTCPeerConnection.
+    /// Пустой список — не ошибка: STUN страница добавляет сама.
     pub async fn ice_servers(&self) -> Value {
-        match &self.provider {
-            Provider::None => json!([]),
-            Provider::Static(s) => json!([{
-                "urls": s.urls,
-                "username": s.username,
-                "credential": s.credential,
-            }]),
-            Provider::Cloudflare { key_id, token, ttl } => {
-                if let Some(cached) = self.fresh() {
-                    return cached;
-                }
-                match self.fetch_cloudflare(key_id, token, *ttl).await {
-                    Ok(servers) => {
-                        *self.cached.lock().unwrap() = Some((Instant::now(), servers.clone()));
-                        servers
-                    }
-                    Err(e) => {
-                        warn!("не удалось получить TURN у Cloudflare: {e}");
-                        // Протухший кэш лучше, чем пустота: учётки живут дольше,
-                        // чем интервал обновления.
-                        self.cached
-                            .lock()
-                            .unwrap()
-                            .as_ref()
-                            .map(|(_, v)| v.clone())
-                            .unwrap_or(json!([]))
-                    }
-                }
+        let Provider::Cloudflare { key_id, token, ttl } = &self.provider else {
+            return json!([]);
+        };
+        if let Some(cached) = self.fresh() {
+            return cached;
+        }
+        match self.fetch(key_id, token, *ttl).await {
+            Ok(servers) => {
+                *self.cached.lock().unwrap() = Some((Instant::now(), servers.clone()));
+                servers
+            }
+            Err(e) => {
+                warn!("не удалось получить TURN у Cloudflare: {e}");
+                // Протухший кэш лучше, чем пустота: учётки живут дольше,
+                // чем интервал обновления.
+                self.cached.lock().unwrap().as_ref().map(|(_, v)| v.clone()).unwrap_or(json!([]))
             }
         }
     }
@@ -129,11 +107,9 @@ impl Turn {
         (at.elapsed() < REFRESH_BEFORE).then(|| value.clone())
     }
 
-    async fn fetch_cloudflare(&self, key_id: &str, token: &str, ttl: u64) -> Result<Value, String> {
+    async fn fetch(&self, key_id: &str, token: &str, ttl: u64) -> Result<Value, String> {
         let http = self.http.as_ref().ok_or("http-клиент не создан")?;
-        let url = format!(
-            "https://rtc.live.cloudflare.com/v1/turn/keys/{key_id}/credentials/generate-ice-servers"
-        );
+        let url = format!("{CF_ENDPOINT}/{key_id}/credentials/generate-ice-servers");
 
         let resp = http
             .post(&url)
@@ -149,24 +125,61 @@ impl Turn {
             return Err(format!("{code}: {}", body.chars().take(200).collect::<String>()));
         }
 
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Shape {
-            // Новый эндпоинт отдаёт массив, старый — один объект.
-            List {
-                #[serde(rename = "iceServers")]
-                ice_servers: Vec<Value>,
-            },
-            One {
-                #[serde(rename = "iceServers")]
-                ice_servers: Value,
-            },
-        }
-
         let parsed: Shape = resp.json().await.map_err(|e| e.to_string())?;
-        Ok(match parsed {
+        Ok(parsed.into_list())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Shape {
+    // Новый эндпоинт отдаёт массив, старый — один объект.
+    List {
+        #[serde(rename = "iceServers")]
+        ice_servers: Vec<Value>,
+    },
+    One {
+        #[serde(rename = "iceServers")]
+        ice_servers: Value,
+    },
+}
+
+impl Shape {
+    fn into_list(self) -> Value {
+        match self {
             Shape::List { ice_servers } => Value::Array(ice_servers),
             Shape::One { ice_servers } => json!([ice_servers]),
-        })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Без ключей Cloudflare сервер не выдумывает ничего: STUN живёт на странице.
+    #[tokio::test]
+    async fn without_keys_there_are_no_ice_servers() {
+        let turn = Turn::new(Provider::None);
+        assert_eq!(turn.ice_servers().await, json!([]));
+        assert!(turn.describe().contains("только STUN"));
+    }
+
+    /// Ответы обоих поколений эндпоинта приводятся к одному виду — списку.
+    #[test]
+    fn both_cloudflare_shapes_become_a_list() {
+        let list: Shape = serde_json::from_value(json!({
+            "iceServers": [{ "urls": "turn:a" }, { "urls": "turn:b" }]
+        }))
+        .unwrap();
+        assert_eq!(list.into_list().as_array().unwrap().len(), 2);
+
+        let one: Shape = serde_json::from_value(json!({
+            "iceServers": { "urls": "turn:a", "username": "u", "credential": "c" }
+        }))
+        .unwrap();
+        let list = one.into_list();
+        assert_eq!(list.as_array().unwrap().len(), 1);
+        assert_eq!(list[0]["username"], "u");
     }
 }

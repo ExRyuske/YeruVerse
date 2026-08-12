@@ -1,7 +1,7 @@
 # Короткие команды для типовых задач. Всё то же самое можно набрать руками —
 # см. README, здесь просто собраны рабочие сочетания флагов.
 
-.PHONY: help server app app-debug android android-all android-prepare sign-apk icons icons-ui updater-key updater-pubkey docker docker-run deploy check clean
+.PHONY: help server app app-debug android android-all android-prepare sign-apk icons icons-ui denoiser updater-key updater-pubkey docker docker-run deploy check clean
 
 APP_DIR := desktop/src-tauri
 ANDROID_HOME ?= $(or $(ANDROID_SDK_ROOT),$(HOME)/Library/Android/sdk)
@@ -22,10 +22,11 @@ help:
 	@echo "make android-all — то же, но под все архитектуры (дольше в четыре раза)"
 	@echo "make icons       — перерисовать иконки приложения"
 	@echo "make icons-ui    — пересобрать иконки интерфейса из Font Awesome"
+	@echo "make denoiser    — обновить модели шумодава в web/vendor"
 	@echo "make updater-key — создать ключ подписи обновлений (один раз на проект)"
 	@echo "make docker      — собрать образ сервера"
 	@echo "make deploy      — поднять сервер + HTTPS + TURN через compose"
-	@echo "make check       — сборка, clippy и форматирование"
+	@echo "make check       — форматирование, clippy, тесты и проверка фронтенда"
 
 server:
 	cargo run --release
@@ -98,6 +99,11 @@ icons:
 icons-ui:
 	python3 scripts/icons.py ui
 
+# Модели шумодава в web/vendor: RNNoise и DeepFilterNet. Версии закреплены в
+# самом скрипте — обновление модели меняет звук у всех сразу.
+denoiser:
+	python3 scripts/denoiser.py
+
 tauri-cli:
 	@cargo tauri --version > /dev/null 2>&1 && exit 0; \
 	 cargo binstall --version > /dev/null 2>&1 \
@@ -116,6 +122,8 @@ deploy:
 check:
 	cargo fmt --check
 	cargo clippy --all-targets -- -D warnings
+	cargo test
+	python3 scripts/check_web.py
 	cd $(APP_DIR) && cargo clippy --all-targets -- -D warnings
 
 clean:

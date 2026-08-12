@@ -127,12 +127,7 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 
 /* Список сохранённых комнат — один и тот же на экране входа и в комнате.
    Комната здесь это её код; список личный и живёт в настройках браузера, на
-   сервере ничего подобного нет.
-
-   Свёрнут до узкой полосы и разворачивается под курсором поверх содержимого:
-   раздвигать раскладку значило бы дёргать видео каждый раз, когда мышь прошла
-   мимо. Место в раскладке при этом остаётся прежним — отсюда отрицательный
-   отступ. */
+   сервере ничего подобного нет. */
 .rooms {
   display: flex; flex-direction: column; gap: 4px; flex: none;
   overflow-y: auto; scrollbar-width: none;
@@ -141,7 +136,8 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 
 /* В комнате — узкая полоса у края. Разворачивается под курсором поверх
    содержимого: раздвигать раскладку значило бы дёргать видео каждый раз, когда
-   мышь прошла мимо, поэтому место в ней остаётся прежним. */
+   мышь прошла мимо. Место в раскладке остаётся прежним — отсюда отрицательный
+   отступ при разворачивании. */
 #rooms {
   position: relative; z-index: 9; width: 52px; overflow: hidden;
   padding: 10px 8px; background: var(--bg);
@@ -203,11 +199,12 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
   display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;
   max-width: calc(100% - 16px); pointer-events: none;
 }
+/* Полоса камер не ловит мышь целиком (иначе она перекрыла бы угол кадра), а
+   сами плитки — ловят: их разворачивают щелчком. */
 .cam-tile {
   position: relative; width: 160px; border-radius: var(--radius); overflow: hidden;
-  background: #000; box-shadow: 0 4px 16px rgba(0, 0, 0, .5);
+  background: #000; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); pointer-events: auto;
 }
-.cam-tile { pointer-events: auto; }
 .cam-tile.mine { outline: 1px solid var(--accent); outline-offset: -1px; }
 .cam-tile video {
   display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; cursor: zoom-in;
@@ -225,8 +222,6 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 .stage-empty { text-align: center; padding: 20px; }
 .stage-empty p { margin: 4px 0; }
 
-/* От ряда управления остался только полный экран: паузу и перемотку показывает
-   сам плеер, и синхронизация слушает именно его кнопки. */
 /* Кнопка полного экрана — в противоположном углу от остальных: она относится
    к самому окну сцены, а не к тому, что в нём показывают. */
 .src-row #btn-full { margin-left: auto; }
@@ -243,8 +238,12 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 }
 .caret.open { border-color: var(--accent); }
 
-/* Раскрывается вверх: ряд стоит у нижнего края, вниз ей некуда. */
-.sources { position: relative; }
+/* Переключатели трансляций и кнопки — одной колонкой у нижнего края сцены.
+   `relative` здесь ради всплывающих настроек: они раскрываются вверх, вниз им
+   некуда. */
+.sources { position: relative; display: flex; flex-direction: column; gap: 8px; }
+.src-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
 .pop {
   position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 12;
   min-width: 260px; max-width: min(340px, 92vw);
@@ -254,9 +253,6 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 }
 .pop .field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
 .pop p { margin: 0; }
-
-.sources { display: flex; flex-direction: column; gap: 8px; }
-.src-row { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .sidebar {
   position: relative;

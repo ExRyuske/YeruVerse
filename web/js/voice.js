@@ -3,6 +3,10 @@
 // кто сейчас говорит.
 
 import { playback, meter, canChooseOutput, setOutput } from './audio.js';
+import { Denoiser, SILENT_OUT, isModel, modelTitle, modelWeight } from './denoise.js';
+
+/** Модели, которые в этой вкладке уже поднимались: про них молчим. */
+const loaded = new Set();
 
 const HOLD_MS = 400;       // сколько держим индикатор после конца фразы
 
@@ -13,88 +17,6 @@ const HOLD_MS = 400;       // сколько держим индикатор п�
 // только на уверенной речи. Ниже — уже цифровая тишина и шум самого тракта.
 const SPEAK_ON = 0.012;
 const SPEAK_OFF = 0.006;
-
-/**
- * Подавление шума нейросетью RNNoise: та же модель, что в Mumble и Jitsi.
- * Она отличает голос от всего остального гораздо лучше любых фильтров —
- * клавиатура, вентилятор и шелест бумаги пропадают, речь остаётся.
- *
- * Модель работает строго на 48 кГц, поэтому для микрофона заводится свой
- * аудиоконтекст с такой частотой: системный может оказаться 44.1 кГц.
- */
-class Denoiser {
-  static async create(raw) {
-    const ctx = new AudioContext({ sampleRate: 48000 });
-
-    // Свой контекст рождается приостановленным, если родился не в ответ на
-    // касание, — а микрофон включается сам при входе, после переподключения и
-    // при возвращении из фона. Приостановленный контекст не падает и не жалуется,
-    // он молчит: дорожка живая, присутствие говорит «микрофон включён», а звука
-    // в ней нет. Общий контекст будят при каждом обращении, этот не будил никто.
-    await ctx.resume().catch(() => {});
-    if (ctx.state !== 'running') {
-      ctx.close().catch(() => {});
-      throw new Error('аудиоконтекст не запустился');
-    }
-
-    const base = new URL('../vendor/rnnoise/', import.meta.url);
-
-    const [{ RnnoiseWorkletNode, loadRnnoise }] = await Promise.all([
-      import(new URL('index.js', base).href),
-      ctx.audioWorklet.addModule(new URL('workletProcessor.js', base).href),
-    ]);
-    const wasmBinary = await loadRnnoise({
-      url: new URL('rnnoise.wasm', base).href,
-      simdUrl: new URL('rnnoise_simd.wasm', base).href,
-    });
-
-    return new Denoiser(ctx, raw, new RnnoiseWorkletNode(ctx, { maxChannels: 1, wasmBinary }));
-  }
-
-  constructor(ctx, raw, node) {
-    this.ctx = ctx;
-    this.node = node;
-    this.source = ctx.createMediaStreamSource(raw);
-    this.out = ctx.createMediaStreamDestination();
-    this.source.connect(node);
-    node.connect(this.out);
-
-    // Уровень меряем до подавления: индикатор должен показывать, что микрофон
-    // вообще что-то слышит, даже когда RNNoise признал это шумом.
-    this.meter = meter(raw);
-
-    // И то же самое после — прямо с выхода узла, а не с готового потока: так
-    // замер не зависит от того, дружит ли движок с MediaStream в графе
-    // обработки. По этой паре видно то, чего не видно иначе: модель работает,
-    // ошибок нет, а на выходе тишина.
-    this.tap = ctx.createAnalyser();
-    this.tap.fftSize = 512;
-    node.connect(this.tap);
-    this._buf = new Float32Array(this.tap.fftSize);
-  }
-
-  get stream() { return this.out.stream; }
-
-  level() { return this.meter?.level() ?? 0; }
-
-  /** Уровень уже подавленного звука — то, что действительно уходит собеседникам. */
-  outLevel() {
-    this.tap.getFloatTimeDomainData(this._buf);
-    let sum = 0;
-    for (const v of this._buf) sum += v * v;
-    return Math.sqrt(sum / this._buf.length);
-  }
-
-  close() {
-    try {
-      this.node.destroy?.();
-      this.meter?.close();
-      this.source.disconnect();
-      this.node.disconnect();
-      this.ctx.close();
-    } catch {}
-  }
-}
 
 export class Voice extends EventTarget {
   constructor(mesh, settings) {
@@ -111,7 +33,6 @@ export class Voice extends EventTarget {
     // Что подавляет шум на самом деле, а не что выбрано в настройках: модель
     // может не подняться, и знать об этом полезнее, чем верить настройке.
     this.denoising = 'off';
-
 
     settings.on(({ key }) => {
       if (key === 'voiceVolume' || key === 'peerVolume') this.applyVolumes();
@@ -134,13 +55,49 @@ export class Voice extends EventTarget {
   emit(type, detail) { this.dispatchEvent(new CustomEvent(type, { detail })); }
   on(type, fn) { this.addEventListener(type, (e) => fn(e.detail)); }
 
+  /**
+   * Захват микрофона, который не сдаётся с первой попытки.
+   *
+   * `OverconstrainedError` значит «устройство не умеет то, что мы просим», и на
+   * Android это обычное дело: сохранённого микрофона больше нет (в списке они
+   * меняют идентификаторы от запуска к запуску), либо движок не принимает
+   * эхоподавление и автоусиление в том виде, в каком их просят. Раньше отсюда
+   * уходил отказ, и человек оставался вовсе без голоса — с сообщением, которое
+   * ничего не подсказывает.
+   *
+   * Поэтому отступаем по шагам: сначала забываем выбранное устройство, потом
+   * отказываемся и от обработки. Микрофон без эхоподавления лучше молчания.
+   */
+  async _capture() {
+    const wanted = this.settings.audioConstraints();
+    const attempt = (audio) => navigator.mediaDevices.getUserMedia({ audio });
+
+    try {
+      return await attempt(wanted);
+    } catch (e) {
+      if (e?.name !== 'OverconstrainedError') throw e;
+    }
+
+    if (wanted.deviceId) {
+      // Выбранного микрофона нет. Оставить настройку значит получать этот же
+      // отказ при каждом входе, поэтому забываем её насовсем.
+      this.settings.set('micDevice', '');
+      const { deviceId, ...rest } = wanted;
+      try {
+        return await attempt(rest);
+      } catch (e) {
+        if (e?.name !== 'OverconstrainedError') throw e;
+      }
+    }
+
+    return attempt(true);
+  }
+
   async enable() {
     if (this.enabled) return;
     // echoCancellation по умолчанию включён: иначе в разговор возвращается
     // звук самого фильма из динамиков.
-    this.raw = await navigator.mediaDevices.getUserMedia({
-      audio: this.settings.audioConstraints(),
-    });
+    this.raw = await this._capture();
     this.enabled = true;
     this.muted = false;
     this.stream = await this._process(this.raw);
@@ -149,29 +106,49 @@ export class Voice extends EventTarget {
     this.emit('devices', {});
   }
 
-  /** Перезахват микрофона после смены устройства или обработки звука. */
+  /**
+   * Перезахват микрофона после смены устройства или обработки звука.
+   *
+   * Дважды разом сюда заходить нельзя: два захвата подряд — это два запроса к
+   * одному устройству, и там, где оно одно, второй получает «занято другим
+   * приложением». А заходить есть откуда: забыв пропавший микрофон, мы меняем
+   * настройку, а на смену настройки подписан этот же перезахват. Поэтому
+   * повторный вызов не отменяется, а откладывается до конца текущего.
+   */
   async reload() {
     if (!this.enabled) return;
-    const fresh = await navigator.mediaDevices.getUserMedia({
-      audio: this.settings.audioConstraints(),
-    });
-    fresh.getAudioTracks().forEach((t) => (t.enabled = !this.muted));
+    if (this._reloading) {
+      this._reloadAgain = true;
+      return;
+    }
+    this._reloading = true;
+    try {
+      const fresh = await this._capture();
+      fresh.getAudioTracks().forEach((t) => (t.enabled = !this.muted));
 
-    const oldRaw = this.raw;
-    const oldChain = this.chain;
-    this.raw = fresh;
-    this.stream = await this._process(fresh);
-    // replaceTrack меняет дорожку без пересогласования SDP — собеседники не
-    // слышат щелчка и разрыва.
-    await this.mesh.replaceStream('mic', this.stream);
-    oldChain?.close();
-    oldRaw?.getTracks().forEach((t) => t.stop());
+      const oldRaw = this.raw;
+      const oldChain = this.chain;
+      this.raw = fresh;
+      this.stream = await this._process(fresh);
+      // replaceTrack меняет дорожку без пересогласования SDP — собеседники не
+      // слышат щелчка и разрыва.
+      await this.mesh.replaceStream('mic', this.stream);
+      oldChain?.close();
+      oldRaw?.getTracks().forEach((t) => t.stop());
+    } finally {
+      this._reloading = false;
+    }
+
+    if (this._reloadAgain) {
+      this._reloadAgain = false;
+      await this.reload();
+    }
   }
 
   /**
-   * Пропускает микрофон через RNNoise. Если модель не поднялась — нет
-   * AudioWorklet, не отдался wasm — отдаём сырой поток: лучше шумный голос,
-   * чем никакого.
+   * Пропускает микрофон через выбранную модель. Если она не поднялась — нет
+   * AudioWorklet, движок не дал собрать WebAssembly, не отдался файл, — отдаём
+   * сырой поток: лучше шумный голос, чем никакого.
    */
   async _process(raw) {
     this._rawMeter?.close();
@@ -185,22 +162,27 @@ export class Voice extends EventTarget {
       return raw;
     };
 
-    if (this.settings.get('denoise') !== 'rnnoise') {
-      this.denoising = this.settings.get('denoise');
+    const kind = this.settings.get('denoise');
+    if (!isModel(kind)) {
+      this.denoising = kind;
       return bare();
     }
 
     try {
-      this.chain = await Denoiser.create(raw);
-      this.denoising = 'rnnoise';
+      // Тяжёлую модель качают один раз, но этот раз занимает секунды: пока она
+      // едет, микрофон в эфир не уходит, и молчание надо объяснить.
+      if (modelWeight(kind) && !loaded.has(kind)) this.emit('denoise-loading', { kind });
+      this.chain = await Denoiser.create(kind, raw);
+      loaded.add(kind);
+      this.denoising = kind;
       return this.chain.stream;
     } catch (e) {
-      // Модель не поднялась — на Android это обычное дело. Раньше отсюда
-      // уходили вовсе без подавления, молча: человек выбрал шумодав, а его не
-      // было. Просим подавление у самого движка — оно есть везде и работает
-      // тем лучше, чем хуже микрофон.
-      console.warn('RNNoise недоступен, просим подавление у движка:', e);
+      // Модель не поднялась. Раньше отсюда уходили вовсе без подавления, молча:
+      // человек выбрал шумодав, а его не было. Просим подавление у самого
+      // движка — оно есть везде и работает тем лучше, чем хуже микрофон.
+      console.warn(`${modelTitle(kind)} недоступен, просим подавление у движка:`, e);
       this.denoising = (await this._engineDenoise(raw)) ? 'browser' : 'off';
+      this.emit('denoise-fallback', { from: kind, to: this.denoising });
       return bare();
     }
   }
@@ -210,26 +192,34 @@ export class Voice extends EventTarget {
    *
    * Отказ, о котором не сказали, здесь стоит дороже всего: человек говорит,
    * видит свою полоску уровня и не догадывается, что собеседники слышат тишину.
-   * Поэтому сверяем вход с выходом, и если несколько секунд подряд на входе
-   * есть голос, а на выходе пусто — уходим на подавление средствами движка.
+   * Поэтому сверяем вход с выходом: копим замеры, где на входе голос, а на
+   * выходе пусто, и по их числу уходим на подавление средствами движка.
+   *
+   * Копим, а не считаем подряд. Раньше счётчик сбрасывался на каждом замере,
+   * где вход тише порога, — то есть на любой паузе между словами. Речь из пауз
+   * и состоит, поэтому тридцати трёх замеров подряд не набиралось никогда, и
+   * сторож, написанный ровно для этого случая, не срабатывал ни разу.
    */
   _watchDenoiser() {
-    if (!this.chain || this.muted) return (this._deaf = 0);
-    const alive = this.chain.level() < SPEAK_ON || this.chain.outLevel() > 0.0004;
-    if (alive) return (this._deaf = 0);
+    if (!this.chain || this.muted) return void (this._deaf = 0);
 
-    // Замер идёт каждые 120 мс; четыре секунды — это уверенная, а не случайная
-    // тишина. Столько молчит любой шумодав на вдохе между фразами.
-    if ((this._deaf = (this._deaf ?? 0) + 1) < 33) return;
+    // Выход живой — вопросов нет, и прошлые подозрения снимаются.
+    if (this.chain.outLevel() > SILENT_OUT) return void (this._deaf = 0);
+    // Молчат оба: это просто тишина, она ни о чём не говорит.
+    if (this.chain.level() < SPEAK_ON) return;
+
+    // Замер идёт каждые 120 мс; двадцать пять замеров с голосом на входе — это
+    // около трёх секунд настоящей речи, ушедшей в никуда.
+    if ((this._deaf = (this._deaf ?? 0) + 1) < 25) return;
     this._deaf = 0;
     this._dropDenoiser().catch(() => {});
   }
 
-  /** Снять RNNoise с тракта и отдать голос как есть, с подавлением от движка. */
+  /** Снять модель с тракта и отдать голос как есть, с подавлением от движка. */
   async _dropDenoiser() {
     const chain = this.chain;
     if (!chain) return;
-    console.warn('RNNoise не отдаёт звук — переходим на подавление движком');
+    console.warn(`${modelTitle(chain.kind)} не отдаёт звук — переходим на подавление движком`);
 
     this.chain = null;
     this._rawMeter = meter(this.raw);
@@ -237,7 +227,7 @@ export class Voice extends EventTarget {
     this.denoising = (await this._engineDenoise(this.raw)) ? 'browser' : 'off';
     await this.mesh.replaceStream('mic', this.stream);
     chain.close();
-    this.emit('denoise-fallback', { to: this.denoising });
+    this.emit('denoise-fallback', { from: chain.kind, to: this.denoising });
     this.emit('change', this.status());
   }
 
@@ -359,37 +349,29 @@ export class Voice extends EventTarget {
     this._until ??= new Map();
     let changed = false;
 
-    const check = (id, meter, live) => {
-      if (!meter || !live) {
-        if (id === 'self') this.level = 0;
-        if (this.speaking.delete(id)) changed = true;
-        return;
-      }
-      const level = meter.level();
-      if (id === 'self') this.level = level;
+    // Загорается по верхнему порогу, гаснет по нижнему и держится ещё HOLD_MS:
+    // без этого метка мигала бы на каждой паузе между словами.
+    const mark = (id, level) => {
       if (level > SPEAK_ON) this._until.set(id, now + HOLD_MS);
       const on = level > SPEAK_OFF && (this._until.get(id) ?? 0) > now;
-      if (on && !this.speaking.has(id)) { this.speaking.add(id); changed = true; }
-      else if (!on && this.speaking.has(id)) { this.speaking.delete(id); changed = true; }
+      if (on === this.speaking.has(id)) return;
+      if (on) this.speaking.add(id);
+      else this.speaking.delete(id);
+      changed = true;
     };
 
     this._watchDenoiser();
 
     // Свой уровень берём до подавления — иначе индикатор молчал бы вместе
     // с RNNoise, и было бы не понять, слышит ли микрофон вообще что-нибудь.
-    const meter = this.chain ?? this._rawMeter;
-    if (meter) {
-      const level = this.enabled && !this.muted ? meter.level() : 0;
-      this.level = level;
-      if (level > SPEAK_ON) this._until.set('self', now + HOLD_MS);
-      const on = level > SPEAK_OFF && (this._until.get('self') ?? 0) > now;
-      if (on !== this.speaking.has('self')) {
-        on ? this.speaking.add('self') : this.speaking.delete('self');
-        changed = true;
-      }
-    }
+    const own = this.chain ?? this._rawMeter;
+    this.level = own && this.enabled && !this.muted ? own.level() : 0;
+    if (own) mark('self', this.level);
 
-    for (const [id, r] of this.remotes) check(id, r.meter, !this.deafened);
+    // Заглушённых участников не слышим мы, а не они молчат: индикатор гаснет.
+    for (const [id, r] of this.remotes) {
+      mark(id, this.deafened ? 0 : (r.meter?.level() ?? 0));
+    }
 
     if (changed) this.emit('speaking', { ids: [...this.speaking] });
   }

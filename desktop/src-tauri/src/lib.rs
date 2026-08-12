@@ -192,29 +192,22 @@ fn local_ip() -> Option<String> {
     Some(s.local_addr().ok()?.ip().to_string())
 }
 
-/// Системный обработчик ссылок для текущей платформы.
-fn opener() -> std::process::Command {
-    #[cfg(target_os = "macos")]
-    return std::process::Command::new("open");
-    #[cfg(target_os = "windows")]
-    {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", ""]);
-        return c;
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    return std::process::Command::new("xdg-open");
-}
-
-/// Открыть ссылку системой — для страниц загрузки Sunshine и Moonlight.
+/// Открыть ссылку системой — страницы загрузки Sunshine и Moonlight, а на
+/// Android ещё и сам APK с обновлением.
+///
+/// Раньше здесь звалась системная команда — `open`, `start`, `xdg-open`. На
+/// Android такой команды нет ни одной, и всё, что вело наружу, там молча не
+/// работало. Плагин Tauri знает, как это делается на каждой платформе.
 #[tauri::command]
-fn open_url(url: String) -> Result<(), String> {
+fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
     // Наружу уходит только то, что мы сами и показываем: чужая строка не должна
-    // превратиться в аргументы команды.
+    // превратиться ни в аргументы команды, ни в чужую схему вроде `file:`.
     if !url.starts_with("https://") || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return Err("недопустимая ссылка".into());
     }
-    opener().arg(&url).spawn().map(|_| ()).map_err(|e| e.to_string())
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
 /// Где искать Moonlight. Схемы `moonlight://` в системе не существует — ни на
@@ -454,10 +447,16 @@ async fn overlay(_enabled: bool) -> Result<(), String> {
 }
 
 /// Что умеет эта сборка — фронтенд прячет по ней недоступные кнопки.
+///
+/// `updates` — умеет ли приложение обновиться само, не выходя наружу. Это
+/// настольная сборка: там плагин скачивает пакет и проверяет его подпись. На
+/// Android пакет ставит система, поэтому там страница сравнивает `version` с
+/// той, что отдаёт сервер комнат, и открывает ссылку на APK.
 #[tauri::command]
 fn capabilities() -> serde_json::Value {
     serde_json::json!({
         "platform": std::env::consts::OS,
+        "version": env!("CARGO_PKG_VERSION"),
         "overlay": cfg!(desktop),
         "globalHotkeys": cfg!(desktop),
         "remoteControl": cfg!(desktop),
@@ -474,7 +473,7 @@ pub fn run() {
         )
         .init();
 
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
     // Плагина системных сочетаний на мобильных платформах просто не существует.
     #[cfg(desktop)]
     let builder = builder

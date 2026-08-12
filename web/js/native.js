@@ -96,13 +96,12 @@ export const native = {
    * сразу рабочий стол. Схемы `moonlight://` в системе не существует, поэтому
    * зовётся сам исполняемый файл.
    */
-  /** Номер новой версии или null. */
-  updateCheck() { return this.invoke('update_check'); },
-  /** Скачать, поставить и перезапуститься. Обратно эта команда не возвращается. */
-  updateInstall() { return this.invoke('update_install'); },
-
   moonlight(host, action, pin) {
     return this.invoke('moonlight', { host, action, pin: pin ?? null });
   },
 
+  /** Номер новой версии или null. */
+  updateCheck() { return this.invoke('update_check'); },
+  /** Скачать, поставить и перезапуститься. Обратно эта команда не возвращается. */
+  updateInstall() { return this.invoke('update_install'); },
 };

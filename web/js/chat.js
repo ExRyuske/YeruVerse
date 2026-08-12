@@ -2,21 +2,19 @@
 // и карточка файла — сами байты качаются роем напрямую между участниками.
 
 import { icon } from './icons.js';
-import { $, toast, fmtSize, fmtClock, showImage } from './ui.js';
+import { net, swarm } from './core.js';
+import { isSelf, state } from './state.js';
+import { $, ui, toast, fmtSize, fmtClock, showImage } from './ui.js';
 
-/** Модуль не знает про глобальное состояние — всё нужное передаётся сюда. */
-let ctx = null;
-
-export function initChat(deps) {
-  ctx = deps;
-  ctx.ui('#btn-attach').onclick = () => ctx.ui('#in-attach').click();
-  ctx.ui('#in-attach').onchange = (e) => {
+export function initChat() {
+  ui('#btn-attach').onclick = () => ui('#in-attach').click();
+  ui('#in-attach').onchange = (e) => {
     for (const file of e.target.files ?? []) sendFile(file);
     e.target.value = '';
   };
-  ctx.net.addEventListener('file', ({ detail }) => {
-    if (detail.from === ctx.self()?.id) return;   // свою карточку уже нарисовали
-    addAttachment(ctx.peer(detail.from), detail.meta, false, detail.srv);
+  net.addEventListener('file', ({ detail }) => {
+    if (isSelf(detail.from)) return;   // свою карточку уже нарисовали
+    addAttachment(state.peers.get(detail.from), detail.meta, false, detail.srv);
   });
 
   initDrop();
@@ -24,7 +22,7 @@ export function initChat(deps) {
   // Скриншот из буфера уходит в чат по Ctrl+V, где бы ни стоял курсор: искать
   // ради этого скрепку и сохранённый на диск файл — лишние три действия.
   document.addEventListener('paste', (e) => {
-    if (!ctx.self()) return;                      // ещё не в комнате
+    if (!state.self) return;                      // ещё не в комнате
     const images = [...(e.clipboardData?.items ?? [])]
       .filter((i) => i.kind === 'file' && i.type.startsWith('image/'))
       .map((i) => i.getAsFile())
@@ -104,9 +102,9 @@ function sendFile(file) {
   if (file.size > 2 * 1024 ** 3) {
     return toast('Файл больше 2 ГБ — столько не удержит память браузера');
   }
-  const meta = ctx.swarm.offer(file);
-  ctx.net.send({ t: 'file', meta });
-  addAttachment(ctx.self(), meta, true);
+  const meta = swarm.offer(file);
+  net.send({ t: 'file', meta });
+  addAttachment(state.self, meta, true);
 }
 
 
@@ -147,7 +145,7 @@ function addAttachment(peer, meta, mine, at) {
   action.onclick = () => {
     action.disabled = true;
     action.textContent = '0%';
-    ctx.swarm.start(meta);
+    swarm.start(meta);
   };
 
   card.append(info, action);
@@ -166,7 +164,7 @@ function addAttachment(peer, meta, mine, at) {
     img.onclick = () => img.src && showImage(img.src, meta.name);
     row.appendChild(img);
 
-    const own = ctx.swarm.get(meta.id)?.blobUrl;
+    const own = swarm.get(meta.id)?.blobUrl;
     if (own) {
       img.src = own;
       action.remove();
@@ -181,7 +179,16 @@ function addAttachment(peer, meta, mine, at) {
   attachRows.set(meta.id, { action, sub, img });
 }
 
-export function renderAttachProgress(id, pct) {
+// Ход загрузки вложения. Раньше на эти события никто не подписывался, и кнопка
+// молчала до самого конца: на большом файле это выглядело как «ничего не
+// происходит», хотя рой в этот момент качал вовсю.
+swarm.on('progress', ({ id, have, total }) =>
+  renderAttachProgress(id, Math.round((have / Math.max(1, total)) * 100))
+);
+// Рой собрал файл целиком — кнопка превращается в «Сохранить».
+swarm.on('ready', ({ id, url, meta }) => finishAttach(id, url, meta));
+
+function renderAttachProgress(id, pct) {
   const row = attachRows.get(id);
   if (row && row.action.isConnected) row.action.textContent = `${pct}%`;
 }
@@ -192,7 +199,7 @@ export function renderAttachProgress(id, pct) {
  * На диск сам он не ложится. Раньше ложился — и это значило, что любой участник
  * комнаты мог положить вам в «Загрузки» что угодно, ни о чём не спрашивая.
  */
-export function finishAttach(id, url, meta) {
+function finishAttach(id, url, meta) {
   const row = attachRows.get(id);
   if (!row) return;
 
@@ -224,7 +231,6 @@ export function addChat(who, text, mine, at, color) {
   div.append(time, w, document.createTextNode(text));
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
-
 }
 
 export function sysMsg(text) {
@@ -235,5 +241,3 @@ export function sysMsg(text) {
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
 }
-
-

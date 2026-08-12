@@ -1,6 +1,9 @@
 // Мелочи, нужные всем модулям интерфейса. Держим их отдельно, чтобы модули
 // не тянули друг друга ради одной функции форматирования.
 
+import { icon } from './icons.js';
+import { native } from './native.js';
+
 export const $ = (sel) => document.querySelector(sel);
 
 /**
@@ -50,6 +53,13 @@ export function clearStaleFlag() {
   try { sessionStorage.removeItem(RECOVERED); } catch {}
 }
 
+/** Экранов ровно два: вход и комната. Возврат на вход снимает прошлую ошибку. */
+export function showScreen(name) {
+  $('#screen-join').hidden = name !== 'join';
+  $('#screen-room').hidden = name !== 'room';
+  if (name === 'join') $('#join-error').hidden = true;
+}
+
 /**
  * Куда вешать то, что должно быть поверх всего.
  *
@@ -68,7 +78,6 @@ export function toast(text, ms = 3500) {
   const el = $('#toast');
   // Тот же случай: из body подсказку в полном экране не видно.
   if (el.parentElement !== overlayHost()) overlayHost().appendChild(el);
-  el.innerHTML = '';
   el.textContent = text;
   el.hidden = false;
   clearTimeout(toastTimer);
@@ -171,6 +180,70 @@ export function showVideo(stream, host = null, { mirror = false } = {}) {
   box.append(video);
   (host ?? overlayHost()).appendChild(box);
   video.play().catch(() => {});
+}
+
+/**
+ * Компактный ползунок громкости: кнопка-выключатель и шкала рядом.
+ *
+ * Один на два случая — голос участника и звук трансляции. Отличались они только
+ * пределом и тем, куда сохранять значение, а кода было по тридцать строк на
+ * каждый, слово в слово.
+ */
+export function volumeSlider({ max, label, get, set }) {
+  const wrap = document.createElement('span');
+  wrap.className = 'pv-mini';
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'mark';
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = 0;
+  slider.max = max;
+
+  const show = () => {
+    const v = Number(slider.value);
+    btn.innerHTML = icon(v === 0 ? 'speaker-off' : 'speaker');
+    wrap.title = `${label} ${v}%`;
+  };
+
+  slider.oninput = () => {
+    set(Number(slider.value) / 100);
+    show();
+  };
+
+  let before = 1;
+  btn.onclick = () => {
+    const now = Number(slider.value);
+    if (now > 0) before = now;
+    slider.value = now > 0 ? 0 : before;
+    slider.oninput();
+  };
+
+  /**
+   * Подтянуть сохранённое значение. Шкалу под пальцем не трогаем: громкость
+   * могла обновиться из-за чужого события ровно в этот момент, и дёрнуть её
+   * назад было бы хуже, чем показать на кадр устаревшее число.
+   */
+  wrap.sync = () => {
+    if (document.activeElement === slider) return;
+    slider.value = Math.round(get() * 100);
+    show();
+  };
+
+  wrap.sync();
+  wrap.append(btn, slider);
+  return wrap;
+}
+
+/**
+ * Внешняя ссылка. В приложении её открывает система: переход внутри окна увёл
+ * бы человека из комнаты, а вернуться оттуда нечем.
+ */
+export function openExternal(url) {
+  if (native.available) native.openUrl(url).catch(() => window.open(url, '_blank'));
+  else window.open(url, '_blank', 'noopener');
 }
 
 export function fmtSize(b) {

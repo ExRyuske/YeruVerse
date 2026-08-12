@@ -1,6 +1,8 @@
 // Настройки пользователя: живут в localStorage и переживают перезаход в комнату.
 // Громкости отдельных участников не сохраняем — id выдаются заново на каждый вход.
 
+import { isModel } from './denoise.js';
+
 const KEY = 'yeruverse:settings';
 
 /**
@@ -36,7 +38,7 @@ const DEFAULTS = {
   mirrorCam: true,
   sidebarSize: 0,     // ширина боковой панели в пикселях; 0 — по умолчанию
   outputDevice: '',   // куда выводить звук; пусто = системное по умолчанию
-  denoise: 'rnnoise', // подавление шума: rnnoise | browser | off
+  denoise: 'rnnoise', // подавление шума: rnnoise | deepfilter | browser | off
   quality: 'medium',  // выбранный профиль; custom — свои значения ниже
   streamHeight: 1080, // высота кадра, ширину подберёт браузер
   streamFps: 30,
@@ -59,7 +61,7 @@ function migrate(values) {
   if (typeof values.denoise === 'boolean') {
     values.denoise = values.denoise ? 'rnnoise' : 'off';
   }
-  if (!['rnnoise', 'browser', 'off'].includes(values.denoise)) {
+  if (!isModel(values.denoise) && !['browser', 'off'].includes(values.denoise)) {
     values.denoise = 'rnnoise';
   }
   if (!(values.quality in PRESETS)) values.quality = 'medium';

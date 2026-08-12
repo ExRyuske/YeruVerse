@@ -122,22 +122,22 @@ impl Hub {
         Some(info.clone())
     }
 
-    pub fn send_to(&self, room_id: &str, peer_id: &str, msg: &Value) -> bool {
+    /// Одному участнику. Если его уже нет — сообщение просто пропадает: это
+    /// нормальный исход, а не ошибка, отвечать на неё всё равно нечем.
+    pub fn send_to(&self, room_id: &str, peer_id: &str, msg: &Value) {
         let rooms = self.rooms.lock().unwrap();
-        match rooms.get(room_id).and_then(|r| r.peers.get(peer_id)) {
-            Some(p) => p.tx.send(msg.to_string()).is_ok(),
-            None => false,
+        if let Some(p) = rooms.get(room_id).and_then(|r| r.peers.get(peer_id)) {
+            let _ = p.tx.send(msg.to_string());
         }
     }
 
-    pub fn broadcast(&self, room_id: &str, msg: &Value, except: Option<&str>) {
+    /// Всем в комнате, включая отправителя: чат и присутствие возвращаются и
+    /// ему тоже — так у всех один и тот же список и один и тот же порядок строк.
+    pub fn broadcast(&self, room_id: &str, msg: &Value) {
         let rooms = self.rooms.lock().unwrap();
         let Some(room) = rooms.get(room_id) else { return };
         let text = msg.to_string();
         for p in room.peers.values() {
-            if Some(p.info.id.as_str()) == except {
-                continue;
-            }
             let _ = p.tx.send(text.clone());
         }
     }
@@ -148,5 +148,107 @@ impl Hub {
             "rooms": rooms.len(),
             "peers": rooms.values().map(|r| r.peers.len()).sum::<usize>(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc::{self, UnboundedReceiver};
+
+    fn peer(id: &str, name: &str) -> (Peer, UnboundedReceiver<String>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let info = PeerInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            color: "#5b8cff".into(),
+            voice: false,
+            muted: false,
+            screen: false,
+            camera: false,
+            deaf: false,
+        };
+        (Peer { info, tx }, rx)
+    }
+
+    /// Новичок узнаёт всех, кто уже сидит, а они — только про него.
+    #[test]
+    fn join_tells_both_sides() {
+        let hub = Hub::new();
+        let (first, mut first_rx) = peer("a", "Аня");
+        let (second, _second_rx) = peer("b", "Боря");
+
+        let welcome = hub.join("room", first);
+        assert_eq!(welcome["peers"].as_array().unwrap().len(), 0);
+
+        let welcome = hub.join("room", second);
+        assert_eq!(welcome["peers"].as_array().unwrap().len(), 1);
+        assert_eq!(welcome["you"]["id"], "b");
+
+        let seen: Value = serde_json::from_str(&first_rx.try_recv().unwrap()).unwrap();
+        assert_eq!(seen["t"], "peer_join");
+        assert_eq!(seen["peer"]["id"], "b");
+    }
+
+    /// Комната существует, пока в ней кто-то есть, и исчезает с последним.
+    #[test]
+    fn room_dies_with_last_peer() {
+        let hub = Hub::new();
+        let (a, _a_rx) = peer("a", "Аня");
+        let (b, mut b_rx) = peer("b", "Боря");
+        hub.join("room", a);
+        hub.join("room", b);
+        let _ = b_rx.try_recv();
+
+        hub.leave("room", "a");
+        assert_eq!(hub.stats()["peers"], 1);
+        let left: Value = serde_json::from_str(&b_rx.try_recv().unwrap()).unwrap();
+        assert_eq!(left["t"], "peer_leave");
+        assert_eq!(left["id"], "a");
+
+        hub.leave("room", "b");
+        assert_eq!(hub.stats()["rooms"], 0);
+    }
+
+    /// Присланы только изменившиеся поля — остальные остаются как были.
+    #[test]
+    fn presence_updates_only_given_fields() {
+        let hub = Hub::new();
+        let (a, _rx) = peer("a", "Аня");
+        hub.join("room", a);
+
+        let info = hub
+            .set_presence("room", "a", Presence { voice: Some(true), ..Presence::default() })
+            .unwrap();
+        assert!(info.voice && !info.muted);
+
+        let info = hub
+            .set_presence("room", "a", Presence { muted: Some(true), ..Presence::default() })
+            .unwrap();
+        assert!(info.voice && info.muted);
+    }
+
+    /// Пустое имя не должно стирать прежнее: клиент шлёт профиль целиком.
+    #[test]
+    fn empty_name_keeps_the_old_one() {
+        let hub = Hub::new();
+        let (a, _rx) = peer("a", "Аня");
+        hub.join("room", a);
+
+        let info = hub.set_profile("room", "a", Some(String::new()), None).unwrap();
+        assert_eq!(info.name, "Аня");
+
+        let info = hub.set_profile("room", "a", Some("Анна".into()), None).unwrap();
+        assert_eq!(info.name, "Анна");
+    }
+
+    /// Ни рассылка, ни адресная отправка не должны падать на пустом месте.
+    #[test]
+    fn missing_room_or_peer_is_silent() {
+        let hub = Hub::new();
+        hub.broadcast("нет такой", &json!({ "t": "chat" }));
+        hub.send_to("нет такой", "и такого", &json!({ "t": "signal" }));
+        assert!(hub.set_presence("нет такой", "a", Presence::default()).is_none());
+        assert_eq!(hub.stats()["rooms"], 0);
     }
 }
