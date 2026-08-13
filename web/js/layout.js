@@ -57,15 +57,20 @@ function wirePopovers() {
 function wireSidebar() {
   const grip = ui('#sidebar-grip');
   const bar = $('#sidebar');
-  const vertical = () => window.matchMedia('(max-width: 860px)').matches;
+  // Панель ложится снизу только на вертикальном телефоне. Стоит его повернуть —
+  // и она встаёт сбоку, как на большом экране; тянуть её тогда надо вбок, а не
+  // вверх. Пока здесь стояла одна проверка ширины, в горизонтали полоска меняла
+  // высоту панели, которая высоту и так занимала всю.
+  const stacked = () =>
+    window.matchMedia('(max-width: 860px) and (orientation: portrait)').matches;
 
   const apply = (px) => {
     if (!px) return;
     // Панель не должна ни исчезнуть, ни съесть сцену целиком.
-    const room = (vertical() ? window.innerHeight : window.innerWidth) - 260;
+    const room = (stacked() ? window.innerHeight : window.innerWidth) - 260;
     const size = Math.max(200, Math.min(px, Math.max(200, room)));
-    bar.style[vertical() ? 'height' : 'width'] = `${size}px`;
-    bar.style[vertical() ? 'width' : 'height'] = '';
+    bar.style[stacked() ? 'height' : 'width'] = `${size}px`;
+    bar.style[stacked() ? 'width' : 'height'] = '';
   };
   apply(settings.get('sidebarSize'));
   window.addEventListener('resize', () => apply(settings.get('sidebarSize')));
@@ -76,19 +81,19 @@ function wireSidebar() {
     grip.classList.add('dragging');
     document.body.classList.add('resizing');
 
-    const start = vertical() ? e.clientY : e.clientX;
-    const was = vertical() ? bar.offsetHeight : bar.offsetWidth;
+    const start = stacked() ? e.clientY : e.clientX;
+    const was = stacked() ? bar.offsetHeight : bar.offsetWidth;
 
     const move = (ev) => {
       // Панель справа и снизу, поэтому движение к ней уменьшает размер.
-      const delta = start - (vertical() ? ev.clientY : ev.clientX);
+      const delta = start - (stacked() ? ev.clientY : ev.clientX);
       apply(was + delta);
     };
     const stop = () => {
       grip.classList.remove('dragging');
       document.body.classList.remove('resizing');
       grip.removeEventListener('pointermove', move);
-      settings.set('sidebarSize', vertical() ? bar.offsetHeight : bar.offsetWidth);
+      settings.set('sidebarSize', stacked() ? bar.offsetHeight : bar.offsetWidth);
     };
     grip.addEventListener('pointermove', move);
     grip.addEventListener('pointerup', stop, { once: true });

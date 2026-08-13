@@ -9,7 +9,7 @@ import { ACTIONS, label as hotkeyLabel } from './hotkeys.js';
 import { modelTitle } from './denoise.js';
 import { $, toast, ui } from './ui.js';
 import { hiddenLabels } from './stage.js';
-import { sunshineHint } from './sunshine.js';
+import { pollSunshine, sunshineHint } from './sunshine.js';
 import { enableMic } from './devices.js';
 
 /**
@@ -76,6 +76,7 @@ function wireSettings() {
   ui('#pick-mic').onchange = () => settings.set('micDevice', ui('#pick-mic').value);
   ui('#pick-cam').onchange = () => settings.set('camDevice', ui('#pick-cam').value);
   bindCheck('#set-mirror', 'mirrorCam');
+  bindCheck('#set-monitor', 'monitor');
   wireStream();
 
   ui('#pick-output').onchange = () => {
@@ -103,6 +104,12 @@ function wireSettings() {
 function wireStream() {
   const preset = ui('#set-quality');
   const height = ui('#set-height');
+
+  // Что беречь при нехватке канала — не часть заготовки качества: это про то,
+  // как проседать, а не про то, с чего начинать.
+  const priority = ui('#set-priority');
+  priority.value = settings.get('streamPriority');
+  priority.onchange = () => settings.set('streamPriority', priority.value);
 
   preset.innerHTML = '';
   for (const [id, p] of Object.entries(PRESETS)) {
@@ -188,6 +195,9 @@ function wireSunshine() {
     try {
       await native.sunshineCreds($('#set-sun-user').value.trim(), $('#set-sun-pass').value);
       $('#set-sun-pass').value = '';
+      // Спрашиваем мост сразу: зрители должны узнать о новом порядке сопряжения
+      // сейчас, а не через полминуты, когда подойдёт очередной опрос.
+      await pollSunshine();
       toast('Сохранено: сопряжение с Moonlight теперь пройдёт без ручного PIN');
     } catch (e) {
       toast(`Не вышло: ${e.message ?? e}`);
@@ -281,7 +291,7 @@ async function renderDiagnostics() {
     `приложение: ${describeNative()}`,
     `задержка:   ${Number.isFinite(net.rtt) ? Math.round(net.rtt) + ' мс' : '—'}`,
     `TURN:       ${state.config.turn ? 'есть' : 'НЕТ — часть зрителей не соединится'}`,
-    `Sunshine:   ${state.sunshine || 'не запущен'}`,
+    `Sunshine:   ${sunshineLine()}`,
     `выключено:  ${hiddenLabels().join(', ') || 'ничего'}`,
     `микрофон:   ${voice.enabled ? (voice.muted ? 'включён, заглушён' : 'в эфире') : 'выключен'}`,
     // Что подавляет шум на самом деле: выбор в настройках и то, что получилось,
@@ -298,6 +308,19 @@ async function renderDiagnostics() {
     lines.push(`${name}: ${r.state}/${r.ice} · канал ${r.ctl} · путь ${r.path} · дорожек ${r.tracks}`);
   }
   $('#diag').textContent = lines.join('\n');
+}
+
+/**
+ * Состояние Sunshine одной строкой. Раньше здесь был только адрес, и по нему не
+ * отличить «не запущен» от «запущен, но PIN придётся вводить руками» — а это
+ * ровно те два случая, из-за которых подключение через Moonlight и не выходит.
+ */
+function sunshineLine() {
+  if (!native.caps.remoteControl) return 'только в настольной версии';
+  if (!state.sunshine) return 'не запущен';
+  const seen = state.sunshineOpen ? 'виден из интернета' : 'только в своей сети';
+  const pin = state.sunshineCanPair ? 'PIN подтверждаем сами' : 'PIN вводить вручную';
+  return `${state.sunshine} · ${seen} · ${pin}`;
 }
 
 function describeNative() {

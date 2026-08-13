@@ -14,8 +14,13 @@ import { icon } from './icons.js';
 import { copy, toast } from './ui.js';
 
 const SUN = 'sun';
-const sunshineHosts = new Map();   // id участника -> адрес его Sunshine
+/** id участника -> `{ host, canPair }`: адрес его Sunshine и умеет ли он сам
+ *  подтвердить PIN. От второго зависит весь порядок сопряжения. */
+const sunshineHosts = new Map();
 const allowed = new Set();         // кому я разрешил подключаться к моему ПК
+
+/** Адрес панели Sunshine на своей же машине — там подтверждают PIN руками. */
+const PANEL = 'https://localhost:47990';
 
 /** Есть ли к кому подключаться Moonlight'ом у этого участника. */
 export const canMoonlight = (id) => sunshineHosts.has(id);
@@ -23,6 +28,7 @@ export const canMoonlight = (id) => sunshineHosts.has(id);
 /** Комната кончилась: чужие адреса и выданные разрешения вместе с ней. */
 export function resetSunshine() {
   sunshineHosts.clear();
+  pending.clear();
   // Кому я разрешил зайти на свой компьютер — вместе с комнатой и заканчивается.
   // Список переживал выход, хотя те люди остались в покинутой комнате.
   allowed.clear();
@@ -36,12 +42,20 @@ mesh.on('message', async ({ id, msg }) => {
   // веб-панель, и это единственный шаг, на котором всё бросают.
   if (msg.type === 'pin') {
     if (!allowed.has(id)) return;
+    const who = state.peers.get(id)?.name ?? 'Участник';
     try {
       await native.sunshinePin(String(msg.pin));
       mesh.send(id, { ns: SUN, type: 'paired', ok: true });
-      toast(`${state.peers.get(id)?.name ?? 'Участник'} сопряжён с вашим Sunshine`);
+      toast(`${who} сопряжён с вашим Sunshine`);
     } catch (e) {
       mesh.send(id, { ns: SUN, type: 'paired', ok: false, why: String(e?.message ?? e) });
+      // Автоматически не вышло — значит, PIN придётся ввести руками. Показываем
+      // его хозяину компьютера: до сих пор об этой неудаче узнавал только
+      // зритель, а человек у клавиатуры не видел ни PIN, ни самой просьбы.
+      toast(
+        `${who} сопрягается: введите PIN ${msg.pin} в панели Sunshine — ${PANEL}`,
+        30000
+      );
     }
     return;
   }
@@ -49,16 +63,20 @@ mesh.on('message', async ({ id, msg }) => {
     toast(
       msg.ok
         ? 'Сопряжение прошло — Moonlight подключается'
-        : `Хост не подтвердил PIN: ${msg.why ?? 'нет доступа к его Sunshine'}. Введите PIN у него в панели вручную`,
-      12000
+        : `Хозяин компьютера не подтвердил PIN сам (${msg.why ?? 'нет доступа к его Sunshine'}). ` +
+            `Продиктуйте ему код ${pending.get(id) ?? ''} — он введёт его в своей панели Sunshine`,
+      20000
     );
     return;
   }
 
-  if (msg.host) sunshineHosts.set(id, msg.host);
+  if (msg.host) sunshineHosts.set(id, { host: msg.host, canPair: !!msg.canPair });
   else sunshineHosts.delete(id);
   render('peers');
 });
+
+/** Какой PIN мы отправили какому хосту — чтобы было что продиктовать. */
+const pending = new Map();
 
 mesh.on('peer-open', ({ id }) => tellSunshine(id));
 mesh.on('peer-close', ({ id }) => {
@@ -71,7 +89,14 @@ mesh.on('peer-close', ({ id }) => {
  * комнату разом — не то согласие, которое можно выдать один раз и забыть.
  */
 function tellSunshine(id) {
-  mesh.send(id, { ns: SUN, host: allowed.has(id) ? state.sunshine : null });
+  const mine = allowed.has(id);
+  mesh.send(id, {
+    ns: SUN,
+    host: mine ? state.sunshine : null,
+    // Умеем ли мы подтвердить PIN за человека. Зритель по этому решает, как
+    // запускать сопряжение: со своим кодом или с тем, что покажет Moonlight.
+    canPair: mine && state.sunshineCanPair,
+  });
 }
 
 /**
@@ -95,6 +120,31 @@ async function setAllowed(id, on) {
 
   const who = state.peers.get(id)?.name ?? 'Участник';
   toast(on ? `${who} пущен за ваш компьютер` : `${who} больше не может подключаться`);
+  if (on) warnAboutSunshine();
+}
+
+/**
+ * Замок открыт — но через Moonlight к нам зайдут не всегда, и молчать об этом
+ * нельзя: снаружи это выглядит как «просто не работает». Мышь и клавиатура по
+ * WebRTC при этом работают в любом случае, они Sunshine не требуют.
+ */
+function warnAboutSunshine() {
+  if (!native.caps.remoteControl) return;
+  if (!state.sunshine) {
+    toast(
+      'Sunshine не запущен — играть через Moonlight не выйдет. ' +
+        'Мышь и клавиатура по-прежнему работают: они идут напрямую.',
+      10000
+    );
+    return;
+  }
+  if (!state.sunshineCanPair) {
+    toast(
+      'Логин и пароль панели Sunshine не сохранены: PIN при первом подключении ' +
+        'придётся ввести руками. Настройки → Sunshine избавят от этого шага.',
+      10000
+    );
+  }
 }
 
 /**
@@ -113,12 +163,19 @@ export async function pollSunshine() {
   // Адрес Sunshine нужен только в комнате: вне её раздавать его некому, а мост
   // приложения незачем дёргать каждые полминуты просто так.
   if (!native.available || !state.joined) return;
-  const { running, address } = await native.sunshine().catch(() => ({}));
+  const { running, address, canPair } = await native.sunshine().catch(() => ({}));
+
+  // Способ сопряжения меняется не сам по себе, а когда человек сохранил доступ
+  // к панели прямо сейчас. Зрителям об этом надо сказать так же, как об адресе:
+  // от этого зависит, спросит ли их Moonlight код.
+  const pairing = !!canPair;
+  const pairingChanged = pairing !== state.sunshineCanPair;
+  state.sunshineCanPair = pairing;
+
   if (!running || !address) {
-    if (state.sunshine) {
+    if (state.sunshine || pairingChanged) {
       state.sunshine = null;
-      for (const id of allowed) tellSunshine(id);
-      render('peers');
+      announce();
     }
     return;
   }
@@ -137,9 +194,14 @@ export async function pollSunshine() {
   // локальный — в своей сети он рабочий, а из интернета не сработает ничего.
   const host = reach.open && reach.ip ? reach.ip : address;
 
-  if (host === state.sunshine) return;
-  state.sunshine = host;
   state.sunshineOpen = !!reach.open;
+  if (host === state.sunshine && !pairingChanged) return;
+  state.sunshine = host;
+  announce();
+}
+
+/** Разослать свой адрес тем, кому он разрешён. */
+function announce() {
   for (const id of allowed) tellSunshine(id);
   render('peers');
 }
@@ -163,8 +225,21 @@ export function sunshineHint() {
  * оболочка. У Moonlight две команды: `pair` знакомит с компьютером и показывает
  * PIN, `stream` сразу открывает рабочий стол. Первая нужна ровно один раз на
  * адрес, поэтому сопряжённые адреса мы помним.
+ *
+ * Сопряжений тоже два, и выбор между ними — не мелочь.
+ *
+ * Если хозяин сохранил доступ к своей панели Sunshine, PIN придумываем мы:
+ * Moonlight получает его аргументом и ни о чём не спрашивает, а приложение
+ * хозяина само отнесёт код в панель. Один щелчок, и всё.
+ *
+ * Если не сохранил — подставлять код нельзя. Раньше он подставлялся всегда, и
+ * получалось худшее из возможного: Moonlight PIN не показывал (он его уже
+ * знал), подтвердить его хозяину было нечем, и сопряжение просто не
+ * происходило — молча, без единого запроса на экране. Поэтому здесь Moonlight
+ * запускается без кода: он покажет свой, и его останется продиктовать.
  */
-async function openMoonlight(id, host) {
+async function openMoonlight(id, entry) {
+  const host = entry?.host;
   if (!host) return;
 
   // Без нашего приложения запустить процесс нельзя — пробуем схему (вдруг
@@ -183,16 +258,23 @@ async function openMoonlight(id, host) {
       .catch((e) => toast(`${e.message ?? e}`, 9000));
   }
 
-  // Первое подключение. PIN придумываем сами и отдаём обеим сторонам: Moonlight
-  // получает его аргументом, хозяин — сообщением, которое его приложение само
-  // отнесёт в Sunshine.
-  const pin = String(Math.floor(1000 + Math.random() * 9000));
+  // Первое подключение к этому компьютеру.
+  const pin = entry.canPair ? String(Math.floor(1000 + Math.random() * 9000)) : null;
   try {
     await native.moonlight(host, 'pair', pin);
   } catch (e) {
     return toast(`${e.message ?? e}`, 9000);
   }
   settings.set('pairedHosts', [...paired, host]);
+
+  if (!pin) {
+    return toast(
+      'Moonlight сейчас покажет PIN — продиктуйте его хозяину компьютера, ' +
+        'он введёт код в своей панели Sunshine.',
+      20000
+    );
+  }
+  pending.set(id, pin);
   mesh.send(id, { ns: SUN, type: 'pin', pin });
   toast('Сопрягаемся: PIN ушёл хозяину компьютера, подтверждать вручную не нужно', 10000);
 }
@@ -204,6 +286,7 @@ export function moonlightButton(id) {
   btn.className = 'mark';
   btn.innerHTML = icon('gamepad');
   btn.title = 'Экран и управление через Moonlight';
+  // Адрес и способ сопряжения приезжают вместе — оба от хозяина компьютера.
   btn.onclick = () => openMoonlight(id, sunshineHosts.get(id));
   return btn;
 }

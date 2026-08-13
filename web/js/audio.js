@@ -84,29 +84,41 @@ function applySink(el) {
 /**
  * Громкость media-элемента, играющего этот поток.
  *
- * До ста процентов играет сам элемент — это работает в любом движке. Выше —
- * подключается усилитель WebAudio, а элемент глушится, чтобы звук не шёл двумя
- * путями сразу. Где WebAudio с потоком из WebRTC не дружит, громче ста
- * процентов просто не станет, но слышно будет.
+ * До ста процентов играет сам элемент — это работает в любом движке. Выше
+ * подключается усилитель WebAudio, и тогда элемент глушится, чтобы звук не шёл
+ * двумя путями сразу.
+ *
+ * Глушится не раньше, чем усилитель докажет, что до него вообще доходит звук.
+ * На движке WebKit (Safari и окно приложения на macOS) поток из WebRTC до графа
+ * обработки доходит не всегда, и безусловное глушение означало ровно то, чего
+ * человек не ждёт: поставил собеседнику погромче — и перестал его слышать.
+ * Теперь в этом случае громкость просто упирается в сто процентов.
  */
 export function volume(el, stream) {
   players.add(el);
   applySink(el);
 
   let boost = null;
+  let level = 1;
+
+  // Кто играет: усилитель (тогда элемент молчит) или сам элемент.
+  const route = () => {
+    const loud = level > 1 && !!boost?.alive();
+    el.muted = loud;
+    el.volume = loud ? 1 : Math.min(1, level);
+    boost?.set(loud ? level : 0);
+  };
 
   return {
     set(v) {
-      const level = Math.min(MAX_GAIN, Math.max(0, v));
-      const loud = level > 1;
-      if (loud && !boost) boost = amplify(stream);
-      boost?.set(loud ? level : 0);
-      el.muted = loud;
-      el.volume = loud ? 1 : level;
+      level = Math.min(MAX_GAIN, Math.max(0, v));
+      if (level > 1 && !boost) boost = amplify(stream, route);
+      route();
     },
     close() {
       players.delete(el);
       boost?.close();
+      boost = null;
     },
   };
 }
@@ -142,18 +154,43 @@ export function playback(stream) {
  *
  * Media-элемент при этом всё равно нужен — без привязки потока к нему Chrome не
  * отдаёт звук в WebAudio вовсе, поэтому создаётся усилитель только из playback.
+ *
+ * Рядом с усилением висит замер на самом источнике: по нему видно, дошёл ли
+ * поток до графа. Пока в нём одни нули, усилитель молчит и звук идёт через
+ * элемент; как только появится хоть что-то — зовём `onAlive`, и вызывающий
+ * передаёт звук сюда. Замер стоит до регулятора: после него при нулевом
+ * усилении было бы тихо всегда, и вопрос «дошёл ли поток» остался бы без
+ * ответа навсегда.
  */
-function amplify(stream) {
+function amplify(stream, onAlive) {
   const ctx = audioCtx();
   const src = ctx.createMediaStreamSource(stream);
   const gain = ctx.createGain();
+  gain.gain.value = 0;
   src.connect(gain).connect(ctx.destination);
+
+  const probe = ctx.createAnalyser();
+  probe.fftSize = 512;
+  src.connect(probe);
+  const buf = new Float32Array(probe.fftSize);
+
+  let alive = false;
+  const timer = setInterval(() => {
+    probe.getFloatTimeDomainData(buf);
+    if (buf.every((v) => v === 0)) return;   // цифровая тишина — ещё не ответ
+    alive = true;
+    clearInterval(timer);
+    onAlive();
+  }, 250);
+
   return {
+    alive: () => alive,
     set(level) {
       gain.gain.value = Math.min(MAX_GAIN, Math.max(0, level));
     },
     close() {
-      try { src.disconnect(); gain.disconnect(); } catch {}
+      clearInterval(timer);
+      try { src.disconnect(); gain.disconnect(); probe.disconnect(); } catch {}
     },
   };
 }

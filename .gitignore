@@ -1,5 +1,10 @@
 /target
 .env
+# Своего пакетного манифеста у проекта нет: модули собирает сам браузер.
+# Появляются они только от `npm i playwright` ради `make browser`.
+node_modules
+package.json
+package-lock.json
 *.apk
 *.idsig
 .DS_Store

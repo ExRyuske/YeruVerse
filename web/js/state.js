@@ -19,8 +19,9 @@ export const state = {
   config: {},
   joined: false,
   code: '',             // единственный секрет комнаты; на сервер уходит производное
-  sunshine: null,       // адрес нашего Sunshine, если он запущен
-  sunshineOpen: false,  // виден ли он из интернета
+  sunshine: null,          // адрес нашего Sunshine, если он запущен
+  sunshineOpen: false,     // виден ли он из интернета
+  sunshineCanPair: false,  // сохранён ли доступ к его панели — тогда PIN подтвердим сами
   paused: false,        // мы перехватили управление у гостей
 };
 

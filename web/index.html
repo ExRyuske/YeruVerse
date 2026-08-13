@@ -119,6 +119,9 @@
           </label>
           <label class="check"><input id="set-ec" type="checkbox"> Эхоподавление</label>
           <label class="check"><input id="set-agc" type="checkbox"> Автоматическое усиление</label>
+          <label class="check"><input id="set-monitor" type="checkbox"> Слышать себя</label>
+          <p class="muted small">Слышать себя стоит только в наушниках: через
+            динамики микрофон услышит сам себя и завоет.</p>
           <p class="muted small">Уровень: <span id="mic-level" class="mono">—</span></p>
         </div>
 
@@ -144,6 +147,12 @@
           </label>
           <label class="field">Битрейт <output id="out-bitrate"></output>
             <input id="set-bitrate" type="range" min="1" max="25" step="0.5">
+          </label>
+          <label class="field">Приоритет
+            <select id="set-priority">
+              <option value="sharp">Чёткость</option>
+              <option value="smooth">Плавность</option>
+            </select>
           </label>
         </div>
 

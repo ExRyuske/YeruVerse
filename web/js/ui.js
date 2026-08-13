@@ -140,6 +140,7 @@ export function showImage(src, name = '') {
   };
 
   box.onclick = close;
+  box.close = close;
   document.addEventListener('keydown', onKey, true);
   box.append(img);
   overlayHost().appendChild(box);
@@ -154,6 +155,13 @@ export function showImage(src, name = '') {
  */
 export function showVideo(stream, host = null, { mirror = false } = {}) {
   if (!stream) return;
+  const where = host ?? overlayHost();
+
+  // Полоса камер остаётся на виду поверх увеличенной, и с неё можно сразу
+  // открыть другую. Значит, второе увеличение должно заменять первое, а не
+  // ложиться поверх него стопкой.
+  where.querySelector(':scope > .lightbox')?.close?.();
+
   const box = document.createElement('div');
   box.className = `${host ? 'lightbox inside' : 'lightbox'}${mirror ? ' mirror' : ''}`;
 
@@ -176,9 +184,10 @@ export function showVideo(stream, host = null, { mirror = false } = {}) {
   };
 
   box.onclick = close;
+  box.close = close;      // чтобы следующее увеличение закрыло это, а не спрятало
   document.addEventListener('keydown', onKey, true);
   box.append(video);
-  (host ?? overlayHost()).appendChild(box);
+  where.appendChild(box);
   video.play().catch(() => {});
 }
 

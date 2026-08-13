@@ -39,10 +39,14 @@ const DEFAULTS = {
   sidebarSize: 0,     // ширина боковой панели в пикселях; 0 — по умолчанию
   outputDevice: '',   // куда выводить звук; пусто = системное по умолчанию
   denoise: 'rnnoise', // подавление шума: rnnoise | deepfilter | browser | off
+  monitor: false,     // слышать себя — только в наушниках, иначе заведётся
   quality: 'medium',  // выбранный профиль; custom — свои значения ниже
   streamHeight: 1080, // высота кадра, ширину подберёт браузер
   streamFps: 30,
   streamBitrate: 4,   // Мбит/с
+  // Что беречь, когда канала не хватает: sharp | smooth. По умолчанию
+  // чёткость — читаемая картинка нужнее плавной чаще, чем наоборот.
+  streamPriority: 'sharp',
   hotkeys: {},        // переназначенные сочетания; остальное — из умолчаний
   peerVolumeByName: {},
   streamVolumeByName: {},   // громкость трансляций, тоже по имени
@@ -65,6 +69,7 @@ function migrate(values) {
     values.denoise = 'rnnoise';
   }
   if (!(values.quality in PRESETS)) values.quality = 'medium';
+  if (!['sharp', 'smooth'].includes(values.streamPriority)) values.streamPriority = 'sharp';
 
   // Цвет ника не спрашиваем на входе: если человек его не трогал, берём
   // случайный из палитры — так участники различаются с первой секунды.

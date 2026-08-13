@@ -194,8 +194,10 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 .stage video { width: 100%; height: 100%; display: block; border: 0; background: #000; }
 /* Камеры видны всегда, независимо от того, чей экран на сцене: разговор в
    лицо — не то, что стоит прятать за переключателем. */
+/* Выше увеличенной камеры (`.lightbox.inside`, z-index 7): увеличили одну —
+   остальные всё равно видно, и на любую можно переключиться щелчком. */
 .cams {
-  position: absolute; right: 8px; bottom: 8px; z-index: 6;
+  position: absolute; right: 8px; bottom: 8px; z-index: 8;
   display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;
   max-width: calc(100% - 16px); pointer-events: none;
 }
@@ -217,7 +219,11 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
   font-size: 12px; background: linear-gradient(transparent, rgba(0, 0, 0, .75));
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-@media (max-width: 860px) { .cam-tile { width: 108px; } }
+@media (max-width: 860px) {
+  .cam-tile { width: 108px; }
+  /* Полоса ниже — и место под неё нужно меньше. */
+  .lightbox.inside { padding-bottom: 96px; }
+}
 
 .stage-empty { text-align: center; padding: 20px; }
 .stage-empty p { margin: 4px 0; }
@@ -418,8 +424,13 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
   background: rgba(0, 0, 0, .88);
 }
 /* Камера разворачивается в границах сцены, а не поверх всего окна: рядом
-   остаются и чат, и участники. */
-.lightbox.inside { position: absolute; z-index: 7; padding: 8px; background: rgba(0, 0, 0, .92); }
+   остаются и чат, и участники. Снизу оставляем место под полосу камер — она
+   лежит поверх, и без отступа увеличенное лицо уходило бы под соседние
+   плитки. Высота полосы — плитка 160px в пропорции 4:3 плюс её отступ. */
+.lightbox.inside {
+  position: absolute; z-index: 7; background: rgba(0, 0, 0, .92);
+  padding: 8px 8px 136px;
+}
 .lightbox img, .lightbox video {
   max-width: 100%; max-height: 100%; width: auto; height: auto;
   object-fit: contain; border-radius: var(--r-sm);
@@ -512,13 +523,19 @@ body.fullscreen .stage-wrap {
 }
 body.fullscreen .stage { border-radius: 0; aspect-ratio: auto; flex: 1; }
 
+/* Самый низ экрана в полноэкранном режиме принадлежит не нам: там панель задач
+   Windows, док macOS и полоса навигации Android — все они вылезают поверх
+   полноэкранного окна, стоит подвести туда курсор или палец. Кнопка, прижатая к
+   краю, перехватывала это нажатие себе. Поэтому ряд поднят, а край свободен. */
+body.fullscreen { --edge: calc(env(safe-area-inset-bottom, 0px) + 44px); }
+
 /* Управление — одной полосой у нижнего края: сверху оно закрывало бы то, на
    что смотрят, а двумя полосами закрывало бы вдвое больше. Переключатели
    трансляций встают в тот же ряд, что и кнопки. */
 body.fullscreen .sources {
-  position: absolute; left: 0; right: 0; bottom: 0; z-index: 8;
+  position: absolute; left: 0; right: 0; bottom: var(--edge); z-index: 8;
   flex-direction: row; align-items: center; gap: 10px;
-  padding: 10px 14px; padding-bottom: max(10px, env(safe-area-inset-bottom));
+  padding: 10px 14px;
   background: linear-gradient(transparent, rgba(0, 0, 0, .8));
   transition: opacity .25s;
 }
@@ -528,8 +545,10 @@ body.fullscreen .views {
   overflow-x: auto; scrollbar-width: none;
 }
 body.fullscreen .views::-webkit-scrollbar { display: none; }
-/* Камеры поднимаются над полосой, чтобы не спорить с ней за нижний угол. */
-body.fullscreen .cams { bottom: 68px; }
+/* Камеры поднимаются над полосой, чтобы не спорить с ней за нижний угол.
+   Вместе с ними поднимается и место, оставленное под них увеличенной камерой. */
+body.fullscreen .cams { bottom: calc(var(--edge) + 60px); }
+body.fullscreen .lightbox.inside { padding-bottom: calc(var(--edge) + 188px); }
 /* Мышь стоит — полоса гаснет: наведение на неподвижный курсор не заканчивается
    никогда, и она закрывала бы кадр всё время. Сам курсор при этом не прячем:
    пропавшая мышь читается как «всё зависло». */
@@ -623,7 +642,8 @@ body.fullscreen.idle .sources { opacity: 0; pointer-events: none; }
   body.fullscreen .views { flex: 1 1 100%; order: -1; }
   body.fullscreen .src-row { flex: 1 1 100%; justify-content: space-between; }
   /* Кнопки под пальцем выше, значит и полоса выше — камерам надо подняться. */
-  body.fullscreen .cams { bottom: 76px; }
+  body.fullscreen .cams { bottom: calc(var(--edge) + 84px); }
+  body.fullscreen .lightbox.inside { padding-bottom: calc(var(--edge) + 172px); }
 
   .modal { padding: 0; align-items: stretch; }
   .modal-card {
@@ -646,8 +666,52 @@ body.fullscreen.idle .sources { opacity: 0; pointer-events: none; }
   .join-card { padding: 18px 16px; }
 }
 
-/* Телефон в горизонтали: боковую панель прячем, сцене нужна высота. */
+/* Телефон в горизонтали — это не «узкий экран», а маленький настольный:
+   комнаты слева, сцена посередине, панель справа. Правила вертикального
+   телефона выше почти ни одним сюда не годятся, поэтому их приходится отменять
+   поимённо: там всё разложено сверху вниз, а здесь — слева направо. */
 @media (max-width: 860px) and (orientation: landscape) {
-  .sidebar { height: 100%; width: 260px; border-top: none; border-left: 1px solid var(--border); }
   .layout { flex-direction: row; }
+
+  /* Вырез и скруглённые углы в горизонтали живут по бокам, а не сверху. */
+  .topbar {
+    padding-top: 6px;
+    padding-left: max(8px, env(safe-area-inset-left));
+    padding-right: max(8px, env(safe-area-inset-right));
+  }
+  .stage-wrap { padding-left: max(6px, env(safe-area-inset-left)); }
+  .sidebar { padding-right: env(safe-area-inset-right); }
+
+  /* Комнаты — снова полосой у края, а не строкой поперёк: строка, положенная
+     в колонку, растягивалась во всю высоту и отъедала треть экрана. */
+  #rooms, #rooms:hover, #rooms:focus-within {
+    flex-direction: column; width: 64px; margin-right: 0; padding: 6px 4px;
+    border-right: 1px solid var(--border); border-bottom: none;
+    overflow-x: hidden; overflow-y: auto;
+  }
+  #rooms .room-tile { width: 100%; flex: none; }
+  #rooms .room-open { max-width: none; min-height: 36px; padding: 8px 6px; font-size: 13px; }
+  #rooms .room-add { min-height: 32px; padding: 4px; }
+
+  .sidebar {
+    height: 100%; width: min(280px, 40vw); min-height: 0; flex: none;
+    border-top: none; border-left: 1px solid var(--border);
+  }
+  /* Панель тянут за боковой край, как на большом экране. Полоска, оставшаяся
+     сверху, меняла бы высоту у панели, которая стоит сбоку. */
+  .grip { top: 0; bottom: 0; left: -3px; right: auto; width: 7px; height: auto; cursor: col-resize; }
+  body.resizing { cursor: col-resize; }
+
+  /* Сцене отдаём всю высоту: ради этого телефон и поворачивают. Пропорции
+     кадра держит само видео, а коробке под ним это только мешает. */
+  .stage { aspect-ratio: auto; flex: 1; }
+  .stage-wrap { padding: 6px; gap: 6px; flex: 1 1 auto; min-height: 0; }
+
+  /* Участники — столбцом: в узкой панели строка не помещается, а места по
+     вертикали здесь как раз хватает. */
+  .peers { max-height: 45%; padding: 8px 10px; }
+  .peers h3 { display: block; }
+  .peers ul { flex-direction: column; gap: 6px; overflow-x: hidden; }
+  .peers li { margin: 0 -6px; }
+  .pv-mini { display: flex; }
 }

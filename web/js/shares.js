@@ -225,6 +225,10 @@ function applyQuality() {
   const q = streamSettings();
   mesh.videoBitrate = q.bitrate;
   mesh.videoFramerate = q.fps;
+  // «Жертвовать кадрами» на языке WebRTC — это «беречь разрешение», и наоборот.
+  // Бережём чёткость — значит, проседать будет частота кадров, и наоборот.
+  mesh.degradation =
+    settings.get('streamPriority') === 'smooth' ? 'maintain-framerate' : 'maintain-resolution';
   mesh.retune();
 }
 
@@ -283,21 +287,33 @@ async function restartScreen() {
 settings.on(({ key }) => {
   if (!key.startsWith('stream')) return;
   applyQuality();
-  // Битрейт живёт только в кодировщике, дорожку он не касается.
-  if (key !== 'streamBitrate') retuneCapture();
+  // Битрейт и приоритет живут только в кодировщике, дорожки они не касаются.
+  if (!['streamBitrate', 'streamPriority'].includes(key)) retuneCapture();
 });
 
-// Камеру меняют, когда она уже включена: перезапускаем захват и подменяем
-// дорожку — собеседники не видят ни разрыва, ни пересогласования.
-//
-// Старый захват отпускаем до нового, а не после. Система не отдаёт одно и то же
-// устройство дважды, и запрос поверх работающего падал с «занято другим
-// приложением» — на телефоне, где камера всего одна, это значило, что сменить
-// её нельзя вовсе.
-settings.on(async ({ key }) => {
-  if (key !== 'camDevice' || !state.shares.has('cam')) return;
-  state.shares.get('cam').getTracks().forEach((t) => t.stop());
+/**
+ * Камеру меняют, когда она уже включена: перезапускаем захват и подменяем
+ * дорожку — собеседники не видят ни разрыва, ни пересогласования.
+ *
+ * Старый захват отпускаем до нового, а не после. Система не отдаёт одно и то же
+ * устройство дважды, и запрос поверх работающего падал с «занято другим
+ * приложением» — на телефоне, где камера всего одна, это значило, что сменить
+ * её нельзя вовсе. По той же причине два перезапуска не идут разом: если
+ * настройку успели тронуть дважды, второй ждёт конца первого.
+ */
+let restarting = false;
+let restartAgain = false;
+
+async function restartCam() {
+  if (!state.shares.has('cam')) return;
+  if (restarting) {
+    restartAgain = true;
+    return;
+  }
+
+  restarting = true;
   try {
+    state.shares.get('cam').getTracks().forEach((t) => t.stop());
     const stream = await SHARES.cam.capture();
     state.shares.set('cam', stream);
     await mesh.replaceStream('cam', stream);
@@ -307,7 +323,18 @@ settings.on(async ({ key }) => {
     // остановленную дорожку значит показывать всем застывший кадр.
     stopShare('cam');
     toast(`Камера не включилась: ${deviceProblem(e)}`);
+  } finally {
+    restarting = false;
   }
+
+  if (restartAgain) {
+    restartAgain = false;
+    await restartCam();
+  }
+}
+
+settings.on(({ key }) => {
+  if (key === 'camDevice') restartCam();
 });
 
 // Зеркало — дело показа, а не захвата: перерисовать плитки достаточно.

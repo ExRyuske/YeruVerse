@@ -1,7 +1,7 @@
 # Короткие команды для типовых задач. Всё то же самое можно набрать руками —
 # см. README, здесь просто собраны рабочие сочетания флагов.
 
-.PHONY: help server app app-debug android android-all android-prepare sign-apk icons icons-ui denoiser updater-key updater-pubkey docker docker-run deploy check clean
+.PHONY: help server app app-debug android android-all android-prepare sign-apk icons icons-ui denoiser updater-key updater-pubkey docker docker-run deploy check browser clean
 
 APP_DIR := desktop/src-tauri
 ANDROID_HOME ?= $(or $(ANDROID_SDK_ROOT),$(HOME)/Library/Android/sdk)
@@ -27,6 +27,7 @@ help:
 	@echo "make docker      — собрать образ сервера"
 	@echo "make deploy      — поднять сервер + HTTPS + TURN через compose"
 	@echo "make check       — форматирование, clippy, тесты и проверка фронтенда"
+	@echo "make browser     — прогон комнаты в настоящем браузере (нужен playwright)"
 
 server:
 	cargo run --release
@@ -125,6 +126,12 @@ check:
 	cargo test
 	python3 scripts/check_web.py
 	cd $(APP_DIR) && cargo clippy --all-targets -- -D warnings
+
+# Прогон комнаты в настоящем Chromium: два участника, WebRTC, чат, голос и
+# раскладка телефона. Нужен запущенный `make server` в соседнем окне и
+# playwright (`npm i playwright && npx playwright install chromium`).
+browser:
+	node scripts/room_check.mjs
 
 clean:
 	cargo clean

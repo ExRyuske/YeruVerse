@@ -197,6 +197,8 @@ export class Mesh extends EventTarget {
     this.seen = new Map();     // id потока -> { peer, stream }, пришедшие раньше подписи
     this.videoBitrate = 8_000_000;   // потолок для трансляции, бит/с
     this.videoFramerate = 60;
+    // Что беречь, когда канала не хватает. Решает транслирующий: см. tune().
+    this.degradation = 'maintain-resolution';
     // TURN приезжает из /config.json уже после загрузки модуля, а у Cloudflare
     // учётки ещё и короткоживущие: список обновляют снаружи, а читается он в
     // момент создания соединения.
@@ -317,9 +319,13 @@ export class Mesh extends EventTarget {
   }
 
   /**
-   * Настройка кодировщика под содержимое. Для игры важнее частота кадров, чем
-   * детализация: лучше мыло на долю секунды в резком движении, чем слайд-шоу.
-   * Браузер по умолчанию решает наоборот — режет fps, сохраняя картинку.
+   * Настройка кодировщика.
+   *
+   * Когда канала не хватает, что-то придётся отдать, и правильного ответа тут
+   * нет: в игре дороже плавность — лучше мыло на долю секунды в резком
+   * движении, чем слайд-шоу; в чужом коде и таблицах дороже чёткость — там
+   * важно прочитать буквы, а не увидеть плавную прокрутку. Поэтому приоритет
+   * выбирает транслирующий, а `degradation` приезжает из его настроек.
    */
   tune(sender, kind) {
     if (kind === 'mic' || !sender?.track) return;
@@ -329,7 +335,7 @@ export class Mesh extends EventTarget {
 
       const params = sender.getParameters();
       params.encodings ??= [{}];
-      params.degradationPreference = 'maintain-framerate';
+      params.degradationPreference = this.degradation;
       for (const e of params.encodings) {
         e.maxBitrate = this.videoBitrate;
         e.maxFramerate = this.videoFramerate;

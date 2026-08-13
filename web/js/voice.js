@@ -37,6 +37,7 @@ export class Voice extends EventTarget {
     settings.on(({ key }) => {
       if (key === 'voiceVolume' || key === 'peerVolume') this.applyVolumes();
       if (key === 'outputDevice') this.applySink();
+      if (key === 'monitor') this._applyMonitor();
       if (['micDevice', 'echoCancellation', 'autoGainControl', 'denoise'].includes(key)) {
         this.reload().catch(() => this.emit('blocked', {}));
       }
@@ -102,8 +103,31 @@ export class Voice extends EventTarget {
     this.muted = false;
     this.stream = await this._process(this.raw);
     this.mesh.setStream('mic', this.stream);
+    this._applyMonitor();
     this.emit('change', this.status());
     this.emit('devices', {});
+  }
+
+  /**
+   * Слышать себя.
+   *
+   * Играем не сырой микрофон, а то, что уходит собеседникам: после шумодава и
+   * после автоусиления. Смысл именно в этом — услышать себя чужими ушами, а не
+   * проверить, что микрофон подключён.
+   *
+   * Заглушённый микрофон не слышно и здесь: дорожка выключена, а значит через
+   * обработку идёт тишина. Так и надо — иначе выходит, что тебя слышно тебе, а
+   * больше никому.
+   */
+  _applyMonitor() {
+    this._monitor?.close();
+    this._monitor = null;
+    if (!this.enabled || !this.stream || !this.settings.get('monitor')) return;
+
+    const sound = playback(this.stream);
+    sound.set(1);
+    sound.play().catch(() => this.emit('blocked', {}));
+    this._monitor = sound;
   }
 
   /**
@@ -133,6 +157,7 @@ export class Voice extends EventTarget {
       // replaceTrack меняет дорожку без пересогласования SDP — собеседники не
       // слышат щелчка и разрыва.
       await this.mesh.replaceStream('mic', this.stream);
+      this._applyMonitor();
       oldChain?.close();
       oldRaw?.getTracks().forEach((t) => t.stop());
     } finally {
@@ -226,6 +251,7 @@ export class Voice extends EventTarget {
     this.stream = this.raw;
     this.denoising = (await this._engineDenoise(this.raw)) ? 'browser' : 'off';
     await this.mesh.replaceStream('mic', this.stream);
+    this._applyMonitor();
     chain.close();
     this.emit('denoise-fallback', { from: chain.kind, to: this.denoising });
     this.emit('change', this.status());
@@ -258,6 +284,8 @@ export class Voice extends EventTarget {
 
   disable() {
     if (!this.enabled) return;
+    this._monitor?.close();
+    this._monitor = null;
     this.mesh.setStream('mic', null);
     this.raw?.getTracks().forEach((t) => t.stop());
     this.chain?.close();
