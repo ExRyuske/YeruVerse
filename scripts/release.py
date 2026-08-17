@@ -37,6 +37,19 @@ PACKAGES = (
 VERSION = re.compile(r'^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$')
 
 
+# Кодировку и перевод строки задаём везде явно. Без этого Python берёт их из
+# локали системы, и на раннере Windows (cp1252) первый же русский комментарий в
+# Cargo.toml валит чтение, а запись переводит весь файл в CRLF. Пока скрипт жил
+# только на ubuntu, этого не было видно.
+def read(path: pathlib.Path) -> str:
+    return path.read_text(encoding='utf-8')
+
+
+def write(path: pathlib.Path, text: str) -> None:
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(text)
+
+
 def next_version(version: str, bump: str) -> str:
     match = VERSION.fullmatch(version)
     if not match:
@@ -52,7 +65,7 @@ def next_version(version: str, bump: str) -> str:
 
 
 def package_version(path: pathlib.Path, name: str) -> str:
-    text = path.read_text()
+    text = read(path)
     match = re.search(
         rf'(?ms)^\[package\]\nname = "{re.escape(name)}"\nversion = "([^"]+)"', text
     )
@@ -62,21 +75,21 @@ def package_version(path: pathlib.Path, name: str) -> str:
 
 
 def replace_package_version(path: pathlib.Path, name: str, old: str, new: str) -> None:
-    text = path.read_text()
+    text = read(path)
     pattern = rf'(?ms)(^\[package\]\nname = "{re.escape(name)}"\nversion = "){re.escape(old)}(")'
     text, count = re.subn(pattern, rf'\g<1>{new}\g<2>', text)
     if count != 1:
         raise ValueError(f'не смогли однозначно обновить {path.relative_to(ROOT)}')
-    path.write_text(text)
+    write(path, text)
 
 
 def replace_lock_version(path: pathlib.Path, name: str, old: str, new: str) -> None:
-    text = path.read_text()
+    text = read(path)
     pattern = rf'(?ms)(^name = "{re.escape(name)}"\nversion = "){re.escape(old)}(")'
     text, count = re.subn(pattern, rf'\g<1>{new}\g<2>', text)
     if count != 1:
         raise ValueError(f'не смогли однозначно обновить {path.relative_to(ROOT)}')
-    path.write_text(text)
+    write(path, text)
 
 
 # Какой архив для какой системы. macOS собирается только под Apple Silicon,
@@ -110,7 +123,7 @@ def cmd_manifest(args: argparse.Namespace) -> None:
     # Cargo.toml. Разойдись они — обновлятель увидит новую версию, скачает
     # пакет, тот представится старой, и предложение появится снова. И так по
     # кругу, пока кто-нибудь не догадается сверить два числа.
-    built = re.search(r'^version = "([^"]+)"', (APP / 'Cargo.toml').read_text(), re.M)
+    built = re.search(r'^version = "([^"]+)"', read(APP / 'Cargo.toml'), re.M)
     if not built:
         raise SystemExit('не нашли версию в Cargo.toml приложения')
     if built.group(1) != version:
@@ -130,7 +143,7 @@ def cmd_manifest(args: argparse.Namespace) -> None:
                 print(f'нет пакета к подписи: {sig.name}', file=sys.stderr)
                 continue
             entry = {
-                'signature': sig.read_text().strip(),
+                'signature': read(sig).strip(),
                 'url': f'https://github.com/{REPO}/releases/download/{args.tag}/{archive.name}',
             }
             # Первый найденный выигрывает: у NSIS и MSI одна и та же платформа,
@@ -145,7 +158,8 @@ def cmd_manifest(args: argparse.Namespace) -> None:
             'tauri.conf.json включён createUpdaterArtifacts.'
         )
 
-    pathlib.Path(args.out).write_text(
+    write(
+        pathlib.Path(args.out),
         json.dumps(
             {
                 'version': version,
@@ -156,7 +170,7 @@ def cmd_manifest(args: argparse.Namespace) -> None:
             indent=2,
             ensure_ascii=False,
         )
-        + '\n'
+        + '\n',
     )
     print(f'{args.out}: {args.tag}, платформы — {", ".join(sorted(platforms))}')
 
