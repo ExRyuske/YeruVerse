@@ -1,132 +1,89 @@
 # YeruVerse
 
-[![CI](https://github.com/ExRyuske/YeruVerse/actions/workflows/ci.yml/badge.svg)](https://github.com/ExRyuske/YeruVerse/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/ExRyuske/YeruVerse?display_name=tag)](https://github.com/ExRyuske/YeruVerse/releases)
+> ⚠️ **Этот проект полностью написан ИИ.** Весь код, документация и
+> конфигурация созданы с помощью Claude (Anthropic) без ручного написания
+> кода человеком. Используйте на свой страх и риск, проверяйте перед
+> продакшн-использованием.
 
-**Screens, voices and keyboards shared straight between people.** The server
-only introduces them: video, audio, files, pointers and remote input travel
-peer-to-peer and never pass through it.
+Приватная видеосвязь для небольшой компании: экран, голос и клавиатура
+передаются напрямую между участниками (WebRTC, peer-to-peer). Сервер
+YeruVerse — это только «список комнат»: он раздаёт участников друг другу и
+передаёт сигналинг, но видео, аудио и файлы через него не идут.
 
-Runs in any browser. The desktop app (Windows, macOS, Linux) adds what a web
-page is not allowed to do: system-wide hotkeys, pointers drawn over every
-window, injecting a guest's input, and a bridge to Sunshine. The Android build
-keeps the room alive while you are off reading something else.
+Работает как веб-страница и как десктопное/мобильное приложение (Tauri).
 
-A room has exactly one secret: its **code**, which is also its address. Until
-you know the code the room simply does not exist; there is no second password
-to add. The code lives in the URL fragment (`#code`), so it never reaches the
-server in a query string, and only an irreversible fingerprint of it is logged.
-Rooms live in memory and vanish with the last participant — no database, no
-chat history, no accounts, no cookies.
+## Возможности
 
-## In a room
+- Демонстрация экрана нескольких участников одновременно, с раскладкой сцены.
+- Голосовой чат с шумоподавлением (RNNoise и DeepFilterNet прямо в браузере).
+- Общий доступ к клавиатуре/мыши для удалённого управления.
+- Текстовый чат и передача файлов.
+- Комнаты по ссылке/коду, без регистрации.
+- TURN через Cloudflare — работает и за симметричным NAT (мобильные сети,
+  корпоративные фаерволы).
+- Автообновление десктопного приложения (Tauri updater).
+- Приложение под Windows/macOS/Linux и Android (сборка через Tauri).
 
-Screen and camera share independently, several streams at once, each with its
-own remembered volume. Voice goes over a full WebRTC mesh, with a choice of
-noise suppression: **RNNoise** by default — tiny and instant — or
-**DeepFilterNet 3**, which is far better on real noise and downloads its 18 MB
-model once, only if you pick it. Both run on your own machine, from files served
-by your own server. Chat takes pasted images and dropped files, which download
-from a swarm of peers rather than from the server. Everyone's pointer is visible
-over the video.
-
-Two ways to drive someone else's machine: **WebRTC input** straight from the
-browser, and **Sunshine + Moonlight** when it has to be a game — full-screen
-capture, virtual gamepad, millisecond latency.
-
-The owner decides who gets in, **one person at a time**: every participant has
-a padlock next to their name. While it is closed, they do not even learn the
-Sunshine address. An open padlock is permission, not a handover — the viewer
-still has to take control with the button under the stage, and until they do
-their mouse is only a pointer.
-
-## Running it
+## Быстрый старт (сервер)
 
 ```bash
-cargo run                       # http://localhost:8080, or: make server
-cargo install tauri-cli --version '^2' --locked
-make app                        # .dmg / .msi / .AppImage for the current OS
-make android                    # signed arm64 APK
+cargo run --release
 ```
 
-Two tabs on `http://localhost:8080/#test` are enough to see a room from the
-inside. Across devices you need **HTTPS**: browsers hand out microphone and
-screen capture only in a secure context. That is also why the app window loads
-straight from the server instead of local files — add your own domain to
-`desktop/src-tauri/capabilities/default.json`.
+Сервер поднимется на `:8080` и отдаёт веб-версию из `web/`.
 
-The APK signing key is created on the first `make android` at
-`~/.yeruverse/android.jks`. **Keep it**: updates over an installed build are
-only accepted from the same key.
-
-| Variable | Purpose |
-|---|---|
-| `PORT`, `WEB_DIR` | HTTP port and static directory |
-| `CF_TURN_KEY_ID`, `CF_TURN_API_TOKEN`, `TURN_TTL` | TURN via Cloudflare |
-
-## Deploying
+## Развёртывание на своём сервере
 
 ```bash
-cp .env.example .env && $EDITOR .env    # domain and TURN keys
-docker compose up -d                    # server + Caddy with HTTPS
+cp .env.example .env && $EDITOR .env   # домен и ключи TURN (Cloudflare)
+docker compose up -d
 ```
 
-The domain from `.env` must have an A record pointing at the host. The image
-lives in `ghcr.io/exryuske/yeruverse`; GitHub packages are private by default,
-so until you make it public `docker compose up` answers `unauthorized`.
+Compose поднимает сам сервер комнат и Caddy, который сам получает и продлевает
+HTTPS-сертификат (Let's Encrypt) и проксирует WebSocket без дополнительной
+настройки.
 
-**TURN** is what saves the connections that cannot be made directly — mobile
-carriers and corporate networks hand out symmetric NAT. Cloudflare is the only
-provider here, and on purpose: it mints short-lived credentials, while any other
-one would mean a permanent login and password handed to every browser in the
-room. STUN is Cloudflare's and Google's open servers, wired into the page. Check
-with `curl -s https://your-domain/config.json` — it should say `"turn": true`.
+TURN берётся у Cloudflare:
+сервер сам выпускает короткоживущие учётки, постоянный ключ в браузер не
+попадает. Без TURN соединятся не все — только участники за обычным NAT.
 
-## Releasing
+## Десктоп и мобильное приложение
 
-**`git push` to `main` is the whole procedure.** CI bumps the patch version,
-tags it, builds the image, the installers and the APK, and publishes the
-release.
+Собирается через [Tauri](https://tauri.app/) из `desktop/`.
 
-Every build checks for updates every six hours. The desktop app installs them
-itself, verifying the package signature against a built-in key. Android cannot:
-packages there are installed by the system, so the app compares its version with
-the one the room server reads out of `latest.json`, and opens the APK link —
-the rest is the system's usual install prompt.
-
-By hand only for `minor`/`major` (Actions → CI → Run workflow) or to skip a
-release (`[skip release]` in the commit message).
-
-CI needs `contents: write` (Settings → Actions → General) and four secrets
-(Settings → Secrets and variables → Actions), added **before** the first push —
-otherwise the installers are built unsigned and nothing can ever update:
-
-| Secret | Where it comes from |
-|---|---|
-| `TAURI_SIGNING_PRIVATE_KEY` | `make updater-key`, then the **entire** contents of `~/.yeruverse/updater.key` — one base64 line starting with `dW50cnVzdGVkIGNvbW1lbnQ6` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | contents of `~/.yeruverse/updater.key.password` |
-| `ANDROID_KEYSTORE` | `base64 -i ~/.yeruverse/android.jks` |
-| `ANDROID_KEYSTORE_PASS` | contents of `~/.yeruverse/android.jks.password` |
-
-## Layout
-
-```
-src/                 server: WebSocket, in-memory rooms, ICE credentials
-web/js/              front end, one module per part of the room
-desktop/src-tauri/   Tauri shell: input, hotkeys, overlay, Sunshine bridge
-scripts/             icons, Android project patches, build, signing, release
+```bash
+make app          # установщик под текущую систему (.dmg/.msi/.AppImage)
+make app-debug    # запуск без упаковки, для разработки
+make android      # APK под arm64 (нужны ANDROID_HOME и NDK_HOME)
 ```
 
-The front end has no bundler: the browser loads the modules itself. `core.js`
-holds the long-lived objects (socket, WebRTC mesh, voice, settings), `state.js`
-the room as data, and every other module owns one visible part of it — the
-stage, the participant list, the chat, the shares, the Sunshine bridge. They
-never call each other's drawing directly: a module says what it can repaint,
-and the rest ask by name through `render.js`.
+## Полезные команды
 
-`make check` runs formatting, clippy, the tests and `scripts/check_web.py` —
-the last one reads the modules and verifies that every import exists, every
-`#id` is in the markup and nothing imports in a circle.
+```bash
+make help    # список всех команд с описанием
+make docker  # собрать образ сервера
+make check   # форматирование, clippy, тесты, проверка фронтенда
+make browser # прогон комнаты в настоящем браузере (нужен playwright)
+```
 
-Licences: **RNNoise** — BSD-3-Clause, **Font Awesome Free** — CC BY 4.0, both
-under `web/vendor/`.
+## Структура проекта
+
+```
+src/            сервер комнат (Rust, axum): сигналинг, TURN-креды, обновления
+web/            веб-клиент (без сборки, чистый JS): экран, голос, чат, раскладка
+desktop/        обёртка Tauri для десктопа и Android
+scripts/        сборка, иконки, шумодав, релиз, проверки
+tests/          интеграционные тесты сервера
+```
+
+## Лицензия
+
+Код проекта распространяется под [GNU GPLv3](LICENSE).
+
+Встроенные модели шумоподавления в `web/vendor/` — сторонние и идут под
+своей лицензией (MIT):
+
+- `web/vendor/deepfilternet/` — DeepFilterNet 3 в WebAssembly
+  ([denoise-voice-clarity](https://github.com/rajan471/denoise-voice-clarity),
+  лицензия и уведомление — в файлах `LICENSE`/`NOTICE.md` рядом).
+- `web/vendor/rnnoise/` — RNNoise (лицензия — в файле `LICENSE` рядом).

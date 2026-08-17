@@ -13,6 +13,8 @@ KEYSTORE ?= $(HOME)/.yeruverse/android.jks
 # GitHub Secret. Старое значение оставлено для первого создания ключа с нуля.
 KEY_PASS ?= $(shell test -r "$(KEYSTORE).password" && tr -d '\n' < "$(KEYSTORE).password" || printf %s yeruverse)
 APK := $(CURDIR)/yeruverse.apk
+# Контекст сборки образа: бинарник и статика, больше туда ничего не уезжает.
+DIST := dist
 
 help:
 	@echo "make server      — собрать и запустить сервер (веб-версия на :8080)"
@@ -111,8 +113,20 @@ tauri-cli:
 	   && cargo binstall -y tauri-cli@'^2' \
 	   || cargo install tauri-cli --version '^2' --locked
 
+# Образ только упаковывает готовый бинарник — компиляция идёт снаружи, чтобы
+# попасть под кэш cargo (почему так, написано в Dockerfile). Бинарник нужен под
+# linux/musl, а собирать его умеет не всякая машина, поэтому компилирует
+# контейнер с Rust: ставить кросс-компилятор ради одной команды незачем, а один
+# путь на все системы лучше двух расходящихся. Кэш живёт в target/docker и
+# переживает пересборки.
 docker:
-	docker build -t yeruverse .
+	rm -rf $(DIST)
+	mkdir -p $(DIST)
+	docker run --rm -v "$(CURDIR)":/src -w /src rust:1-alpine sh -c \
+	  'apk add --no-cache musl-dev >/dev/null && cargo build --locked --release --target-dir target/docker'
+	cp target/docker/release/yeruverse $(DIST)/
+	cp -r web $(DIST)/web
+	docker build -f Dockerfile -t yeruverse $(DIST)
 
 docker-run: docker
 	docker run --rm -p 8080:8080 yeruverse
@@ -134,5 +148,6 @@ browser:
 	node scripts/room_check.mjs
 
 clean:
+	rm -rf $(DIST)
 	cargo clean
 	cd $(APP_DIR) && cargo clean

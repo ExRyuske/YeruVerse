@@ -8,15 +8,17 @@ name: CI
 # обязан выдать не меньше, чем просит любая вложенная задача, и рассинхрон
 # обнаруживался уже на сервере отказом «packages: none».
 #
-# Push в `main` выпускает версию сам. Не выпускать конкретный push можно строкой
-# `[skip release]` в сообщении коммита; правки одной документации не выпускаются
-# и без неё. `minor` и `major` — Actions → CI → Run workflow.
+# Push в `main` выпускает версию сам, и другого исхода нет: `latest` в реестре —
+# это то, что крутится на сервере, и за ним всегда должен стоять тег. Не
+# запускать прогон вовсе можно строкой `[skip ci]` в сообщении коммита, её
+# понимает сам GitHub; правки одной документации не запускают ничего и без
+# пометок. `minor` и `major` — Actions → CI → Run workflow.
 on:
   push:
     branches: [main]
-    paths-ignore: ["**.md", "LICENSE", ".github/ISSUE_TEMPLATE/**"]
+    paths-ignore: ["**.md", "LICENSE"]
   pull_request:
-    paths-ignore: ["**.md"]
+    paths-ignore: ["**.md", "LICENSE"]
   workflow_dispatch:
     inputs:
       bump:
@@ -26,15 +28,13 @@ on:
         type: choice
         options: [patch, minor, major]
 
-# `contents` — релизному коммиту, тегу и самому релизу; `packages` — образу,
-# который уезжает в реестр самого GitHub.
+# По умолчанию токену дано только чтение; задачи поднимают права себе сами.
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 # Ветку-предложение дописывают на ходу, и старый прогон уже никому не нужен.
-# Выпуск дорабатывает до конца: его тег уже стоит, и брошенная на середине
-# сборка оставила бы версию без релиза.
+# Выпуск дорабатывает до конца, а прогоны main выстраиваются в очередь: второй
+# должен увидеть коммит выпуска от первого.
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -43,92 +43,167 @@ env:
   CARGO_TERM_COLOR: always
   # Отладочная информация в CI не нужна никому, а линковка с ней заметно дольше.
   CARGO_PROFILE_DEV_DEBUG: "0"
+  # Инкрементальная сборка рассчитана на повторную компиляцию того же дерева
+  # подряд — в CI такого не бывает, зато её промежуточные файлы раздувают кэш.
+  CARGO_INCREMENTAL: "0"
+  TARGET: x86_64-unknown-linux-musl
 
 jobs:
-  # Версия поднимается до сборки, а не после: приложение сообщает о себе ту, что
-  # зашита в Cargo.toml при компиляции, и манифест обновления сверяется с ней.
-  version:
-    name: version
-    if: github.event_name != 'pull_request' && !contains(github.event.head_commit.message, '[skip release]')
+  # Что собирать в этом прогоне. Обновление зависимости сервера не трогает
+  # оболочку, а обновление оболочки — образ; собирать на каждое предложение всё
+  # значило платить за матрицу из трёх систем из-за строчки в чужом Cargo.lock.
+  #
+  # Отдельная задача, а не шаг: условие, отменяющее matrix, должно стоять на
+  # самой задаче — из шага три раннера уже не разогнать.
+  scope:
+    name: scope
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      app: ${{ steps.paths.outputs.app }}
+      image: ${{ steps.paths.outputs.image }}
+    steps:
+      # Список файлов спрашиваем у API: checkout ради одного `git diff` дольше
+      # самой проверки.
+      - id: paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -e
+          # Вне предложения собирается всё: выпуску нужны и образ, и установщики.
+          if [ -z "$PR" ]; then
+            printf 'app=true\nimage=true\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files="$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')"
+          echo "$files"
+          touched() { grep -qE "$1" <<<"$files"; }
+          {
+            touched '^(desktop/|scripts/|\.github/workflows/)' \
+              && echo app=true || echo app=false
+            touched '^(src/|web/|Cargo\.|Dockerfile|scripts/|\.github/workflows/)' \
+              && echo image=true || echo image=false
+          } >> "$GITHUB_OUTPUT"
+
+  # Проверки, бинарник сервера и образ. Отдельной релизной сборки нет: бинарник
+  # для образа и есть релизная сборка, а clippy проверяет то же дерево быстрее.
+  #
+  # Бинарник собирается прямо на раннере под musl, а образ только копирует его в
+  # alpine. Так компиляция попадает под кэш Actions, который переживает прогоны;
+  # почему не наоборот — написано в Dockerfile.
+  server:
+    name: server
+    needs: scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
     outputs:
       tag: ${{ steps.bump.outputs.tag }}
+      sha: ${{ steps.head.outputs.sha }}
+    env:
+      # Публикуется всё, кроме веток-предложений: в PR (тем более из форка)
+      # токен на запись не выдаётся, да и публиковать там нечего.
+      PUBLISH: ${{ github.event_name != 'pull_request' }}
+      IMAGE: ${{ needs.scope.outputs.image }}
     steps:
+      # На main берём вершину ветки, а не коммит события: прогоны выстроены в
+      # очередь, и коммит выпуска от предыдущего уже должен быть под нами —
+      # иначе push релизного коммита упрётся в разошедшиеся истории.
       - uses: actions/checkout@v7
         with:
-          ref: main
-          fetch-depth: 0
+          ref: ${{ github.event_name != 'pull_request' && 'main' || '' }}
+      # Остальные задачи берут ровно этот коммит, а не «вершину main» ещё раз:
+      # между их checkout'ами ветка успела бы уехать, и выпуск собрался бы из
+      # двух разных деревьев.
+      - id: head
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - id: bump
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: ${{ env.TARGET }}
+      # musl-gcc нужен rustls: часть криптографии он компилирует как C. Всё
+      # остальное дерево зависимостей — чистый Rust.
+      - if: env.IMAGE == 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Пишет кэш только main: ветка-предложение и так читает его оттуда, а
+          # своя копия живёт до слияния и лишь вытесняет чужие из общего лимита.
+          # Обновление пары крейтов не отменяет кэш целиком — cargo пересоберёт
+          # изменившееся, а остальное возьмёт из восстановленного target.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # `--locked` тот же, что при сборке: расхождение Cargo.lock должно
+      # ломаться на проверке, а не на выпуске.
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      # Модули фронтенда собирает сам браузер, поэтому опечатку в импорте или в
+      # идентификаторе элемента до этой проверки ловил только человек, открывший
+      # страницу. Сборщика в проекте нет — эта проверка его и заменяет.
+      - run: python3 scripts/check_web.py
+
+      # Версия поднимается до сборки, а не после: и сервер, и приложение
+      # сообщают о себе ту, что зашита при компиляции, и манифест обновления
+      # сверяется с ней. Скрипт считает её по Cargo.toml, поэтому соседние
+      # задачи получают ту же — а коммит с ней делает `release`, когда собрано
+      # уже всё: сорвавшаяся сборка не должна оставлять в истории тег, за
+      # которым ничего нет.
+      - if: env.PUBLISH == 'true'
+        id: bump
         run: |
           set -e
           tag="$(python3 scripts/release.py bump --part '${{ inputs.bump || 'patch' }}' | sed -n 's/.*-> \(v[0-9][0-9.]*\)$/\1/p')"
           test -n "$tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      # Коммит и тег уходят под токеном GitHub Actions, а его push не запускает
-      # workflow заново — иначе выпуск выпускал бы сам себя по кругу.
-      - env:
-          TAG: ${{ steps.bump.outputs.tag }}
+      - if: env.IMAGE == 'true'
+        run: cargo build --locked --release --target "$TARGET"
+      # Контекст сборки — готовый бинарник и статика: демону Docker не уезжает
+      # ни исходников, ни каталога target, и `.dockerignore` за этим больше
+      # следить не нужно.
+      - if: env.IMAGE == 'true'
         run: |
           set -e
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Cargo.toml Cargo.lock desktop/src-tauri/Cargo.toml desktop/src-tauri/Cargo.lock
-          git commit -m "chore(release): $TAG"
-          git tag --annotate "$TAG" --message "Release $TAG"
-          git push origin HEAD:main "$TAG"
+          mkdir -p dist
+          cp "target/$TARGET/release/yeruverse" dist/
+          cp -r web dist/web
 
-  # Проверки сервера и образ для развёртывания. Отдельной релизной сборки нет:
-  # её делает сам образ, а clippy проверяет то же дерево быстрее.
-  docker:
-    name: server
-    needs: version
-    if: ${{ !cancelled() && needs.version.result != 'failure' }}
-    runs-on: ubuntu-latest
-    env:
-      BUILD_REF: ${{ needs.version.outputs.tag || github.ref }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ env.BUILD_REF }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
-      # Модули фронтенда собирает сам браузер, поэтому опечатку в импорте или в
-      # идентификаторе элемента до этой проверки ловил только человек, открывший
-      # страницу. Сборщика в проекте нет — эта проверка его и заменяет.
-      - run: python3 scripts/check_web.py
-
-      - uses: docker/setup-buildx-action@v4
-      # В реестр пускаем всё, кроме веток-предложений: в PR (тем более из форка)
-      # токен на запись не выдаётся, да и публиковать там нечего.
-      - if: github.event_name != 'pull_request'
+      - if: env.IMAGE == 'true'
+        uses: docker/setup-buildx-action@v4
+      - if: env.PUBLISH == 'true' && env.IMAGE == 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
+      - if: env.IMAGE == 'true'
+        id: meta
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=${{ needs.version.outputs.tag }},enable=${{ needs.version.outputs.tag != '' }}
+            type=raw,value=${{ steps.bump.outputs.tag }},enable=${{ steps.bump.outputs.tag != '' }}
             type=sha,format=short
-      - uses: docker/build-push-action@v7
+      # Кэш слоёв здесь не нужен и только стоил бы времени на выгрузку: слоёв
+      # три, и все — распаковка alpine да копирование готовых файлов.
+      - if: env.IMAGE == 'true'
+        uses: docker/build-push-action@v7
         with:
-          context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          context: dist
+          file: Dockerfile
+          push: ${{ env.PUBLISH == 'true' && env.IMAGE == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   # Все три системы одной матрицей: у них общие полдюжины шагов — Rust, кэш,
   # CLI Tauri, выгрузка артефактов, — и держать их врозь значило чинить каждую
@@ -140,11 +215,15 @@ jobs:
   # нём, а Rust собирается под каждую архитектуру заново.
   app:
     name: ${{ matrix.name }}
-    needs: version
-    if: ${{ !cancelled() && needs.version.result != 'failure' }}
+    needs: [scope, server]
+    if: needs.scope.outputs.app == 'true'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
-      fail-fast: false
+      # В предложении хватает первого отказа: чинить всё равно придётся, а
+      # соседние системы к этому моменту уже сожгли бы свои минуты. Выпуску
+      # наоборот нужна полная картина — переделывать его дороже.
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         include:
           - name: macOS
@@ -166,7 +245,10 @@ jobs:
             target: aarch64-linux-android
             artifacts: yeruverse.apk
     env:
-      BUILD_REF: ${{ needs.version.outputs.tag || github.ref }}
+      TAG: ${{ needs.server.outputs.tag }}
+      # Версия NDK нужна и установщику пакетов, и переменной NDK_HOME. Держим её
+      # в одном месте: разойдясь, эта пара давала «NDK not found» уже в gradle.
+      NDK_VERSION: 27.0.12077973
       # Секреты — на уровне задачи: в условии шага контекст `secrets` недоступен,
       # а `env` доступен, и по нему шаг подписи понимает, есть ли чем подписывать.
       ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
@@ -175,7 +257,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ env.BUILD_REF }}
+          ref: ${{ github.event_name != 'pull_request' && needs.server.outputs.sha || '' }}
+
+      # Та же версия, что зашита в сервер. Скрипт считает её по Cargo.toml, а
+      # дерево здесь то же самое — значит и результат тот же; сверяем на всякий
+      # случай, потому что разойдясь эта пара дала бы приложение, которое
+      # называет себя не тем, что написано на теге.
+      - if: env.TAG != ''
+        shell: bash
+        run: |
+          set -e
+          got="$(python3 scripts/release.py bump --part '${{ inputs.bump || 'patch' }}' | sed -n 's/.*-> \(v[0-9][0-9.]*\)$/\1/p')"
+          test "$got" = "$TAG"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -183,6 +276,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Готовый бинарник вместо `cargo install`: тот собирал CLI из исходников по
       # несколько минут в каждой задаче.
       - uses: cargo-bins/cargo-binstall@main
@@ -212,8 +306,8 @@ jobs:
         name: build APK
         run: |
           set -e
-          sdkmanager --install "ndk;27.0.12077973"
-          export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
+          sdkmanager --install "ndk;$NDK_VERSION"
+          export NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
           cd desktop/src-tauri
           cargo tauri android init
           cargo tauri icon icons/icon.png
@@ -242,34 +336,58 @@ jobs:
 
       # Установщики — людям, архивы с подписями — обновлятелю. Неподписанный APK
       # не выгружаем вовсе: поставить его всё равно нельзя, а рядом с рабочим он
-      # лишь путал бы.
-      - uses: actions/upload-artifact@v7
+      # лишь путал бы. В предложении выгружать нечего: там сборка нужна как
+      # проверка, скачивать её никто не будет.
+      #
+      # Хранить выгрузку долго незачем: следующая задача складывает те же файлы
+      # в релиз, и уже оттуда их берут навсегда. Пережимать тоже: dmg, msi и apk
+      # — сами архивы, и zip поверх них только тратит время.
+      - if: env.TAG != ''
+        uses: actions/upload-artifact@v7
         with:
           name: yeruverse-${{ matrix.name }}
           path: ${{ matrix.artifacts }}
           if-no-files-found: warn
+          retention-days: 1
+          compression-level: 0
 
   release:
     name: release
-    needs: [version, docker, app]
-    if: needs.version.outputs.tag != ''
+    needs: [server, app]
+    if: needs.server.outputs.tag != ''
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
     env:
-      TAG: ${{ needs.version.outputs.tag }}
+      TAG: ${{ needs.server.outputs.tag }}
       # Тем же секретом задача проверяет, есть ли чему складываться в манифест:
       # без ключа сборка идёт без пакетов обновления, и подписей просто нет.
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ env.TAG }}
-          # Задаче нужен один скрипт и версия приложения, с которой он сверяет тег.
-          sparse-checkout: |
-            scripts
-            desktop/src-tauri/Cargo.toml
+          ref: ${{ needs.server.outputs.sha }}
       - uses: actions/download-artifact@v8
         with:
           path: dist
+
+      # Образ в реестре, установщики собраны — теперь версию можно закреплять в
+      # истории. Коммит и тег уходят под токеном GitHub Actions, а его push не
+      # запускает workflow заново — иначе выпуск выпускал бы сам себя по кругу.
+      # Если за время сборки в main что-то приехало, push упрётся в разошедшиеся
+      # истории и задача упадёт — это лучше, чем тег на дереве, которого никто
+      # не собирал.
+      - run: |
+          set -e
+          got="$(python3 scripts/release.py bump --part '${{ inputs.bump || 'patch' }}' | sed -n 's/.*-> \(v[0-9][0-9.]*\)$/\1/p')"
+          test "$got" = "$TAG"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock desktop/src-tauri/Cargo.toml desktop/src-tauri/Cargo.lock
+          git commit -m "chore(release): $TAG"
+          git tag --annotate "$TAG" --message "Release $TAG"
+          git push origin HEAD:main "$TAG"
 
       # Приложение ходит за этим файлом по постоянному адресу
       # releases/latest/download/latest.json и по нему решает, обновляться ли.

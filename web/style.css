@@ -78,6 +78,40 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
    и растягивать их по левому краю незачем. */
 #downloads > button { justify-content: flex-start; text-align: left; }
 #downloads > p { margin: 4px 6px 0; }
+/* Экран входа на мобильном: одной колонкой, а из загрузок остаётся только
+   предложение обновиться — и уходит на самый верх.
+
+   Спрашиваем и про ширину, и про отсутствие наведения. Телефон в горизонтали
+   отдаёт 915 точек, планшет и того больше — под «узкий экран» они не подходят,
+   а три колонки у них не помещаются точно так же: панели наезжали друг на
+   друга, и список комнат уходил под соседнюю целиком.
+
+   Sunshine и Moonlight отсюда убраны намеренно: оба ставятся на настольный
+   компьютер, и на телефоне эти кнопки вели бы в никуда. */
+@media (max-width: 860px), (hover: none) {
+  /* `align-content` — не про придирки к пикселям: строки сетки по умолчанию
+     растягиваются на всю высоту экрана, и между карточкой, комнатами и
+     предложением обновиться зияло по восемьдесят точек пустоты вместо
+     шестнадцати. Прижимаем всё к верху. */
+  #screen-join {
+    grid-template-columns: 1fr; align-items: start; align-content: start;
+    padding: 12px;
+  }
+  #rooms-join, .join-card-wrap, #downloads { grid-column: 1; justify-self: stretch; }
+  /* Карточка первой — за ней и приходят; предложение обновиться выше неё. */
+  .join-card-wrap { order: -1; }
+  #downloads { order: -2; padding: 0; background: none; border: none; }
+  #downloads > h3, #downloads > p, #downloads > button { display: none; }
+  /* Обновляться не на что — панели нет вовсе, вместе с её отступом в ряду. */
+  #downloads:not(:has(#update-notice:not([hidden]))) { display: none; }
+  .side-panel { width: auto; }
+  /* Панель растёт, сколько нужно, а прокручивается весь экран входа. Со своей
+     высотой она превращалась во вложенную прокрутку: уже на второй комнате
+     список упирался в потолок, а кнопка «другая комната» оказывалась за краем.
+     Двух прокруток на одном экране телефон не прощает. */
+  #rooms-join { max-height: none; }
+}
+
 /* Панель: единая поверхность для карточки входа, окна настроек и всплывающих
    настроек у кнопок. */
 .join-card, .modal-card, .pop {
@@ -563,23 +597,8 @@ body.fullscreen.idle .sources { opacity: 0; pointer-events: none; }
     border-right: none; border-bottom: 1px solid var(--border);
     overflow-x: auto; overflow-y: hidden;
   }
-  /* На узком экране боковые панели встают под карточкой, а не по бокам: сама
-     карточка нужна первой — за ней и приходят. */
-  #screen-join { grid-template-columns: 1fr; align-items: start; padding: 12px; }
-  #rooms-join, .join-card-wrap, #downloads {
-    grid-column: 1; justify-self: stretch;
-  }
-  .join-card-wrap { order: -1; }
-  .side-panel { width: auto; }
-  /* Панель растёт, сколько нужно, а прокручивается весь экран входа.
-     Со своей высотой в 30dvh она превращалась во вложенную прокрутку: уже на
-     второй комнате список упирался в потолок, а кнопка «другая комната»
-     оказывалась за краем — и внутри тесной коробки её ещё надо было найти.
-     Двух прокруток на одном экране телефон не прощает. */
-  #rooms-join { max-height: none; }
-  #downloads { flex-direction: row; flex-wrap: wrap; }
-  #downloads > h3, #downloads > p, #update-notice { flex-basis: 100%; }
-  #downloads > button { flex: 1 1 30%; justify-content: center; }
+  /* Экран входа на узком экране собран выше, рядом со своими правилами: он
+     одинаков и для телефона, и для планшета — см. `(hover: none)`. */
   /* Узкие плитки — только у полосы в комнате, которая лежит строкой. На экране
      входа панель во всю ширину, и там имя комнаты занимает эту ширину целиком:
      обрезать его до 40% экрана было незачем. */

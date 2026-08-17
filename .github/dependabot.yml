@@ -1,49 +1,68 @@
 # Обновления зависимостей.
 #
-# Каждый PR здесь запускает полную сборку под три платформы, поэтому обновления
-# сгруппированы: одно предложение в неделю на экосистему вместо десятка. Мажорные
-# версии Tauri вынесены отдельно — их не принимают не глядя, там ломающие правки
-# в API и в правах.
+# Раз в месяц и группами: каждое предложение — это прогон CI, поэтому лучше
+# одно на экосистему, чем десяток по одному. Уязвимости приходят мимо
+# расписания: оповещения безопасности открывают предложение сразу, как только
+# выходит исправление.
+#
+# Префикс `chore(deps)` — потому что заголовки этих предложений попадают в
+# список изменений релиза, который GitHub собирает сам.
+#
+# Разбивка по директориям неслучайна: предложение, которое трогает только
+# сервер, проверяется одной задачей на ubuntu, а предложение к оболочке
+# поднимает матрицу из трёх систем. Сведи их в одну запись — и каждое
+# обновление `serde` в сервере собирало бы macOS, Windows и Android.
 
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    commit-message:
+      prefix: chore(deps)
     groups:
-      server:
+      # Мелкие обновления — одним предложением: их сливают не глядя. Мажорные
+      # приходят по одному и мимо группы: такое читают руками, и застрявший на
+      # правках axum не должен задерживать остальные.
+      crates:
         patterns: ["*"]
+        update-types: [minor, patch]
     open-pull-requests-limit: 3
 
-  # У оболочки своё рабочее пространство и свой Cargo.lock.
+  # У оболочки своё рабочее пространство и свой Cargo.lock. Мажорную версию
+  # Tauri тем более читают руками: она тянет за собой права, capabilities и
+  # сгенерированный проект Android.
   - package-ecosystem: cargo
     directory: /desktop/src-tauri
     schedule:
-      interval: weekly
+      interval: monthly
+    commit-message:
+      prefix: chore(deps)
     groups:
       shell:
         patterns: ["*"]
-        exclude-patterns: ["tauri", "tauri-build", "tauri-plugin-*"]
-      tauri:
-        patterns: ["tauri", "tauri-build", "tauri-plugin-*"]
-        update-types: ["minor", "patch"]
-    ignore:
-      # Мажорную версию Tauri поднимают руками: она тянет за собой права,
-      # capabilities и сгенерированный проект Android.
-      - dependency-name: "tauri*"
-        update-types: ["version-update:semver-major"]
+        update-types: [minor, patch]
     open-pull-requests-limit: 3
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    commit-message:
+      prefix: chore(deps)
     groups:
       actions:
         patterns: ["*"]
 
+  # Единственный образ в Dockerfile — `alpine:3.24`, база для готового
+  # бинарника. Rust-образ отсюда ушёл вместе со сборкой внутри контейнера.
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: monthly
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      images:
+        patterns: ["*"]

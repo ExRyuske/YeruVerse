@@ -1,38 +1,28 @@
-# Сервер комнат: сборка и рантайм разведены, в образ едет только бинарник и
-# статика. Видеотрафик через сервер не идёт, поэтому образ намеренно крошечный.
-
-FROM rust:1-alpine AS build
-# musl-dev нужен линковщику; больше ничего ставить не приходится — всё дерево
-# зависимостей чисто на Rust, без OpenSSL и прочей нативщины.
-RUN apk add --no-cache musl-dev
-WORKDIR /src
-
-# Слой зависимостей отдельно: правки в src/ не пересобирают полкрейта.
-COPY Cargo.toml Cargo.lock ./
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
-    mkdir src \
- && echo 'fn main() {}' > src/main.rs \
- && echo '' > src/lib.rs \
- && cargo build --release --bin yeruverse \
- && rm -rf src
-
-COPY src ./src
-# Трогаем исходники, иначе cargo примет заглушки из слоя выше за свежие.
-# Кэш реестра и target переживает пересборки образа: правка одной строки в
-# src/ больше не тянет за собой скачивание и компиляцию всех зависимостей.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
-    touch src/main.rs src/lib.rs \
- && cargo build --release --bin yeruverse \
- && cp target/release/yeruverse /usr/local/bin/yeruverse
+# Образ только упаковывает готовое: компиляция идёт снаружи, на раннере или на
+# машине разработчика, — там она попадает под кэш cargo, который переживает
+# сборки, чего кэш-маунты BuildKit не умеют. Экспортёр сохраняет лишь диффы
+# слоёв, а у слоя со сборкой дифф пустой: собранное лежит в кэш-маунте и в образ
+# не попадает. Из-за этого прежний двухступенчатый Dockerfile начинал
+# зависимости с нуля в каждом прогоне, сколько бы слоёв ни лежало в кэше.
+#
+#     cargo build --locked --release --target x86_64-unknown-linux-musl
+#     mkdir -p dist && cp target/x86_64-unknown-linux-musl/release/yeruverse dist/
+#     cp -r web dist/web
+#     docker build -f Dockerfile -t yeruverse dist
+#
+# Или просто `make docker` — он делает ровно это.
+#
+# Бинарник статический, поэтому в образе не нужно ни toolchain, ни libc, ни gcc.
+# Корневые сертификаты тоже: reqwest собран с rustls, а корни у него свои,
+# вкомпилированные. Видеотрафик через сервер не идёт, и образ намеренно
+# крошечный.
 
 FROM alpine:3.24
 # Системный пользователь без пароля и шелла; wget для HEALTHCHECK уже в busybox.
 RUN adduser -S -H -u 10001 yeruverse
 WORKDIR /app
 
-COPY --from=build /usr/local/bin/yeruverse /usr/local/bin/yeruverse
+COPY yeruverse /usr/local/bin/yeruverse
 COPY web /app/web
 
 ENV WEB_DIR=/app/web \
