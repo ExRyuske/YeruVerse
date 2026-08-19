@@ -64,6 +64,7 @@ function destroyPlayer() {
  */
 export function resetStage() {
   destroyPlayer();
+  closeZoom();
   state.screens.clear();
   state.view = null;
   state.mounted = null;
@@ -157,6 +158,14 @@ export function acceptScreen(id, stream, kind) {
 }
 
 export function addScreen(key, stream) {
+  // Тот же поток мог уже лечь под другим ключом: подпись отправителя приходит
+  // отдельно от дорожек, и до неё вид приходится угадывать. Старую запись
+  // снимаем — иначе камера остаётся в списке ещё и как демонстрация экрана,
+  // и переключиться на эту пустышку можно, а смотреть в ней нечего.
+  for (const [other, known] of [...state.screens]) {
+    if (known === stream && other !== key) removeScreen(other);
+  }
+
   state.screens.set(key, stream);
 
   // Поток может смениться (перезапустили демонстрацию) — обновим плеер на месте.
@@ -210,6 +219,21 @@ export function hiddenLabels() {
 // запустить декодирование и моргнуть картинкой на ровном месте.
 const camTiles = new Map();   // ключ трансляции -> плитка
 
+// Какая камера сейчас увеличена: { key, box }. Само окно про поток ничего не
+// знает и закрыться по его концу не может — помним за него.
+let zoomed = null;
+
+function zoomCam(key, mirror) {
+  const box = showVideo(state.screens.get(key), $('#stage'), { mirror });
+  zoomed = box ? { key, box } : null;
+}
+
+/** Закрыть увеличение. Повторный вызов безвреден: окна может уже не быть. */
+function closeZoom() {
+  zoomed?.box.close?.();
+  zoomed = null;
+}
+
 /**
  * Камеры видны всегда и одновременно — независимо от того, чей экран на сцене.
  * Свою в полосу не берём: собственное лицо и так знакомо, а лишний декодер на
@@ -226,6 +250,12 @@ function renderCams() {
     tile.remove();
     camTiles.delete(key);
   }
+
+  // Увеличение живёт поверх сцены и перерисовку переживает — значит, и убирать
+  // его надо самим. Поток кончается без всякого нажатия: камеру выключили,
+  // участник ушёл, — а окно оставалось висеть последним кадром поверх всего,
+  // и закрыть его человек не догадывался.
+  if (zoomed && !live.includes(zoomed.key)) closeZoom();
 
   for (const key of live) {
     let tile = camTiles.get(key);
@@ -263,10 +293,7 @@ function newCamTile(key) {
   video.title = 'Развернуть на всё окно трансляции';
   // Разворачиваем в пределах сцены, а не на весь экран: камера — часть
   // разговора, и ради неё незачем убирать со стола всё остальное.
-  video.onclick = () =>
-    showVideo(state.screens.get(key), $('#stage'), {
-      mirror: tile.classList.contains('mirror'),
-    });
+  video.onclick = () => zoomCam(key, tile.classList.contains('mirror'));
 
   // Выключателя на самой плитке нет: тот же переключатель уже стоит возле
   // ника в списке участников, и две кнопки на одно действие только путают.

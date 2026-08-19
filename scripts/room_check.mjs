@@ -45,6 +45,22 @@ async function open(browser, viewport = { width: 1280, height: 800 }, extra = {}
     viewport,
     ...extra,
   });
+  // Считаем аудиоконтексты: их должно быть ровно столько, сколько задумано, —
+  // один. Каждый лишний держит своё соединение с системным звуком, и его
+  // рождение слышно во всём, что в этот момент играет.
+  await ctx.addInitScript(() => {
+    window.__contexts = 0;
+    for (const name of ['AudioContext', 'webkitAudioContext']) {
+      const Real = window[name];
+      if (!Real) continue;
+      window[name] = class extends Real {
+        constructor(...args) {
+          super(...args);
+          window.__contexts++;
+        }
+      };
+    }
+  });
   const page = await ctx.newPage();
   page.errors = [];
   page.on('pageerror', (e) => page.errors.push(e.message));
@@ -97,6 +113,50 @@ note(/шумодав:\s+нейросетью/.test(report), 'шумодав по
 note(/слышим:\s+1 из 1/.test(report), 'голос собеседника принят', line('слышим'));
 note(/connected/.test(report), 'WebRTC соединение установлено');
 
+// ------------------------------------------------------ настройки микрофона
+//
+// Микрофон — дело личное: его настройки не должны быть слышны ни в трансляции,
+// ни у собеседников. Дороже всего тут перезахват устройства: на телефоне он
+// переводит весь звук в разговорный режим, и вздрагивает всё, что играет.
+// Поэтому модель шумодава живёт в нашем графе и устройство не трогает.
+const micTrack = (page) =>
+  page.evaluate(async () => {
+    const { voice } = await import('/js/core.js');
+    return voice.raw?.getAudioTracks()[0]?.id ?? '';
+  });
+const setDenoise = (page, kind) =>
+  page.evaluate(async (k) => {
+    const { settings } = await import('/js/core.js');
+    settings.set('denoise', k);
+    return settings.get('denoise');
+  }, kind);
+
+const micBefore = await micTrack(a);
+note(!!micBefore, 'микрофон захвачен');
+
+note((await setDenoise(a, 'off')) === 'off', 'настройка шумодава применяется');
+await a.waitForTimeout(1200);
+note((await micTrack(a)) === micBefore, 'смена модели шумодава не трогает устройство');
+
+await setDenoise(a, 'rnnoise');
+await a.waitForTimeout(1500);
+note((await micTrack(a)) === micBefore, 'и обратно — тоже');
+note(/шумодав:\s+нейросетью — RNNoise/.test(await diag(a)), 'модель вернулась на место');
+
+// А вот подавление движком просят у самого устройства — тут перезахват честен.
+await setDenoise(a, 'browser');
+await a.waitForTimeout(2000);
+note((await micTrack(a)) !== micBefore, 'подавление движком просят у устройства');
+await setDenoise(a, 'rnnoise');
+await a.waitForTimeout(2000);
+note(/шумодав:\s+нейросетью — RNNoise/.test(await diag(a)), 'и модель поднимается обратно');
+
+note(
+  (await a.evaluate(() => window.__contexts)) === 1,
+  'аудиоконтекст в приложении один',
+  `их ${await a.evaluate(() => window.__contexts)}`
+);
+
 // ---------------------------------------------------------------- камера
 await a.click('#btn-camera');
 await a.waitForTimeout(2500);
@@ -109,7 +169,14 @@ note(await b.isVisible('.lightbox.inside'), 'камера разворачива
 // Увеличили одну — остальные всё равно должны быть видны и нажимаемы.
 note(await b.isVisible('#cams'), 'полоса камер видна и при увеличении');
 await shot(b, 'cam-enlarged');
-await b.keyboard.press('Escape');
+
+// Камеру выключают, пока она увеличена. Окно про поток ничего не знает и само
+// закрыться не может — закрыть его должна сцена, иначе поверх всего остаётся
+// висеть последний кадр, и убрать его человеку нечем.
+await a.click('#btn-camera');
+await a.waitForTimeout(2200);
+note((await b.locator('.lightbox.inside').count()) === 0, 'увеличение ушло вместе с камерой');
+note((await b.locator('.cam-tile').count()) === 0, 'плитка камеры убрана');
 
 // ---------------------------------------------------------------- телефон
 const phone = await open(
@@ -139,6 +206,24 @@ note(box.chat && box.chat.y + box.chat.h <= box.h + 2, 'чат не уехал �
 await phone.setViewportSize({ width: 390, height: 844 });
 await phone.waitForTimeout(800);
 await shot(phone, 'phone-portrait');
+
+// В вертикали ползунки громкости прячутся: в узкой строке участника им не
+// место, а крутят их в настройках. Громкости трансляции в настройках нет —
+// значит, она обязана остаться на виду, иначе звук чужого экрана на телефоне
+// не убавить вовсе.
+const volumes = await phone.evaluate(() => {
+  const shown = (host) => {
+    const probe = document.createElement('span');
+    probe.className = 'pv-mini';
+    host.appendChild(probe);
+    const display = getComputedStyle(probe).display;
+    probe.remove();
+    return display;
+  };
+  return { views: shown(document.querySelector('#views')), peers: shown(document.querySelector('#peer-list')) };
+});
+note(volumes.views !== 'none', 'громкость трансляции видна в вертикали', volumes.views);
+note(volumes.peers === 'none', 'громкость участника — в настройках', volumes.peers);
 note(phone.errors.length === 0, 'телефон без ошибок', phone.errors.join(' | '));
 
 await browser.close();

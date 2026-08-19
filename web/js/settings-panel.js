@@ -66,7 +66,6 @@ function wireSettings() {
   };
 
   bindRange('#set-voice-vol', '#out-voice-vol', 'voiceVolume');
-  bindCheck('#set-ec', 'echoCancellation');
 
   const denoise = ui('#set-denoise');
   denoise.value = settings.get('denoise');

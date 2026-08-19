@@ -38,9 +38,7 @@ export class Voice extends EventTarget {
       if (key === 'voiceVolume' || key === 'peerVolume') this.applyVolumes();
       if (key === 'outputDevice') this.applySink();
       if (key === 'monitor') this._applyMonitor();
-      if (['micDevice', 'echoCancellation', 'autoGainControl', 'denoise'].includes(key)) {
-        this.reload().catch(() => this.emit('blocked', {}));
-      }
+      if (['micDevice', 'autoGainControl', 'denoise'].includes(key)) this._micChanged();
     });
 
     // Выбранное устройство вывода должно действовать с первой секунды, а не
@@ -60,18 +58,24 @@ export class Voice extends EventTarget {
    * Захват микрофона, который не сдаётся с первой попытки.
    *
    * `OverconstrainedError` значит «устройство не умеет то, что мы просим», и на
-   * Android это обычное дело: сохранённого микрофона больше нет (в списке они
-   * меняют идентификаторы от запуска к запуску), либо движок не принимает
-   * эхоподавление и автоусиление в том виде, в каком их просят. Раньше отсюда
-   * уходил отказ, и человек оставался вовсе без голоса — с сообщением, которое
-   * ничего не подсказывает.
+   * Android это обычное дело: сохранённого микрофона больше нет — в списке они
+   * меняют идентификаторы от запуска к запуску. Раньше отсюда уходил отказ, и
+   * человек оставался вовсе без голоса — с сообщением, которое ничего не
+   * подсказывает.
    *
    * Поэтому отступаем по шагам: сначала забываем выбранное устройство, потом
-   * отказываемся и от обработки. Микрофон без эхоподавления лучше молчания.
+   * просим только то, без чего нельзя. Отказ от эхоподавления держится и в
+   * последней попытке: с ним движок отдаёт не микрофон, а телефонную трубку.
    */
   async _capture() {
-    const wanted = this.settings.audioConstraints();
-    const attempt = (audio) => navigator.mediaDevices.getUserMedia({ audio });
+    const wanted = this.settings.micConstraints();
+    const attempt = async (audio) => {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio });
+      // Помним, о чём просили на самом деле: следующая настройка сверится с
+      // этим и решит, нужно ли вообще трогать устройство.
+      this._captured = JSON.stringify(audio);
+      return stream;
+    };
 
     try {
       return await attempt(wanted);
@@ -91,13 +95,11 @@ export class Voice extends EventTarget {
       }
     }
 
-    return attempt(true);
+    return attempt({ echoCancellation: false });
   }
 
   async enable() {
     if (this.enabled) return;
-    // echoCancellation по умолчанию включён: иначе в разговор возвращается
-    // звук самого фильма из динамиков.
     this.raw = await this._capture();
     this.enabled = true;
     this.muted = false;
@@ -131,42 +133,71 @@ export class Voice extends EventTarget {
   }
 
   /**
-   * Перезахват микрофона после смены устройства или обработки звука.
+   * Настройку микрофона тронули.
+   *
+   * Перезахватываем устройство, только если изменилось то, о чём просят само
+   * устройство. Модель шумодава живёт в нашем графе, и ради неё дёргать систему
+   * незачем: перезахват — это ещё один запрос к железу, а на телефоне он
+   * переводит весь звук в разговорный режим. Вздрагивает при этом всё, что
+   * играет, — и трансляция, и голоса собеседников, которые к микрофону
+   * отношения не имеют вовсе.
+   */
+  _micChanged() {
+    const same = JSON.stringify(this.settings.micConstraints()) === this._captured;
+    this._rebuild(!same).catch(() => this.emit('blocked', {}));
+  }
+
+  /** Перезахват микрофона: устройство сменили или его настройки изменились. */
+  reload() {
+    return this._rebuild(true);
+  }
+
+  /**
+   * Пересборка микрофонного тракта — одна на оба случая.
+   *
+   * `recapture` решает, спрашивать ли устройство заново или пересобрать только
+   * обработку на уже захваченном потоке. Всё остальное одинаково: новый поток
+   * уходит собеседникам подменой дорожки, старый разбирается после.
    *
    * Дважды разом сюда заходить нельзя: два захвата подряд — это два запроса к
    * одному устройству, и там, где оно одно, второй получает «занято другим
    * приложением». А заходить есть откуда: забыв пропавший микрофон, мы меняем
-   * настройку, а на смену настройки подписан этот же перезахват. Поэтому
-   * повторный вызов не отменяется, а откладывается до конца текущего.
+   * настройку, а на смену настройки подписана эта же пересборка. Поэтому
+   * повторный вызов не отменяется, а откладывается до конца текущего — и если
+   * хоть один из отложенных просил перезахват, он и случится.
    */
-  async reload() {
+  async _rebuild(recapture) {
     if (!this.enabled) return;
-    if (this._reloading) {
-      this._reloadAgain = true;
+    if (this._rebuilding) {
+      // Перезахват «сильнее»: если его просил хоть кто-то из отложенных, он и
+      // случится. Отложенное держим объектом, а не флагом: `false` — это тоже
+      // просьба, и потеряться она не должна.
+      this._pending = { recapture: recapture || !!this._pending?.recapture };
       return;
     }
-    this._reloading = true;
+    this._rebuilding = true;
     try {
-      const fresh = await this._capture();
-      fresh.getAudioTracks().forEach((t) => (t.enabled = !this.muted));
+      const fresh = recapture ? await this._capture() : this.raw;
+      if (recapture) fresh.getAudioTracks().forEach((t) => (t.enabled = !this.muted));
 
-      const oldRaw = this.raw;
+      const oldRaw = recapture ? this.raw : null;
       const oldChain = this.chain;
       this.raw = fresh;
       this.stream = await this._process(fresh);
       // replaceTrack меняет дорожку без пересогласования SDP — собеседники не
-      // слышат щелчка и разрыва.
+      // слышат щелчка и разрыва, а видео у них не вздрагивает вовсе.
       await this.mesh.replaceStream('mic', this.stream);
       this._applyMonitor();
       oldChain?.close();
       oldRaw?.getTracks().forEach((t) => t.stop());
+      this.emit('change', this.status());
     } finally {
-      this._reloading = false;
-    }
-
-    if (this._reloadAgain) {
-      this._reloadAgain = false;
-      await this.reload();
+      this._rebuilding = false;
+      // Отложенное запускаем и после неудачи: захват мог не выйти именно с теми
+      // настройками, которые уже успели сменить.
+      const again = this._pending;
+      this._pending = null;
+      if (again) this._rebuild(again.recapture).catch(() => this.emit('blocked', {}));
     }
   }
 
@@ -220,21 +251,37 @@ export class Voice extends EventTarget {
    * Поэтому сверяем вход с выходом: копим замеры, где на входе голос, а на
    * выходе пусто, и по их числу уходим на подавление средствами движка.
    *
-   * Копим, а не считаем подряд. Раньше счётчик сбрасывался на каждом замере,
-   * где вход тише порога, — то есть на любой паузе между словами. Речь из пауз
-   * и состоит, поэтому тридцати трёх замеров подряд не набиралось никогда, и
-   * сторож, написанный ровно для этого случая, не срабатывал ни разу.
+   * Счёт идёт с перевесом, а не подряд и не насовсем — оба края уже стоили
+   * своего. Сброс на каждом тихом замере не срабатывал никогда: тише порога
+   * бывает любая пауза между словами, а речь из пауз и состоит. Счёт без
+   * убыли срабатывал наоборот — где не надо: модель для того и нужна, чтобы
+   * не выпускать наружу клавиатуру, вентилятор и чужой разговор, и «на входе
+   * громко, на выходе тишина» — это её работа, а не поломка. Такие замеры
+   * набирались сами собой, и через час подавление отваливалось у того, кто
+   * просто сидел и печатал.
+   *
+   * Поэтому тихий замер накопленное списывает, а не обнуляет: перевесить
+   * должна речь, а не шум, разбросанный по всей встрече.
    */
   _watchDenoiser() {
     if (!this.chain || this.muted) return void (this._deaf = 0);
 
+    // Тракт мог уснуть — телефон усыпляет свёрнутое приложение вместе со
+    // звуком. Снаружи это неотличимо от сломавшейся модели, но лечится
+    // пробуждением, и менять шумодав тут не на что.
+    if (!this.chain.awake()) return void (this._deaf = 0);
+
     // Выход живой — вопросов нет, и прошлые подозрения снимаются.
     if (this.chain.outLevel() > SILENT_OUT) return void (this._deaf = 0);
-    // Молчат оба: это просто тишина, она ни о чём не говорит.
-    if (this.chain.level() < SPEAK_ON) return;
+    // Молчат оба: это просто тишина. Она ни о чём не говорит и понемногу
+    // списывает накопленное — иначе редкие шумы сложились бы в приговор.
+    if (this.chain.level() < SPEAK_ON) {
+      this._deaf = Math.max(0, (this._deaf ?? 0) - 1);
+      return;
+    }
 
-    // Замер идёт каждые 120 мс; двадцать пять замеров с голосом на входе — это
-    // около трёх секунд настоящей речи, ушедшей в никуда.
+    // Замер идёт каждые 120 мс; перевес в двадцать пять замеров — это добрый
+    // десяток секунд речи, ушедшей в никуда.
     if ((this._deaf = (this._deaf ?? 0) + 1) < 25) return;
     this._deaf = 0;
     this._dropDenoiser().catch(() => {});
@@ -267,12 +314,29 @@ export class Voice extends EventTarget {
   async _engineDenoise(raw) {
     const track = raw.getAudioTracks()[0];
     if (!track) return false;
+    // Выбор устройства живой дорожке применить нельзя — движки отвечают на это
+    // отказом, и подавление, которое мы просили как запасное, молча не
+    // включалось. Просим только обработку.
+    const { deviceId, ...processing } = this.settings.micConstraints();
     try {
-      await track.applyConstraints({ ...this.settings.audioConstraints(), noiseSuppression: true });
+      await track.applyConstraints({ ...processing, noiseSuppression: true });
       return track.getSettings().noiseSuppression !== false;
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Жив ли микрофон на самом деле.
+   *
+   * Свёрнутое приложение телефон вправе отобрать вместе с микрофоном: дорожка
+   * уходит в `ended` и сама не возвращается. Со стороны всё как обычно —
+   * кнопка нажата, присутствие говорит «микрофон включён», а собеседники не
+   * слышат ничего и не знают об этом.
+   */
+  get alive() {
+    const track = this.raw?.getAudioTracks()[0];
+    return !!track && track.readyState === 'live';
   }
 
   /** Список микрофонов; метки доступны только после выданного разрешения. */
@@ -327,7 +391,13 @@ export class Voice extends EventTarget {
     return all.filter((d) => d.kind === 'audiooutput');
   }
 
-  /** Направляет звук в выбранное устройство — сразу весь, контекст общий. */
+  /**
+   * Направляет звук в выбранное устройство — сразу весь.
+   *
+   * Это настройка воспроизведения, а не микрофона: она одинаково касается и
+   * голосов, и звука трансляции, и тракт у них один. Голос просто оказался тем,
+   * кто про неё знает.
+   */
   applySink() {
     return setOutput(this.settings.get('outputDevice'));
   }

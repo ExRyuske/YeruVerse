@@ -152,6 +152,10 @@ export function showImage(src, name = '') {
  * По умолчанию — поверх всего окна, но камеру разворачивают внутри сцены:
  * `host` для того и нужен. Тогда рядом остаётся и чат, и список участников —
  * увеличенное лицо собеседника не повод убирать со стола всё остальное.
+ *
+ * Возвращает само окно: закрыть его может понадобиться не только человеку.
+ * Поток кончается сам собой — камеру выключили, участник ушёл, — и тогда
+ * закрывать увеличение придётся тому, кто про это узнал.
  */
 export function showVideo(stream, host = null, { mirror = false } = {}) {
   if (!stream) return;
@@ -189,6 +193,7 @@ export function showVideo(stream, host = null, { mirror = false } = {}) {
   box.append(video);
   where.appendChild(box);
   video.play().catch(() => {});
+  return box;
 }
 
 /**

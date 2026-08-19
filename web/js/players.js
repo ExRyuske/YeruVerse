@@ -4,7 +4,7 @@
 // перемотки. Поэтому здесь нет ни позиции, ни паузы, ни движка синхронизации:
 // поток идёт как идёт, а всё управление свелось к громкости.
 
-import { volume, retryOnGesture } from './audio.js';
+import { volume, retryOnGesture, forgetGesture } from './audio.js';
 
 export class StreamPlayer {
   constructor(container, stream) {
@@ -20,7 +20,19 @@ export class StreamPlayer {
     this.el = v;
     // Звук трансляции идёт через сам элемент, а усилитель подключается только
     // ради громкости выше ста процентов.
-    this.sound = stream.getAudioTracks().length ? volume(v, stream) : null;
+    //
+    // Громкость заводим и на поток без звука: дорожки WebRTC приезжают по
+    // одной, и звук демонстрации нередко доезжает после картинки. Пока
+    // регулятор ставился по составу дорожек в этот самый миг, у такой
+    // трансляции ползунок был, а громкость не менялась ничем.
+    this.sound = volume(v, stream);
+    // Одна и та же функция на все попытки: набор отложенных до касания —
+    // множество, и новое замыкание на каждой неудаче копилось бы в нём без
+    // конца.
+    this._unmute = () => {
+      this.sound.mute(false);
+      return this.el.play();
+    };
     this._play();
   }
 
@@ -30,21 +42,26 @@ export class StreamPlayer {
    * попытке — их делает `resume` раз в пару секунд.
    */
   _play() {
+    // Каждая попытка начинается со звуком: разрешение могло появиться после
+    // прошлой (человек тронул страницу). Снимать немой режим здесь безопасно —
+    // сюда приходят только с остановленным элементом, а движок недоволен как
+    // раз тем, что звук включают у играющего.
+    this.sound.mute(false);
     this.el.play().catch(() => {
       // Со звуком не пустили — играем без него: картинка нужнее. И просим
       // вернуть звук при первом касании страницы, иначе трансляция так и
       // останется немой до конца разговора.
-      this.el.muted = true;
+      this.sound.mute(true);
       this.el.play().catch(() => {});
-      retryOnGesture(() => {
-        this.el.muted = false;
-        return this.el.play();
-      });
+      retryOnGesture(this._unmute);
     });
   }
 
   /** Поток мог смениться — например, трансляцию перезапустили. */
   setStream(stream) {
+    // Тот же поток заново назначать нельзя: элемент перезапустит
+    // воспроизведение и моргнёт картинкой на ровном месте.
+    if (this.el.srcObject === stream) return;
     this.el.srcObject = stream;
     this._play();
   }
@@ -56,11 +73,12 @@ export class StreamPlayer {
 
   /** Громкость этой трансляции, 0..MAX_GAIN. */
   setVolume(level) {
-    this.sound?.set(level);
+    this.sound.set(level);
   }
 
   destroy() {
-    this.sound?.close();
+    forgetGesture(this._unmute);
+    this.sound.close();
     this.el.srcObject = null;
     this.el.remove();
   }

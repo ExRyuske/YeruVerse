@@ -27,8 +27,10 @@ const SHARES = {
           height: { ideal: q.height },
           displaySurface: 'monitor',   // для игры нужен экран целиком
         },
-        // Звук игры берём как есть: обработка, рассчитанная на речь, съедает
-        // басы и приглушает тихие места.
+        // Звук игры берём как есть, и настройки микрофона тут ни при чём:
+        // обработка, рассчитанная на речь, съедает басы и приглушает тихие
+        // места. Значения проставлены явно — без просьбы движок включает свою
+        // обработку сам.
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
         systemAudio: 'include',
         selfBrowserSurface: 'exclude',   // не предлагать транслировать сам YeruVerse

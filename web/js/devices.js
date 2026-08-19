@@ -45,7 +45,15 @@ export function deviceProblem(e) {
 let micDenied = false;
 
 export async function enableMic({ manual = false } = {}) {
-  if (voice.enabled) return;
+  // Микрофон уже включён — но включён ли на самом деле? Пока приложение было
+  // свёрнуто, система могла отобрать дорожку: она уходит в `ended` и обратно
+  // сама не возвращается. Снаружи всё как обычно, а собеседники слышат тишину
+  // и сказать об этом некому. Сюда мы приходим как раз при возвращении из
+  // фона — самое место перезахватить.
+  if (voice.enabled) {
+    if (!voice.alive) await voice.reload().catch(() => voice.disable());
+    return;
+  }
   if (micDenied && !manual) return;
 
   // Браузер знает состояние разрешения точнее нас: если доступ закрыт, вызов

@@ -1,6 +1,13 @@
 // Полносвязная WebRTC-сеть между зрителями. Через неё идут и куски файла,
 // и демонстрация экрана — сервер видит только SDP/ICE.
 
+/**
+ * Сколько ждать подпись отправителя, прежде чем гадать по составу дорожек.
+ * Подпись уходит по управляющему каналу и обычно опережает дорожки; ожидание
+ * здесь на случай, когда канал открылся позже них.
+ */
+const SIGN_WAIT = 2000;
+
 // Несколько STUN от разных операторов: один может быть недоступен из сети
 // конкретного зрителя, и тогда сработает следующий.
 const STUN = {
@@ -68,11 +75,7 @@ class Conn {
         if ('playoutDelayHint' in event.receiver) event.receiver.playoutDelayHint = 0;
         if ('jitterBufferTarget' in event.receiver) event.receiver.jitterBufferTarget = 0;
       } catch {}
-      mesh.seen.set(stream.id, { peer: id, stream });
-      // Подпись могла ещё не доехать — тогда угадываем по составу дорожек и
-      // поправимся, когда она придёт.
-      const kind = mesh.kinds.get(stream.id) ?? (stream.getVideoTracks().length ? 'screen' : 'mic');
-      mesh.emit('stream', { id, stream, kind });
+      mesh._sawStream(id, stream);
     };
 
     pc.ondatachannel = ({ channel }) => this._bind(channel);
@@ -194,7 +197,9 @@ export class Mesh extends EventTarget {
     // Одна и та же дорожка видео может быть и экраном, и камерой — по составу
     // потока их не различить, поэтому отправитель подписывает свои потоки.
     this.kinds = new Map();    // id потока -> вид
-    this.seen = new Map();     // id потока -> { peer, stream }, пришедшие раньше подписи
+    // id потока -> { peer, stream, kind, timer }: чем поток оказался и не ждём
+    // ли мы ещё подпись отправителя.
+    this.seen = new Map();
     this.videoBitrate = 8_000_000;   // потолок для трансляции, бит/с
     this.videoFramerate = 60;
     // Что беречь, когда канала не хватает. Решает транслирующий: см. tune().
@@ -211,8 +216,7 @@ export class Mesh extends EventTarget {
     this.on('message', ({ id, msg }) => {
       if (msg?.ns !== 'media') return;
       this.kinds.set(msg.id, msg.kind);
-      const seen = this.seen.get(msg.id);
-      if (seen) this.emit('stream', { id: seen.peer, stream: seen.stream, kind: msg.kind });
+      this._announce(msg.id);
     });
     // Новому участнику сразу рассказываем, что и чем является.
     this.on('peer-open', ({ id }) => {
@@ -223,6 +227,54 @@ export class Mesh extends EventTarget {
   }
 
   get selfId() { return this.net.selfId; }
+
+  /** Пришла дорожка. Их у потока несколько, и приезжают они по одной. */
+  _sawStream(peer, stream) {
+    const seen = this.seen.get(stream.id) ?? { peer, stream, kind: null, sent: null, timer: null };
+    seen.peer = peer;
+    seen.stream = stream;
+    this.seen.set(stream.id, seen);
+    this._announce(stream.id);
+  }
+
+  /**
+   * Отдать поток наверх — но только когда известно, что это.
+   *
+   * Раньше вид угадывался по составу дорожек прямо в `ontrack`, а дорожки
+   * приходят по одной и в любом порядке: у демонстрации экрана звук может
+   * опередить картинку. «Видео пока нет» читалось как «микрофон», и чужой
+   * экран уходил в голосовой тракт — вытесняя оттуда настоящий микрофон того
+   * же участника. После этого его не было слышно вовсе, а выглядело это как
+   * пропавший у собеседника звук.
+   *
+   * Поэтому ждём подпись отправителя; гадаем, только если её так и не
+   * прислали — иначе поток не показался бы никогда.
+   */
+  _announce(streamId) {
+    const seen = this.seen.get(streamId);
+    if (!seen) return;
+
+    const kind = this.kinds.get(streamId);
+    if (!kind) {
+      seen.timer ??= setTimeout(() => {
+        seen.timer = null;
+        this.kinds.set(streamId, seen.stream.getVideoTracks().length ? 'screen' : 'mic');
+        this._announce(streamId);
+      }, SIGN_WAIT);
+      return;
+    }
+
+    clearTimeout(seen.timer);
+    seen.timer = null;
+    // Вторая дорожка того же потока — это тот же поток: наверху он уже есть.
+    // Сравниваем не только вид, но и сам поток: при пересогласовании движок
+    // отдаёт новый объект под прежним идентификатором, и пропустить его значит
+    // оставить наверху мёртвый — со всеми признаками работающего.
+    if (seen.kind === kind && seen.sent === seen.stream) return;
+    seen.kind = kind;
+    seen.sent = seen.stream;
+    this.emit('stream', { id: seen.peer, stream: seen.stream, kind });
+  }
 
   iceConfig() {
     return { iceServers: [STUN, ...this.iceServers], bundlePolicy: 'max-bundle' };
@@ -262,10 +314,10 @@ export class Mesh extends EventTarget {
     // Карты потоков растут вместе с участниками — чистим за ушедшим, иначе за
     // долгую сессию они превращаются в утечку.
     for (const [streamId, seen] of this.seen) {
-      if (seen.peer === id) {
-        this.seen.delete(streamId);
-        this.kinds.delete(streamId);
-      }
+      if (seen.peer !== id) continue;
+      clearTimeout(seen.timer);
+      this.seen.delete(streamId);
+      this.kinds.delete(streamId);
     }
     this.emit('peer-close', { id });
   }
