@@ -4,17 +4,15 @@
 // перемотки. Поэтому здесь нет ни позиции, ни паузы, ни движка синхронизации:
 // поток идёт как идёт, а всё управление свелось к громкости.
 
-import { volume, retryOnGesture, forgetGesture } from './audio.js';
+import { forgetGesture, retryOnGesture, volume } from './audio.js';
+import { make } from './ui.js';
 
 export class StreamPlayer {
   constructor(container, stream) {
-    const v = document.createElement('video');
-    v.autoplay = true;
-    v.playsInline = true;
     // Никаких встроенных кнопок: в живом потоке паузе взяться неоткуда, а
-    // панель плеера перехватывала клики во время управления чужим компьютером.
-    v.controls = false;
-    v.srcObject = stream;
+    // панель плеера перехватывала клики во время управления чужим компьютером
+    // (`controls` у свежего элемента и так выключен).
+    const v = make('video', { autoplay: true, playsInline: true, srcObject: stream });
     container.appendChild(v);
 
     this.el = v;

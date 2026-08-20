@@ -11,12 +11,12 @@
 //! Список STUN зашит на стороне страницы: это открытые серверы Cloudflare и
 //! Google, учётных данных им не нужно.
 
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tracing::warn;
+
+use crate::cache::{http_client, Cache};
 
 /// Как долго держим выданные учётки, прежде чем просить новые.
 const REFRESH_BEFORE: Duration = Duration::from_secs(60 * 30);
@@ -56,22 +56,16 @@ impl Provider {
 }
 
 /// Кэш выданных серверов: дёргать API на каждую загрузку страницы незачем.
-#[derive(Default)]
 pub struct Turn {
     provider: Provider,
-    cached: Mutex<Option<(Instant, Value)>>,
+    cached: Cache,
     http: Option<reqwest::Client>,
 }
 
 impl Turn {
     pub fn new(provider: Provider) -> Self {
-        let http = matches!(provider, Provider::Cloudflare { .. }).then(|| {
-            reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()
-                .expect("http client")
-        });
-        Turn { provider, cached: Mutex::new(None), http }
+        let http = matches!(provider, Provider::Cloudflare { .. }).then(http_client);
+        Turn { provider, cached: Cache::new(REFRESH_BEFORE), http }
     }
 
     pub fn describe(&self) -> &'static str {
@@ -84,27 +78,7 @@ impl Turn {
         let Provider::Cloudflare { key_id, token, ttl } = &self.provider else {
             return json!([]);
         };
-        if let Some(cached) = self.fresh() {
-            return cached;
-        }
-        match self.fetch(key_id, token, *ttl).await {
-            Ok(servers) => {
-                *self.cached.lock().unwrap() = Some((Instant::now(), servers.clone()));
-                servers
-            }
-            Err(e) => {
-                warn!("не удалось получить TURN у Cloudflare: {e}");
-                // Протухший кэш лучше, чем пустота: учётки живут дольше,
-                // чем интервал обновления.
-                self.cached.lock().unwrap().as_ref().map(|(_, v)| v.clone()).unwrap_or(json!([]))
-            }
-        }
-    }
-
-    fn fresh(&self) -> Option<Value> {
-        let guard = self.cached.lock().unwrap();
-        let (at, value) = guard.as_ref()?;
-        (at.elapsed() < REFRESH_BEFORE).then(|| value.clone())
+        self.cached.get("TURN у Cloudflare", json!([]), || self.fetch(key_id, token, *ttl)).await
     }
 
     async fn fetch(&self, key_id: &str, token: &str, ttl: u64) -> Result<Value, String> {

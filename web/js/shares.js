@@ -4,7 +4,7 @@
 import { control, mesh, native, net, settings } from './core.js';
 import { state, viewKey } from './state.js';
 import { render } from './render.js';
-import { $, toast, ui } from './ui.js';
+import { make, toast, ui } from './ui.js';
 import { addScreen, removeScreen } from './stage.js';
 import { deviceProblem } from './devices.js';
 import { refreshDevices } from './settings-panel.js';
@@ -76,7 +76,7 @@ export function wireShares() {
   // убираем совсем — вместе с настройками качества, которые ей и служат:
   // погашенная кнопка обещает, что когда-нибудь заработает, а она не заработает.
   if (!navigator.mediaDevices?.getDisplayMedia) {
-    $('#btn-screen').closest('.with-pick').hidden = true;
+    ui('#btn-screen').closest('.with-pick').hidden = true;
   }
 }
 
@@ -109,7 +109,7 @@ export async function toggleShare(kind) {
     // видел бы никто. Если смотреть было нечего, addScreen покажет её сам.
     addScreen(viewKey(state.self.id, kind), stream);
     render('views', 'stage', 'peers');
-    $(share.button).classList.add('active');
+    ui(share.button).classList.add('active');
 
     // Названия камер и микрофонов система показывает только после того, как
     // доступ уже выдан. До первого включения в списке голые «Камера 1».
@@ -136,7 +136,7 @@ export function stopShare(kind) {
   removeScreen(viewKey(state.self?.id, kind));
   if (!state.shares.size && native.caps.overlay) native.setOverlay(false).catch(() => {});
   render('peers');
-  $(SHARES[kind].button).classList.remove('active');
+  ui(SHARES[kind].button).classList.remove('active');
 }
 
 /**
@@ -148,20 +148,26 @@ export function stopShare(kind) {
  * смотрим на собственный кадр и, если он мёртвый, говорим, что именно делать.
  */
 function watchFrames(stream) {
-  const video = document.createElement('video');
-  video.srcObject = stream;
-  video.muted = true;
-  video.playsInline = true;
-  // Полностью скрытое видео браузер вправе не декодировать, поэтому оставляем
-  // его в разметке невидимым пикселем.
-  video.style.cssText =
-    'position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:0;pointer-events:none';
+  const video = make('video', {
+    srcObject: stream,
+    muted: true,
+    playsInline: true,
+    // Полностью скрытое видео браузер вправе не декодировать, поэтому
+    // оставляем его в разметке невидимым пикселем.
+    style: {
+      position: 'fixed',
+      left: '0',
+      bottom: '0',
+      width: '1px',
+      height: '1px',
+      opacity: '0',
+      pointerEvents: 'none',
+    },
+  });
   document.body.appendChild(video);
   video.play().catch(() => {});
 
-  const canvas = document.createElement('canvas');
-  canvas.width = 32;
-  canvas.height = 18;
+  const canvas = make('canvas', { width: 32, height: 18 });
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
   let dead = 0;
@@ -286,7 +292,7 @@ async function restartScreen() {
   );
 }
 
-settings.on(({ key }) => {
+settings.on('change', ({ key }) => {
   if (!key.startsWith('stream')) return;
   applyQuality();
   // Битрейт и приоритет живут только в кодировщике, дорожки они не касаются.
@@ -335,11 +341,11 @@ async function restartCam() {
   }
 }
 
-settings.on(({ key }) => {
+settings.on('change', ({ key }) => {
   if (key === 'camDevice') restartCam();
 });
 
 // Зеркало — дело показа, а не захвата: перерисовать плитки достаточно.
-settings.on(({ key }) => key === 'mirrorCam' && render('cams'));
+settings.on('change', ({ key }) => key === 'mirrorCam' && render('cams'));
 
 applyQuality();

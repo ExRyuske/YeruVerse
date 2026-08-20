@@ -7,11 +7,11 @@
 //
 // Адрес идёт по WebRTC напрямую зрителям — сервер его не видит.
 
-import { control, mesh, native, serverBase, settings } from './core.js';
+import { askServer, control, mesh, native, settings } from './core.js';
 import { state } from './state.js';
+import { reason } from './errors.js';
 import { render } from './render.js';
-import { icon } from './icons.js';
-import { copy, toast } from './ui.js';
+import { copy, markButton, toast } from './ui.js';
 
 const SUN = 'sun';
 /** id участника -> `{ host, canPair }`: адрес его Sunshine и умеет ли он сам
@@ -48,7 +48,7 @@ mesh.on('message', async ({ id, msg }) => {
       mesh.send(id, { ns: SUN, type: 'paired', ok: true });
       toast(`${who} сопряжён с вашим Sunshine`);
     } catch (e) {
-      mesh.send(id, { ns: SUN, type: 'paired', ok: false, why: String(e?.message ?? e) });
+      mesh.send(id, { ns: SUN, type: 'paired', ok: false, why: reason(e) });
       // Автоматически не вышло — значит, PIN придётся ввести руками. Показываем
       // его хозяину компьютера: до сих пор об этой неудаче узнавал только
       // зритель, а человек у клавиатуры не видел ни PIN, ни самой просьбы.
@@ -114,7 +114,7 @@ async function setAllowed(id, on) {
   try {
     if (native.caps.remoteControl) await control.grant(id, on);
   } catch (e) {
-    toast(`Управление не включилось: ${e.message ?? e}`);
+    toast(`Управление не включилось: ${reason(e)}`);
   }
   render('peers');
 
@@ -184,9 +184,7 @@ export async function pollSunshine() {
   // провайдера — они меняются раз в недели, а не раз в полминуты. Спрашиваем
   // сервер не чаще раза в пять минут, иначе это просто фоновый запрос по кругу.
   if (Date.now() - reachedAt > 5 * 60 * 1000) {
-    reached = await fetch(new URL('/reach', serverBase()), { cache: 'no-store' })
-      .then((r) => r.json())
-      .catch(() => ({}));
+    reached = await askServer('/reach');
     reachedAt = Date.now();
   }
   const reach = reached;
@@ -255,7 +253,7 @@ async function openMoonlight(id, entry) {
     return native
       .moonlight(host, 'stream')
       .then(() => toast(`Moonlight подключается к ${host}`))
-      .catch((e) => toast(`${e.message ?? e}`, 9000));
+      .catch((e) => toast(reason(e), 9000));
   }
 
   // Первое подключение к этому компьютеру.
@@ -263,7 +261,7 @@ async function openMoonlight(id, entry) {
   try {
     await native.moonlight(host, 'pair', pin);
   } catch (e) {
-    return toast(`${e.message ?? e}`, 9000);
+    return toast(reason(e), 9000);
   }
   settings.set('pairedHosts', [...paired, host]);
 
@@ -281,26 +279,23 @@ async function openMoonlight(id, entry) {
 
 /** Кнопка «подключиться к этому компьютеру Moonlight'ом». */
 export function moonlightButton(id) {
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'mark';
-  btn.innerHTML = icon('gamepad');
-  btn.title = 'Экран и управление через Moonlight';
-  // Адрес и способ сопряжения приезжают вместе — оба от хозяина компьютера.
-  btn.onclick = () => openMoonlight(id, sunshineHosts.get(id));
-  return btn;
+  return markButton({
+    glyph: 'gamepad',
+    title: 'Экран и управление через Moonlight',
+    // Адрес и способ сопряжения приезжают вместе — оба от хозяина компьютера.
+    onclick: () => openMoonlight(id, sunshineHosts.get(id)),
+  });
 }
 
 /** Переключатель «этому человеку можно подключаться к моему компьютеру». */
 export function allowButton(id) {
   const on = allowed.has(id);
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'mark' + (on ? ' on' : '');
-  btn.innerHTML = icon(on ? 'unlock' : 'lock');
-  btn.title = on
-    ? 'Забрать доступ к моему компьютеру'
-    : 'Разрешить подключаться к моему компьютеру';
-  btn.onclick = () => setAllowed(id, !on);
-  return btn;
+  return markButton({
+    glyph: on ? 'unlock' : 'lock',
+    on,
+    title: on
+      ? 'Забрать доступ к моему компьютеру'
+      : 'Разрешить подключаться к моему компьютеру',
+    onclick: () => setAllowed(id, !on),
+  });
 }

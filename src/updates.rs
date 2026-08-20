@@ -10,12 +10,12 @@
 //! Поэтому за манифестом ходит сервер и держит ответ в кэше: версия выходит раз
 //! в дни, а спрашивают её все клиенты сразу.
 
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tracing::warn;
+
+use crate::cache::{http_client, Cache};
 
 /// Репозиторий, из релизов которого берутся сборки.
 const REPO: &str = "ExRyuske/YeruVerse";
@@ -38,7 +38,7 @@ struct Manifest {
 }
 
 pub struct Updates {
-    cached: Mutex<Option<(Instant, Value)>>,
+    cached: Cache,
     http: reqwest::Client,
 }
 
@@ -50,39 +50,13 @@ impl Default for Updates {
 
 impl Updates {
     pub fn new() -> Self {
-        Updates {
-            cached: Mutex::new(None),
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .user_agent("YeruVerse")
-                .build()
-                .expect("http client"),
-        }
+        Updates { cached: Cache::new(REFRESH_AFTER), http: http_client() }
     }
 
     /// Последняя выпущенная версия и ссылка на APK. Пустой объект означает
     /// «не знаем»: страница в этом случае просто молчит про обновления.
     pub async fn latest(&self) -> Value {
-        if let Some(fresh) = self.fresh() {
-            return fresh;
-        }
-        match self.fetch().await {
-            Ok(found) => {
-                *self.cached.lock().unwrap() = Some((Instant::now(), found.clone()));
-                found
-            }
-            Err(e) => {
-                warn!("не удалось узнать последнюю версию: {e}");
-                // Протухший ответ лучше пустого: версия меняется редко.
-                self.cached.lock().unwrap().as_ref().map(|(_, v)| v.clone()).unwrap_or(json!({}))
-            }
-        }
-    }
-
-    fn fresh(&self) -> Option<Value> {
-        let guard = self.cached.lock().unwrap();
-        let (at, value) = guard.as_ref()?;
-        (at.elapsed() < REFRESH_AFTER).then(|| value.clone())
+        self.cached.get("номер последней версии", json!({}), || self.fetch()).await
     }
 
     async fn fetch(&self) -> Result<Value, String> {
@@ -103,25 +77,6 @@ impl Updates {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Пока ответа нет, кэш пуст — и отдавать из него нечего.
-    #[test]
-    fn empty_cache_has_nothing_fresh() {
-        assert!(Updates::new().fresh().is_none());
-    }
-
-    /// Свежий ответ отдаётся из кэша, протухший — нет.
-    #[test]
-    fn cache_expires() {
-        let updates = Updates::new();
-        let answer = json!({ "version": "1.2.3" });
-        *updates.cached.lock().unwrap() = Some((Instant::now(), answer.clone()));
-        assert_eq!(updates.fresh(), Some(answer.clone()));
-
-        let stale = Instant::now() - REFRESH_AFTER - Duration::from_secs(1);
-        *updates.cached.lock().unwrap() = Some((stale, answer));
-        assert!(updates.fresh().is_none());
-    }
 
     /// В манифесте от `release.py` заметок может не быть вовсе.
     #[test]

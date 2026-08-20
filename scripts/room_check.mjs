@@ -60,6 +60,15 @@ async function open(browser, viewport = { width: 1280, height: 800 }, extra = {}
         }
       };
     }
+    // И каждый усилитель: громкость выше ста процентов живёт только в нём, а
+    // снаружи её ничем не видно — ни в элементе, ни в настройках.
+    window.__gains = [];
+    const createGain = AudioContext.prototype.createGain;
+    AudioContext.prototype.createGain = function (...args) {
+      const node = createGain.apply(this, args);
+      window.__gains.push(node);
+      return node;
+    };
   });
   const page = await ctx.newPage();
   page.errors = [];
@@ -72,10 +81,19 @@ async function open(browser, viewport = { width: 1280, height: 800 }, extra = {}
 async function diag(page) {
   await page.click('#btn-settings');
   await page.waitForTimeout(1300);
-  const text = await page.textContent('#diag');
+  const rows = await page.evaluate(() =>
+    [...document.querySelectorAll('#diag .diag-row')].map((el) => ({
+      status: el.classList.contains('ok') ? 'ok' : el.classList.contains('bad') ? 'bad' : 'warn',
+      name: el.querySelector('.k')?.textContent ?? '',
+      value: el.querySelector('.v')?.textContent ?? '',
+    }))
+  );
   await page.click('#btn-settings-close');
-  return text;
+  return rows;
 }
+
+/** Значение строки диагностики по её названию. */
+const diagValue = (rows, name) => rows.find((r) => r.name === name)?.value ?? '';
 
 const browser = await chromium.launch({ args: ARGS });
 
@@ -102,16 +120,37 @@ await b.press('#chat-input', 'Enter');
 await a.waitForTimeout(900);
 note((await a.textContent('#chat-log')).includes('слышно?'), 'чат доходит');
 
+// Системные строки — с часами, как и всё остальное в чате: «вышел» без времени
+// в разговоре, к которому вернулись через полчаса, ни о чём не говорит.
+const sysTimes = await a.evaluate(() =>
+  [...document.querySelectorAll('#chat-log .sys')].map((el) => ({
+    time: el.querySelector('.at')?.textContent ?? '',
+    text: el.textContent,
+  }))
+);
+note(sysTimes.length > 0, 'системные строки есть', sysTimes.map((r) => r.text).join(' | '));
+note(sysTimes.every((r) => /\d/.test(r.time)), 'у системных строк есть время',
+     sysTimes.map((r) => r.time).join(' '));
+
 // ---------------------------------------------------------------- голос
 const report = await diag(a);
-console.log('\n--- диагностика ---\n' + report + '\n');
-const line = (name) => report.match(new RegExp(`${name}:.*`))?.[0] ?? '';
-note(/микрофон:\s+(в эфире|включён)/.test(report), 'микрофон в эфире', line('микрофон'));
+console.log('\n--- диагностика ---');
+for (const r of report) console.log(`  ${r.status.padEnd(4)} ${r.name.padEnd(12)} ${r.value}`);
+console.log('');
+
+note(diagValue(report, 'Микрофон') === 'в эфире', 'микрофон в эфире');
 // Модель обязана подняться: без неё собеседников слышно, но шумодава нет, а
 // молча подменённая обработка звучит иначе — это и надо ловить.
-note(/шумодав:\s+нейросетью/.test(report), 'шумодав поднялся', line('шумодав'));
-note(/слышим:\s+1 из 1/.test(report), 'голос собеседника принят', line('слышим'));
-note(/connected/.test(report), 'WebRTC соединение установлено');
+note(/нейросетью/.test(diagValue(report, 'Шумодав')), 'шумодав поднялся');
+note(diagValue(report, 'Слышим') === '1 из 1', 'голос собеседника принят');
+// Строка участника: состояние соединения человеческими словами, а не
+// `connected/connected · путь srflx`.
+const peerRow = report.find((r) => /напрямую|через TURN/.test(r.value));
+note(!!peerRow, 'связь с участником описана словами', peerRow?.value);
+note(/звук/.test(peerRow?.value ?? ''), 'видно, что от участника идёт звук');
+note(report.every((r) => !/connected|srflx|relay|host/.test(r.value)),
+     'в диагностике не осталось языка WebRTC');
+note(report.some((r) => r.name === '' && r.value), 'наверху есть общий вывод');
 
 // ------------------------------------------------------ настройки микрофона
 //
@@ -141,7 +180,7 @@ note((await micTrack(a)) === micBefore, 'смена модели шумодав�
 await setDenoise(a, 'rnnoise');
 await a.waitForTimeout(1500);
 note((await micTrack(a)) === micBefore, 'и обратно — тоже');
-note(/шумодав:\s+нейросетью — RNNoise/.test(await diag(a)), 'модель вернулась на место');
+note(/RNNoise/.test(diagValue(await diag(a), 'Шумодав')), 'модель вернулась на место');
 
 // А вот подавление движком просят у самого устройства — тут перезахват честен.
 await setDenoise(a, 'browser');
@@ -149,13 +188,58 @@ await a.waitForTimeout(2000);
 note((await micTrack(a)) !== micBefore, 'подавление движком просят у устройства');
 await setDenoise(a, 'rnnoise');
 await a.waitForTimeout(2000);
-note(/шумодав:\s+нейросетью — RNNoise/.test(await diag(a)), 'и модель поднимается обратно');
+note(/RNNoise/.test(diagValue(await diag(a), 'Шумодав')), 'и модель поднимается обратно');
 
 note(
   (await a.evaluate(() => window.__contexts)) === 1,
   'аудиоконтекст в приложении один',
   `их ${await a.evaluate(() => window.__contexts)}`
 );
+
+// ------------------------------------------------------------ громкость
+//
+// Выше ста процентов элемент не умеет — там подключается усилитель, а сам
+// элемент глушится, чтобы звук не шёл двумя путями сразу. Переключение между
+// путями и есть самое хрупкое место: снаружи громче четырёхсот процентов и
+// полная тишина выглядят одинаково.
+const loudness = (page) =>
+  page.evaluate(() => {
+    const el = [...document.querySelectorAll('audio')].at(-1);
+    return { gains: window.__gains.map((g) => g.gain.value), muted: el?.muted ?? null };
+  });
+
+const speaker = await b.evaluate(async () => {
+  const { voice } = await import('/js/core.js');
+  return [...voice.remotes.keys()][0] ?? '';
+});
+const setPeerVolume = (level) =>
+  b.evaluate(async ([id, v]) => {
+    const { settings } = await import('/js/core.js');
+    settings.setPeerVolume(id, v);
+  }, [speaker, level]);
+
+note(!!speaker, 'есть кого слушать');
+await setPeerVolume(4);
+
+// Усилитель забирает звук себе не сразу: сперва он должен убедиться, что поток
+// до графа вообще доходит, — на движке WebKit тот доходит не всегда. Ждём это,
+// а не отмеряем секунду наугад: фальшивый микрофон Chromium пищит с паузами, и
+// шумодав отправителя эти писки честно давит, так что первые замеры у
+// получателя — цифровая тишина.
+let loud = await loudness(b);
+for (let i = 0; i < 24 && !(loud.gains.includes(4) && loud.muted); i++) {
+  await b.waitForTimeout(250);
+  loud = await loudness(b);
+}
+note(loud.gains.includes(4) && loud.muted === true, 'громкость 400% доходит до усилителя',
+     JSON.stringify(loud));
+
+await setPeerVolume(1);
+await b.waitForTimeout(600);
+loud = await loudness(b);
+// Вернулись к ста процентам — играет снова сам элемент, усилитель молчит.
+note(!loud.gains.some((g) => g > 0) && loud.muted === false, 'сто процентов играет элемент',
+     JSON.stringify(loud));
 
 // ---------------------------------------------------------------- камера
 await a.click('#btn-camera');
@@ -177,6 +261,61 @@ await a.click('#btn-camera');
 await a.waitForTimeout(2200);
 note((await b.locator('.lightbox.inside').count()) === 0, 'увеличение ушло вместе с камерой');
 note((await b.locator('.cam-tile').count()) === 0, 'плитка камеры убрана');
+
+// ------------------------------------------------------------ полный экран
+//
+// Полоса с кнопками тянется во всю ширину, а кнопок в ней от силы треть. Всё
+// остальное её пространство обязано пропускать нажатия в кадр — иначе внизу
+// чужого экрана получается полоса, куда курсор доходит, а щелчок нет.
+await b.click('#btn-full');
+await b.waitForTimeout(400);
+const underBar = await b.evaluate(() => {
+  const bar = document.querySelector('.sources').getBoundingClientRect();
+  const el = document.elementFromPoint(
+    Math.round(innerWidth * 0.35),
+    Math.round(bar.top + bar.height / 2)
+  );
+  return el ? `${el.tagName.toLowerCase()}.${el.className || el.id}` : '—';
+});
+note(!/sources|src-row|views/.test(underBar), 'пустое место полосы пропускает нажатие к кадру',
+     underBar);
+
+/** Видно ли полосу: класс бездействия и её собственная прозрачность. */
+const bar = () =>
+  b.evaluate(() => ({
+    idle: document.body.classList.contains('idle'),
+    opacity: Number(getComputedStyle(document.querySelector('.sources')).opacity),
+  }));
+
+// Возим мышью по кадру — так ведёт себя игра и удалённое управление. Полоса
+// обязана погаснуть: она мешает именно тогда, когда курсор в движении.
+for (let i = 0; i < 12; i++) {
+  await b.mouse.move(300 + i * 40, 300 + (i % 3) * 20);
+  await b.waitForTimeout(300);
+}
+let bs = await bar();
+note(bs.idle && bs.opacity === 0, 'полоса гаснет, даже когда мышь не стоит на месте',
+     JSON.stringify(bs));
+
+// Тянемся к кнопкам — выходит навстречу.
+await b.mouse.move(640, 780);
+await b.waitForTimeout(400);
+bs = await bar();
+note(!bs.idle && bs.opacity === 1, 'полоса выходит навстречу мыши у нижнего края',
+     JSON.stringify(bs));
+
+// Раскрытая настройка разворачивается вверх, далеко от края: гаснуть под
+// курсором она не должна.
+await b.click('[data-pop="pop-sound"]');
+await b.mouse.move(640, 500);
+await b.waitForTimeout(3200);
+bs = await bar();
+note(!bs.idle && bs.opacity === 1, 'раскрытая настройка не гаснет сама', JSON.stringify(bs));
+await b.keyboard.press('Escape');
+
+await b.mouse.move(640, 780);
+await b.click('#btn-full');
+await b.waitForTimeout(300);
 
 // ---------------------------------------------------------------- телефон
 const phone = await open(
@@ -203,6 +342,22 @@ note(box.stage && box.stage.h > 150, 'сцена не сплющена', `выс
 note(box.scroll <= box.h + 2, 'нет прокрутки всей страницы', `${box.scroll} против ${box.h}`);
 note(box.chat && box.chat.y + box.chat.h <= box.h + 2, 'чат не уехал за экран');
 
+// Всплывающие настройки на телефоне: раскрываются они вверх, а места вверху
+// нет — начало панели уезжало за верхний край вместе с выбором устройства.
+for (const id of ['pop-mic', 'pop-sound', 'pop-cam']) {
+  const fit = await phone.evaluate((pop) => {
+    const caret = document.querySelector(`[data-pop="${pop}"]`);
+    if (!caret || caret.offsetParent === null) return null;
+    caret.click();
+    const r = document.getElementById(pop).getBoundingClientRect();
+    return { top: Math.round(r.top), bottom: Math.round(r.bottom), vh: innerHeight };
+  }, id);
+  if (!fit) continue;
+  note(fit.top >= 0 && fit.bottom <= fit.vh + 1, `${id} влезает в экран телефона`,
+       `${fit.top}..${fit.bottom} из ${fit.vh}`);
+}
+await phone.keyboard.press('Escape');
+
 await phone.setViewportSize({ width: 390, height: 844 });
 await phone.waitForTimeout(800);
 await shot(phone, 'phone-portrait');
@@ -224,6 +379,23 @@ const volumes = await phone.evaluate(() => {
 });
 note(volumes.views !== 'none', 'громкость трансляции видна в вертикали', volumes.views);
 note(volumes.peers === 'none', 'громкость участника — в настройках', volumes.peers);
+// Плитка камеры в полном экране стоит над полосой кнопок. Полоса бывает в одну
+// строку и в две, и пока место под неё отмерялось числом, кнопки лежали поверх
+// плитки — вместе с подписью, кому это лицо принадлежит.
+await phone.click('#btn-camera');
+await phone.waitForTimeout(2500);
+await phone.click('#btn-full');
+await phone.waitForTimeout(700);
+const tile = await phone.evaluate(() => {
+  const el = document.querySelector('.cam-tile');
+  if (!el) return null;
+  const cam = el.getBoundingClientRect();
+  const bar = document.querySelector('.sources').getBoundingClientRect();
+  return { camBottom: Math.round(cam.bottom), barTop: Math.round(bar.top) };
+});
+note(tile && tile.camBottom <= tile.barTop, 'плитка камеры не заезжает под кнопки',
+     JSON.stringify(tile));
+
 note(phone.errors.length === 0, 'телефон без ошибок', phone.errors.join(' | '));
 
 await browser.close();

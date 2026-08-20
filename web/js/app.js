@@ -5,11 +5,11 @@
 // не принадлежит никому одному, — включение микрофона по возвращении из фона,
 // звуковые кнопки, маршрут входящих потоков — живёт здесь.
 
-import { mesh, native, net, serverBase, settings, voice } from './core.js';
+import { askServer, mesh, native, net, settings, voice } from './core.js';
 import { state } from './state.js';
 import { render } from './render.js';
 import { icon } from './icons.js';
-import { $, clearStaleFlag, toast, ui } from './ui.js';
+import { clearStaleFlag, setIcon, toast, ui } from './ui.js';
 import { initChat } from './chat.js';
 import { initSettingsPanel, refreshDevices, wireHotkeys } from './settings-panel.js';
 import { wireLayout } from './layout.js';
@@ -26,11 +26,11 @@ import { modelTitle, modelWeight } from './denoise.js';
 init();
 
 async function init() {
-  $('#btn-get-app').hidden = native.available;
+  ui('#btn-get-app').hidden = native.available;
   if (native.available) {
     await native.load();
-    $('#server-row').hidden = false;
-    $('#in-server').value = await native.currentServer().catch(() => location.origin);
+    ui('#server-row').hidden = false;
+    ui('#in-server').value = await native.currentServer().catch(() => location.origin);
   }
 
   await loadServerConfig();
@@ -39,7 +39,7 @@ async function init() {
   setInterval(pollSunshine, 30 * 1000);
 
   const code = parseInvite();
-  const nameField = $('#in-name');
+  const nameField = ui('#in-name');
   nameField.value = settings.get('name');
   // Запоминаем сразу, а не только при входе: человек мог представиться и уйти
   // читать ссылку, а вернувшись — обнаружить пустое поле.
@@ -86,9 +86,7 @@ async function init() {
  * установки соединения, а не постоянно.
  */
 async function loadServerConfig() {
-  state.config = await fetch(new URL('/config.json', serverBase()), { cache: 'no-store' })
-    .then((r) => r.json())
-    .catch(() => ({}));
+  state.config = await askServer('/config.json');
   mesh.iceServers = state.config.iceServers ?? [];
 }
 
@@ -109,8 +107,11 @@ voice.on('speaking', () => applySpeaking());
 function soundButton(sel, name, off, label) {
   const btn = ui(sel);
   btn.classList.toggle('off', off);
-  btn.innerHTML = icon(off ? `${name}-off` : name);
-  btn.title = off ? `${label} выключен — включить` : `${label} включён — выключить`;
+  setIcon(
+    btn,
+    off ? `${name}-off` : name,
+    off ? `${label} выключен — включить` : `${label} включён — выключить`
+  );
 }
 
 voice.on('change', ({ enabled, muted, deafened }) => {

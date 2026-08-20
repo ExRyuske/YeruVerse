@@ -3,12 +3,22 @@
 import { control, mesh, net, serverBase, settings, swarm, voice } from './core.js';
 import { isSelf, state, viewKey } from './state.js';
 import { render } from './render.js';
-import { $, copy, openExternal, showScreen, toast, ui } from './ui.js';
+import { copy, openExternal, showScreen, toast, ui } from './ui.js';
 import { addChat, clearChat, sysMsg } from './chat.js';
 import { removeScreen, resetStage } from './stage.js';
 import { announceShares, stopShare } from './shares.js';
 import { pollSunshine, resetSunshine } from './sunshine.js';
 import { enableMic } from './devices.js';
+
+/**
+ * Сколько ждём возвращения после обрыва.
+ *
+ * Число одно на два места, и разъехаться им нельзя: столько же мы держим паузу
+ * перед сообщением «вышел» и столько же считаем вернувшегося тем же человеком.
+ * Разные значения дали бы в чате либо лишнюю пару «вышел / присоединился»,
+ * либо выход, о котором так и не сказали.
+ */
+const REJOIN_MS = 15000;
 
 /** Код комнаты — он же её адрес. Ничего из него не выводится. */
 export function join(code) {
@@ -16,7 +26,7 @@ export function join(code) {
 
   state.joined = true;
   state.code = code;
-  const name = $('#in-name').value.trim();
+  const name = ui('#in-name').value.trim();
   settings.set('name', name);
 
   net.connect({ base: serverBase(), room: code, name, color: settings.get('color') });
@@ -24,7 +34,7 @@ export function join(code) {
   // а значит запрос разрешения не будет отклонён браузером автоматически.
   enableMic();
   showScreen('room');
-  $('#room-name').textContent = state.code;
+  ui('#room-name').textContent = state.code;
   // В адресной строке держим код: перезагрузка вернёт в ту же комнату.
   history.replaceState(null, '', `${location.pathname}#${encodeURIComponent(state.code)}`);
 
@@ -55,11 +65,11 @@ export function leaveRoom() {
   state.recentLeaves.clear();
   resetSunshine();
 
-  $('#peer-list').innerHTML = '';
-  $('#peer-count').textContent = '0';
+  ui('#peer-list').replaceChildren();
+  ui('#peer-count').textContent = '0';
   clearChat();
-  $('#settings').hidden = true;
-  $('#room-name').classList.remove('revealed');
+  ui('#settings').hidden = true;
+  ui('#room-name').classList.remove('revealed');
 
   showScreen('join');
   history.replaceState(null, '', location.pathname);
@@ -71,7 +81,7 @@ export function wireRoom() {
   // показывает его и сразу копирует — это два действия, которые всегда нужны
   // вместе. Повторное нажатие прячет обратно.
   ui('#room-name').onclick = () => {
-    const el = $('#room-name');
+    const el = ui('#room-name');
     const reveal = !el.classList.contains('revealed');
     el.classList.toggle('revealed', reveal);
     if (reveal) copy(state.code, 'Код скопирован', 'Код комнаты:');
@@ -115,11 +125,11 @@ function inviteLink() {
 
 // ---------------------------------------------------------------- сеть
 
-net.addEventListener('welcome', ({ detail }) => {
-  state.self = detail.you;
+net.on('welcome', ({ you, peers }) => {
+  state.self = you;
   state.peers.clear();
-  state.peers.set(detail.you.id, detail.you);
-  for (const p of detail.peers) {
+  state.peers.set(you.id, you);
+  for (const p of peers) {
     state.peers.set(p.id, p);
     settings.trackPeer(p.id, p.name);
     mesh.add(p.id);
@@ -136,8 +146,7 @@ net.addEventListener('welcome', ({ detail }) => {
   else enableMic();   // микрофон включён по умолчанию
 });
 
-net.addEventListener('peer_join', ({ detail }) => {
-  const peer = detail.peer;
+net.on('peer_join', ({ peer }) => {
   state.peers.set(peer.id, peer);
   settings.trackPeer(peer.id, peer.name);
   mesh.add(peer.id);
@@ -146,29 +155,30 @@ net.addEventListener('peer_join', ({ detail }) => {
   // После обрыва человек возвращается с новым id: не объявляем его заново.
   const left = state.recentLeaves.get(peer.name);
   state.recentLeaves.delete(peer.name);
-  if (!left || Date.now() - left > 15000) sysMsg(`${peer.name} присоединился`);
+  if (!left || Date.now() - left > REJOIN_MS) sysMsg(`${peer.name} присоединился`);
 });
 
-net.addEventListener('peer_leave', ({ detail }) => {
-  const gone = state.peers.get(detail.id);
-  state.peers.delete(detail.id);
-  for (const kind of ['screen', 'cam']) removeScreen(viewKey(detail.id, kind));
-  mesh.remove(detail.id);
+net.on('peer_leave', ({ id }) => {
+  const gone = state.peers.get(id);
+  state.peers.delete(id);
+  for (const kind of ['screen', 'cam']) removeScreen(viewKey(id, kind));
+  mesh.remove(id);
   render('peers', 'views', 'cams', 'stage');
   if (!gone) return;
 
-  state.recentLeaves.set(gone.name, Date.now());
+  const at = Date.now();
+  state.recentLeaves.set(gone.name, at);
   // Сообщаем о выходе с задержкой: если это был обрыв связи, человек вернётся
-  // раньше, и в чате не появится лишней пары «вышел / присоединился».
+  // раньше, и в чате не появится лишней пары «вышел / присоединился». В строке
+  // при этом стоит час самого выхода, а не тот, когда мы решились сказать.
   setTimeout(() => {
     if (!state.recentLeaves.get(gone.name)) return;
     state.recentLeaves.delete(gone.name);
-    sysMsg(`${gone.name} вышел`);
-  }, 15000);
+    sysMsg(`${gone.name} вышел`, at);
+  }, REJOIN_MS);
 });
 
-net.addEventListener('presence', ({ detail }) => {
-  const peer = detail.peer;
+net.on('presence', ({ peer }) => {
   const was = state.peers.get(peer.id);
 
   // Про трансляции сообщаем по присутствию, а не по приходу потока: поток
@@ -188,15 +198,15 @@ net.addEventListener('presence', ({ detail }) => {
   render('peers', 'views', 'cams', 'stage');
 });
 
-net.addEventListener('chat', ({ detail }) => {
-  const from = state.peers.get(detail.from);
-  addChat(from?.name ?? 'Гость', detail.text, isSelf(detail.from), detail.srv, from?.color);
+net.on('chat', ({ from, text, srv }) => {
+  const peer = state.peers.get(from);
+  addChat(peer?.name ?? 'Гость', text, isSelf(from), srv, peer?.color);
 });
 
-net.addEventListener('error', ({ detail }) => toast(detail.message));
+net.on('error', ({ message }) => toast(message));
 
-net.addEventListener('status', ({ detail }) => {
-  const dot = $('#conn-dot');
-  dot.className = `dot ${detail.online ? 'on' : 'off'}`;
-  dot.title = detail.online ? `RTT ${Math.round(detail.rtt ?? 0)} мс` : 'Переподключение…';
+net.on('status', ({ online, rtt }) => {
+  const dot = ui('#conn-dot');
+  dot.className = `dot ${online ? 'on' : 'off'}`;
+  dot.title = online ? `RTT ${Math.round(rtt ?? 0)} мс` : 'Переподключение…';
 });

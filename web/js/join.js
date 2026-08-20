@@ -1,11 +1,12 @@
 // Экран входа: код комнаты, цвет ника, сохранённые комнаты и загрузки.
 
-import { native, net, serverBase, settings } from './core.js';
+import { askServer, native, net, settings } from './core.js';
 import { state } from './state.js';
+import { reason } from './errors.js';
 import { painter, render } from './render.js';
 import { PALETTE } from './settings.js';
 import { icon } from './icons.js';
-import { $, openExternal, toast, ui } from './ui.js';
+import { make, openExternal, toast, ui } from './ui.js';
 import { join, leaveRoom } from './room.js';
 
 painter('rooms', renderRooms);
@@ -21,7 +22,7 @@ export function wireJoin() {
     try {
       await native.setServer(ui('#in-server').value.trim());
     } catch (e) {
-      joinError(`Не вышло: ${e.message ?? e}`);
+      joinError(`Не вышло: ${reason(e)}`);
     }
   };
 
@@ -41,8 +42,8 @@ export function wireJoin() {
   // спрятать его можно, просто войдя в комнату.
   ui('#btn-update').onclick = installUpdate;
 
-  buildPalette($('#join-palette'));
-  buildPalette($('#set-palette'));
+  buildPalette(ui('#join-palette'));
+  buildPalette(ui('#set-palette'));
   render('rooms');
 
   checkUpdate();
@@ -56,7 +57,7 @@ export function joinByCode(code) {
 }
 
 function joinError(text) {
-  const err = $('#join-error');
+  const err = ui('#join-error');
   err.textContent = text;
   err.hidden = false;
 }
@@ -114,17 +115,15 @@ async function checkUpdate() {
     : await releasedVersion();
   if (!found) return;
 
-  $('#update-version').textContent = found;
-  $('#update-notice').hidden = false;
+  ui('#update-version').textContent = found;
+  ui('#update-notice').hidden = false;
   if (state.joined) toast(`Вышла версия ${found} — обновиться можно после выхода из комнаты`);
 }
 
 /** Что лежит в релизе, если это новее нас. Иначе — ничего. */
 async function releasedVersion() {
   if (!native.available || !native.caps.version) return null;
-  const release = await fetch(new URL('/update.json', serverBase()), { cache: 'no-store' })
-    .then((r) => r.json())
-    .catch(() => ({}));
+  const release = await askServer('/update.json');
   apkUrl = release.apk ?? '';
   return newer(release.version, native.caps.version) ? release.version : null;
 }
@@ -155,32 +154,32 @@ async function installUpdate() {
   try {
     await native.updateInstall();
   } catch (e) {
-    toast(`Обновиться не вышло: ${e.message ?? e}`, 8000);
+    toast(`Обновиться не вышло: ${reason(e)}`, 8000);
   }
 }
 
 // ---------------------------------------------------------------- цвет ника
 
 function buildPalette(host) {
-  host.innerHTML = '';
-  for (const c of PALETTE) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.style.background = c;
-    b.title = c;
-    b.setAttribute('aria-label', `Цвет ${c}`);
-    b.onclick = () => {
-      settings.set('color', c);
-      syncPalettes();
-      if (state.joined) net.profile(undefined, c);
-    };
-    host.appendChild(b);
-  }
+  host.replaceChildren(
+    ...PALETTE.map((c) =>
+      make('button', {
+        title: c,
+        style: { background: c },
+        ariaLabel: `Цвет ${c}`,
+        onclick: () => {
+          settings.set('color', c);
+          syncPalettes();
+          if (state.joined) net.profile(undefined, c);
+        },
+      })
+    )
+  );
   syncPalettes();
 }
 
 function syncPalettes() {
-  for (const host of [$('#join-palette'), $('#set-palette')]) {
+  for (const host of [ui('#join-palette'), ui('#set-palette')]) {
     for (const b of host?.querySelectorAll('button') ?? []) {
       b.setAttribute('aria-pressed', String(b.title === settings.get('color')));
     }
@@ -205,11 +204,11 @@ function switchRoom(code) {
  */
 function renderRooms() {
   const empty = !settings.rooms.length;
-  for (const host of [$('#rooms'), $('#rooms-join')]) {
+  for (const host of [ui('#rooms'), ui('#rooms-join')]) {
     renderRoomList(host);
     host.hidden = empty;      // пустой столбец — только шум
   }
-  const save = $('#btn-save-room');
+  const save = ui('#btn-save-room');
   const saved = !!settings.roomName(state.code);
   save.classList.toggle('active', saved);
   save.title = saved ? 'Забыть комнату' : 'Сохранить комнату';
@@ -217,76 +216,74 @@ function renderRooms() {
 
 function renderRoomList(host) {
   const onJoinScreen = host.id === 'rooms-join';
-  host.innerHTML = '';
 
-  if (onJoinScreen) {
-    const title = document.createElement('h3');
-    title.textContent = 'Ваши комнаты';
-    host.appendChild(title);
-  }
-
-  for (const room of settings.rooms) {
-    host.appendChild(roomTile(room, onJoinScreen));
-  }
-
-  const add = document.createElement('button');
-  add.type = 'button';
-  add.className = 'room-add';
-  add.title = 'Другая комната';
-  add.textContent = '+';
-  add.onclick = () => {
-    if (!onJoinScreen) leaveRoom();
-    $('#in-link').focus();
-  };
-  host.appendChild(add);
+  host.replaceChildren(
+    // Заголовок нужен только на входе: в комнате столбец и так стоит под
+    // своим местом, и подписывать его второй раз незачем.
+    ...(onJoinScreen ? [make('h3', { text: 'Ваши комнаты' })] : []),
+    ...settings.rooms.map((room) => roomTile(room, onJoinScreen)),
+    make('button', {
+      class: 'room-add',
+      title: 'Другая комната',
+      text: '+',
+      onclick: () => {
+        if (!onJoinScreen) leaveRoom();
+        ui('#in-link').focus();
+      },
+    })
+  );
 }
 
 function roomTile(room, onJoinScreen) {
-  const tile = document.createElement('div');
-  tile.className = 'room-tile' + (!onJoinScreen && room.code === state.code ? ' active' : '');
+  const active = !onJoinScreen && room.code === state.code;
 
-  const open = document.createElement('button');
-  open.type = 'button';
-  open.className = 'room-open';
-  open.textContent = room.name;
-  open.title = room.name;
-  open.onclick = () => (onJoinScreen ? joinByCode(room.code) : switchRoom(room.code));
-
-  // Переименование прямо на месте: prompt() системный вебвью не показывает,
-  // и обработчик обрывался бы на нём молча.
-  const rename = document.createElement('button');
-  rename.type = 'button';
-  rename.className = 'mark room-act';
-  rename.title = 'Переименовать';
-  rename.innerHTML = icon('pen');
-  rename.onclick = () => {
-    const field = document.createElement('input');
-    field.className = 'room-rename';
-    field.value = room.name;
-    field.maxLength = 24;
-    field.onblur = () => {
-      settings.saveRoom(room.code, field.value.trim() || room.name);
-      render('rooms');
-    };
-    field.onkeydown = (e) => {
-      if (e.key === 'Enter') field.blur();
-      if (e.key === 'Escape') render('rooms');
-    };
+  /**
+   * Переименование прямо на месте: prompt() системный вебвью не показывает,
+   * и обработчик обрывался бы на нём молча.
+   */
+  const rename = () => {
+    const field = make('input', {
+      class: 'room-rename',
+      value: room.name,
+      maxLength: 24,
+      onblur: () => {
+        settings.saveRoom(room.code, field.value.trim() || room.name);
+        render('rooms');
+      },
+      onkeydown: (e) => {
+        if (e.key === 'Enter') field.blur();
+        if (e.key === 'Escape') render('rooms');
+      },
+    });
     tile.replaceChildren(field);
     field.focus();
     field.select();
   };
 
-  const forget = document.createElement('button');
-  forget.type = 'button';
-  forget.className = 'mark room-act';
-  forget.title = 'Забыть комнату';
-  forget.innerHTML = icon('close');
-  forget.onclick = () => {
-    settings.forgetRoom(room.code);
-    render('rooms');
-  };
-
-  tile.append(open, rename, forget);
+  const tile = make(
+    'div',
+    { class: `room-tile${active ? ' active' : ''}` },
+    make('button', {
+      class: 'room-open',
+      text: room.name,
+      title: room.name,
+      onclick: () => (onJoinScreen ? joinByCode(room.code) : switchRoom(room.code)),
+    }),
+    make('button', {
+      class: 'mark room-act',
+      title: 'Переименовать',
+      html: icon('pen'),
+      onclick: rename,
+    }),
+    make('button', {
+      class: 'mark room-act',
+      title: 'Забыть комнату',
+      html: icon('close'),
+      onclick: () => {
+        settings.forgetRoom(room.code);
+        render('rooms');
+      },
+    })
+  );
   return tile;
 }

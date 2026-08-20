@@ -2,13 +2,33 @@
 // Всё это про то, как расставлено, а не про то, что показано.
 
 import { native, settings } from './core.js';
-import { $, ui } from './ui.js';
-import { icon } from './icons.js';
+import { setIcon, ui } from './ui.js';
 
 export function wireLayout() {
   wireSidebar();
   wirePopovers();
+  trackBar();
   ui('#btn-full').onclick = toggleFullscreen;
+}
+
+/**
+ * Высота полосы управления — в переменную, чтобы полоса камер поднималась над
+ * настоящим её размером, а не над числом в стилях.
+ *
+ * В полном экране полоса бывает в одну строку и в две: переключатели трансляций
+ * встают отдельной строкой, когда есть что переключать. Пока место под неё
+ * отмерялось числом, на телефоне кнопки налезали на плитку камеры и закрывали
+ * её нижнюю треть вместе с подписью — числа хватало на полосу в одну строку, а
+ * она бывает выше.
+ */
+function trackBar() {
+  const sources = ui('.sources');
+  const sync = () => document.body.style.setProperty('--bar', `${sources.offsetHeight}px`);
+
+  sync();
+  // Переменная меняет положение полосы камер, но не размер самой полосы
+  // управления, — обратной связи здесь нет, и наблюдатель сам себя не разбудит.
+  new ResizeObserver(sync).observe(sources);
 }
 
 /**
@@ -31,23 +51,55 @@ function wirePopovers() {
   for (const caret of carets) {
     caret.onclick = (e) => {
       e.stopPropagation();      // иначе тот же щелчок тут же и закроет панель
-      const pop = $(`#${caret.dataset.pop}`);
+      const pop = ui(`#${caret.dataset.pop}`);
       const show = pop.hidden;
       close();
       pop.hidden = !show;
       caret.classList.toggle('open', show);
-      // Панель у правого края не должна уезжать за границу окна.
-      pop.style.left = '';
-      pop.style.right = '';
-      if (show && pop.getBoundingClientRect().right > window.innerWidth - 8) {
-        pop.style.left = 'auto';
-        pop.style.right = '0';
-      }
+      if (show) fit(pop);
     };
   }
 
   document.addEventListener('click', (e) => !e.target.closest('.pop') && close());
   document.addEventListener('keydown', (e) => e.key === 'Escape' && close());
+  // Экран мог перевернуть или клавиатура могла вылезти — место под панелью
+  // меняется, пока она открыта.
+  window.addEventListener('resize', () => {
+    for (const pop of pops) if (!pop.hidden) fit(pop);
+  });
+}
+
+/** Отступ от краёв окна: панель не должна лежать вплотную к ним. */
+const EDGE = 8;
+
+/**
+ * Вписать раскрытую панель в окно.
+ *
+ * Панель раскрывается вверх от своей кнопки, а кнопки живут у нижнего края
+ * сцены — и на телефоне места над ними мало. Настройки микрофона занимают
+ * триста пятьдесят точек, качества трансляции — под пятьсот: на экране 360×640
+ * начало обеих оказывалось за верхним краем, вместе с выбором устройства, ради
+ * которого их и открывают. Достать его было нечем — панель никуда не
+ * прокручивалась, потому что целиком помещалась в разметку, просто выше окна.
+ *
+ * Поэтому меряем не панель, а место: сколько его есть над кнопкой, такой
+ * высоты панель и будет, а остальное уедет в прокрутку внутри неё.
+ */
+function fit(pop) {
+  // Считаем от чистого листа: прошлые правки сбивают замер.
+  pop.style.left = '';
+  pop.style.right = '';
+  pop.style.maxHeight = '';
+
+  const box = pop.getBoundingClientRect();
+  if (box.right > window.innerWidth - EDGE) {
+    pop.style.left = 'auto';
+    pop.style.right = '0';
+  }
+  // Нижний край панели закреплён у кнопки, поэтому вся высота растёт вверх:
+  // ограничив её, мы опускаем верх панели, а не двигаем низ.
+  const room = box.bottom - EDGE;
+  if (box.height > room) pop.style.maxHeight = `${Math.max(140, room)}px`;
 }
 
 /**
@@ -56,7 +108,7 @@ function wirePopovers() {
  */
 function wireSidebar() {
   const grip = ui('#sidebar-grip');
-  const bar = $('#sidebar');
+  const bar = ui('#sidebar');
   // Панель ложится снизу только на вертикальном телефоне. Стоит его повернуть —
   // и она встаёт сбоку, как на большом экране; тянуть её тогда надо вбок, а не
   // вверх. Пока здесь стояла одна проверка ширины, в горизонтали полоска меняла
@@ -140,7 +192,7 @@ async function toggleFullscreen() {
   const el = fullscreenEl();
   if (!on && !el) return applyFullscreen(false);
 
-  const host = $('.stage-wrap');
+  const host = ui('.stage-wrap');
   try {
     if (el) {
       await (document.exitFullscreen ?? document.webkitExitFullscreen).call(document);
@@ -159,9 +211,8 @@ async function toggleFullscreen() {
 }
 
 function applyFullscreen(on) {
-  const btn = $('#btn-full');
-  btn.innerHTML = icon(on ? 'collapse' : 'expand');
-  btn.title = on ? 'Выйти из полного экрана' : 'Во весь экран';
+  const btn = ui('#btn-full');
+  setIcon(btn, on ? 'collapse' : 'expand', on ? 'Выйти из полного экрана' : 'Во весь экран');
   document.body.classList.toggle('fullscreen', on);
   wakeControls();
 }
@@ -170,17 +221,53 @@ for (const ev of ['fullscreenchange', 'webkitfullscreenchange']) {
   document.addEventListener(ev, () => applyFullscreen(!!fullscreenEl()));
 }
 
+/** Сколько полоса держится после того, как её перестали трогать. */
+const IDLE_MS = 2500;
+
 /**
- * В полном экране панель воспроизведения и переключатели прячутся, пока мышь
- * стоит: они перекрывают нижнюю часть кадра. Раньше это держалось на `:hover`,
- * а неподвижный курсор над сценой — это вечное наведение, и панель не гасла.
+ * Насколько близко к нижнему краю должна подойти мышь, чтобы полоса вышла.
+ * Примерно её собственная высота: тянешься к кнопкам — она появляется.
+ */
+const NEAR_CONTROLS = 180;
+
+/**
+ * Будит ли это событие полосу управления.
+ *
+ * В полном экране полоса выходит навстречу мыши, а не на любое её шевеление.
+ * Пока будило любое, она не гасла как раз там, где мешает больше всего: в игре
+ * и при удалённом управлении курсор не стоит на месте ни секунды, и полоса
+ * висела над кадром всё время, ради которого полный экран и включали.
+ *
+ * Палец, перо и клавиатура будят откуда угодно: тянуться пальцем «вниз» не к
+ * чему — тач-экран не знает наведения, — а у нажатия клавиши места на экране
+ * нет вовсе.
+ */
+function wakes(e) {
+  if (!e || e.type === 'keydown') return true;
+  if (!fullscreenOn()) return true;
+  if (e.pointerType && e.pointerType !== 'mouse') return true;
+  return window.innerHeight - e.clientY <= NEAR_CONTROLS;
+}
+
+/**
+ * В полном экране полоса с кнопками прячется, пока к ней не тянутся: она
+ * перекрывает нижнюю часть кадра. Раньше это держалось на `:hover`, а
+ * неподвижный курсор над сценой — это вечное наведение, и панель не гасла.
  */
 let idleTimer;
-function wakeControls() {
+function wakeControls(e) {
+  if (!wakes(e)) return;
   clearTimeout(idleTimer);
   document.body.classList.remove('idle');
   if (!fullscreenOn()) return;
-  idleTimer = setTimeout(() => document.body.classList.add('idle'), 2500);
+  idleTimer = setTimeout(() => {
+    // Раскрытую настройку не гасим. Она разворачивается вверх от своей кнопки,
+    // то есть далеко от края, — по правилу выше курсор внутри неё полосу уже не
+    // будит, и панель погасла бы прямо под ним. А при чтении мышь и вовсе не
+    // двигают.
+    if (document.querySelector('.pop:not([hidden])')) return wakeControls();
+    document.body.classList.add('idle');
+  }, IDLE_MS);
 }
 
 for (const ev of ['pointermove', 'pointerdown', 'keydown']) {

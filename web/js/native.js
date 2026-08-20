@@ -1,6 +1,8 @@
 // Мост к десктопной оболочке. В браузере всё вырождается в «недоступно», и
 // приложение работает ровно как раньше — ни одна ветка кода не ломается.
 
+import { reason } from './errors.js';
+
 const bridge = window.__TAURI__?.core ?? null;
 
 export const native = {
@@ -29,7 +31,7 @@ export const native = {
         this.error = null;
         return this.caps;
       } catch (e) {
-        this.error = String(e?.message ?? e);
+        this.error = reason(e);
         await new Promise((r) => setTimeout(r, 300));
       }
     }

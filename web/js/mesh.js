@@ -1,6 +1,8 @@
 // Полносвязная WebRTC-сеть между зрителями. Через неё идут и куски файла,
 // и демонстрация экрана — сервер видит только SDP/ICE.
 
+import { Emitter } from './events.js';
+
 /**
  * Сколько ждать подпись отправителя, прежде чем гадать по составу дорожек.
  * Подпись уходит по управляющему каналу и обычно опережает дорожки; ожидание
@@ -116,7 +118,7 @@ class Conn {
     this.removeStream(kind);
     const senders = stream.getTracks().map((t) => this.pc.addTrack(t, stream));
     this.senders.set(kind, senders);
-    for (const sender of senders) this.mesh.tune(sender, kind);
+    for (const sender of senders) this.mesh.tune(sender);
   }
 
   /**
@@ -188,7 +190,7 @@ class Conn {
   }
 }
 
-export class Mesh extends EventTarget {
+export class Mesh extends Emitter {
   constructor(net) {
     super();
     this.net = net;
@@ -208,10 +210,7 @@ export class Mesh extends EventTarget {
     // учётки ещё и короткоживущие: список обновляют снаружи, а читается он в
     // момент создания соединения.
     this.iceServers = [];
-    net.addEventListener('signal', (e) => {
-      const { from, data } = e.detail;
-      this._ensure(from).onSignal(data);
-    });
+    net.on('signal', ({ from, data }) => this._ensure(from).onSignal(data));
 
     this.on('message', ({ id, msg }) => {
       if (msg?.ns !== 'media') return;
@@ -279,9 +278,6 @@ export class Mesh extends EventTarget {
   iceConfig() {
     return { iceServers: [STUN, ...this.iceServers], bundlePolicy: 'max-bundle' };
   }
-
-  emit(type, detail) { this.dispatchEvent(new CustomEvent(type, { detail })); }
-  on(type, fn) { this.addEventListener(type, (e) => fn(e.detail)); }
 
   _ensure(id) {
     let c = this.conns.get(id);
@@ -379,8 +375,13 @@ export class Mesh extends EventTarget {
    * важно прочитать буквы, а не увидеть плавную прокрутку. Поэтому приоритет
    * выбирает транслирующий, а `degradation` приезжает из его настроек.
    */
-  tune(sender, kind) {
-    if (kind === 'mic' || !sender?.track) return;
+  tune(sender) {
+    // Только видео. У демонстрации экрана дорожек две, и звуковая попадала
+    // сюда наравне с картинкой: ей ставили `contentHint: 'motion'`, потолок в
+    // восемь мегабит и частоту кадров — всё то, чего у звука не бывает. Движок
+    // на такой набор отвечает отказом от всего вызова разом, то есть заодно
+    // терялась и настройка самой картинки.
+    if (sender?.track?.kind !== 'video') return;
     try {
       // Подсказка кодировщику: в потоке движение, а не статичный документ.
       sender.track.contentHint = 'motion';
@@ -403,8 +404,8 @@ export class Mesh extends EventTarget {
   /** Перенастроить уже идущие трансляции — например, после смены качества. */
   retune() {
     for (const c of this.conns.values()) {
-      for (const [kind, senders] of c.senders) {
-        for (const sender of senders) this.tune(sender, kind);
+      for (const senders of c.senders.values()) {
+        for (const sender of senders) this.tune(sender);
       }
     }
   }
@@ -432,19 +433,22 @@ export class Mesh extends EventTarget {
   }
 
   /**
-   * Срез состояния соединений для панели диагностики: что с ICE и через что
-   * реально идёт трафик — напрямую (host/srflx) или через TURN (relay).
+   * Срез состояния соединений для панели диагностики: через что реально идёт
+   * трафик — напрямую (host/srflx/prflx) или через TURN (relay), — сколько до
+   * человека миллисекунд и что от него вообще приходит.
    */
   async diagnostics() {
     const out = [];
     for (const [id, c] of this.conns) {
+      const live = c.pc.getReceivers().filter((r) => r.track?.readyState === 'live');
       const row = {
         id,
         state: c.pc.connectionState,
-        ice: c.pc.iceConnectionState,
-        ctl: c.ctl?.readyState ?? '—',
-        path: '—',
-        tracks: c.pc.getReceivers().filter((r) => r.track?.readyState === 'live').length,
+        ctl: c.ctl?.readyState ?? '',
+        path: '',                 // host | srflx | prflx | relay
+        rtt: null,                // мс до участника по выбранной паре кандидатов
+        audio: live.filter((r) => r.track.kind === 'audio').length,
+        video: live.filter((r) => r.track.kind === 'video').length,
       };
       try {
         const stats = await c.pc.getStats();
@@ -454,7 +458,11 @@ export class Mesh extends EventTarget {
           if (s.type === 'local-candidate') local.set(s.id, s);
           if (s.type === 'candidate-pair' && s.state === 'succeeded' && s.nominated) pair = s;
         });
-        if (pair) row.path = local.get(pair.localCandidateId)?.candidateType ?? 'unknown';
+        if (pair) {
+          row.path = local.get(pair.localCandidateId)?.candidateType ?? '';
+          // Время туда-обратно приходит в секундах, а человеку понятны мс.
+          if (pair.currentRoundTripTime > 0) row.rtt = pair.currentRoundTripTime * 1000;
+        }
       } catch {}
       out.push(row);
     }

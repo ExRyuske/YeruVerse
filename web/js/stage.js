@@ -8,7 +8,7 @@ import { control, mesh, pointers, settings } from './core.js';
 import { hidden, isSelf, state, viewKey, viewKind, viewPeer } from './state.js';
 import { painter, render } from './render.js';
 import { icon } from './icons.js';
-import { $, showVideo, volumeSlider } from './ui.js';
+import { make, showVideo, ui, volumeSlider } from './ui.js';
 import { StreamPlayer } from './players.js';
 
 painter('stage', renderStage);
@@ -45,8 +45,8 @@ function renderStage() {
     showEmpty();
     return;
   }
-  $('#stage-empty').hidden = true;
-  state.player = new StreamPlayer($('#stage'), stream);
+  ui('#stage-empty').hidden = true;
+  state.player = new StreamPlayer(ui('#stage'), stream);
   applyStreamVolume();
 }
 
@@ -88,16 +88,21 @@ function streamName(key) {
 }
 
 function showEmpty() {
-  const el = $('#stage-empty');
+  const el = ui('#stage-empty');
   el.hidden = false;
-  el.innerHTML = state.shares.size
-    ? '<p class="muted">Вы транслируете — на своём экране это и так видно</p>'
-    : '<p class="muted">Пока смотреть нечего</p>';
+  el.replaceChildren(
+    make('p', {
+      class: 'muted',
+      text: state.shares.size
+        ? 'Вы транслируете — на своём экране это и так видно'
+        : 'Пока смотреть нечего',
+    })
+  );
 }
 
 /** Переключатели «что смотреть»: трансляции экранов участников. */
 function renderViews() {
-  const host = $('#views');
+  const host = ui('#views');
   const chips = [];
 
   for (const key of state.screens.keys()) {
@@ -114,18 +119,23 @@ function renderViews() {
   for (const el of [...host.children]) if (el !== vol) el.remove();
 
   for (const c of chips) {
-    const b = document.createElement('button');
-    b.className = 'ghost' + (c.id === state.view ? ' active' : '');
-    b.innerHTML = icon('screen');
-    const text = document.createElement('span');
-    text.textContent = c.label;
-    b.appendChild(text);
-    if (c.color && c.id !== state.view) b.style.color = c.color;
-    b.onclick = () => {
-      state.view = c.id;
-      render('views', 'stage');
-    };
-    host.insertBefore(b, vol);
+    const active = c.id === state.view;
+    const button = make(
+      'button',
+      {
+        class: `ghost${active ? ' active' : ''}`,
+        html: icon('screen'),
+        // Цвет ника — только у неактивных: у выбранной кнопки свой фон, и
+        // цветной текст на нём читается хуже обычного.
+        style: c.color && !active ? { color: c.color } : null,
+        onclick: () => {
+          state.view = c.id;
+          render('views', 'stage');
+        },
+      },
+      make('span', { text: c.label })
+    );
+    host.insertBefore(button, vol);
   }
   if (!state.view) vol?.remove();
   else if (vol) vol.sync();
@@ -224,7 +234,7 @@ const camTiles = new Map();   // ключ трансляции -> плитка
 let zoomed = null;
 
 function zoomCam(key, mirror) {
-  const box = showVideo(state.screens.get(key), $('#stage'), { mirror });
+  const box = showVideo(state.screens.get(key), ui('#stage'), { mirror });
   zoomed = box ? { key, box } : null;
 }
 
@@ -240,7 +250,7 @@ function closeZoom() {
  * своей же машине не бесплатен.
  */
 function renderCams() {
-  const host = $('#cams');
+  const host = ui('#cams');
   const live = [...state.screens.keys()].filter(
     (k) => viewKind(k) === 'cam' && !hidden.has(k)
   );
@@ -283,20 +293,18 @@ function renderCams() {
 }
 
 function newCamTile(key) {
-  const tile = document.createElement('div');
-  tile.className = 'cam-tile';
-
-  const video = document.createElement('video');
-  video.autoplay = true;
-  video.playsInline = true;
-  video.muted = true;      // звук камеры не захватывается, он идёт голосом
-  video.title = 'Развернуть на всё окно трансляции';
-  // Разворачиваем в пределах сцены, а не на весь экран: камера — часть
-  // разговора, и ради неё незачем убирать со стола всё остальное.
-  video.onclick = () => zoomCam(key, tile.classList.contains('mirror'));
+  const video = make('video', {
+    autoplay: true,
+    playsInline: true,
+    muted: true,      // звук камеры не захватывается, он идёт голосом
+    title: 'Развернуть на всё окно трансляции',
+    // Разворачиваем в пределах сцены, а не на весь экран: камера — часть
+    // разговора, и ради неё незачем убирать со стола всё остальное.
+    onclick: () => zoomCam(key, tile.classList.contains('mirror')),
+  });
 
   // Выключателя на самой плитке нет: тот же переключатель уже стоит возле
   // ника в списке участников, и две кнопки на одно действие только путают.
-  tile.append(video, document.createElement('span'));
+  const tile = make('div', { class: 'cam-tile' }, video, make('span'));
   return tile;
 }

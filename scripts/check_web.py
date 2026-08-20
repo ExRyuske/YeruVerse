@@ -45,7 +45,12 @@ DECL_RE = re.compile(
     r"|^\s+(?:async\s+|static\s+|get\s+|set\s+|\*)*([\w$]+)\s*\([^)]*\)\s*\{",
     re.MULTILINE,
 )
-CALL_RE = re.compile(r"(?<![\w.$'\"])([a-z_$][\w$]*)\s*\(")
+# Точка перед именем — это обращение к свойству: `obj.foo()` зовёт не `foo`.
+# Но три точки подряд — оператор расширения, и за ним стоит самое обычное имя:
+# `...list.map()` и `...make(...)`. Пока это различие не делалось, всё после
+# `...` было для проверки невидимо — вместе с ошибками в нём.
+NOT_MEMBER = r"(?:(?<![\w$.'\"])|(?<=\.\.\.))"
+CALL_RE = re.compile(NOT_MEMBER + r"([a-z_$][\w$]*)\s*\(")
 # Разбор по месту: `const { a, b } = ...`, `const [{ c }] = ...`.
 UNPACK_RE = re.compile(r"\b(?:const|let|var)\s*([\[{][^=;]*[\]}])\s*=")
 
@@ -134,7 +139,7 @@ def check():
             for asked, local in wanted:
                 if asked not in facts[target][0]:
                     problems.append(f"{name}: {target} не экспортирует {asked}")
-                elif not re.search(rf"(?<![\w.$]){re.escape(local)}(?![\w$])", body):
+                elif not re.search(NOT_MEMBER + rf"{re.escape(local)}(?![\w$])", body):
                     problems.append(f"{name}: импорт {local} не используется")
 
         for sel in sorted(selectors):

@@ -10,6 +10,20 @@ const SEND_MS = 40;        // 25 обновлений в секунду
 const STALE_MS = 4000;     // курсор без движения гаснет
 const NS = 'ptr';
 
+/**
+ * Цвет курсора, у которого своего цвета не нашлось: участник ещё не доехал до
+ * списка, а показывать он уже начал. То же число стоит в `sanitize_color` на
+ * сервере — это цвет ника по умолчанию, и курсор не должен от него отличаться.
+ */
+const PEER_COLOR = '#5b8cff';
+
+/** Стрелка курсора: свой контур, а не эмодзи — тот у каждой системы свой. */
+const CURSOR =
+  '<svg viewBox="0 0 12 18" width="14" height="20">' +
+  '<path d="M1 1l10 8-4.5.6L9 15l-2 .9-2.4-5.3L1 13z"/></svg><span></span>';
+
+import { make } from './ui.js';
+
 export class Pointers {
   constructor(mesh, stage) {
     this.mesh = mesh;
@@ -37,10 +51,8 @@ export class Pointers {
     this.seen = new Map();
     this._last = 0;
 
-    const layer = document.createElement('div');
-    layer.className = 'ptr-layer';
-    stage.appendChild(layer);
-    this.layer = layer;
+    this.layer = make('div', { class: 'ptr-layer' });
+    stage.appendChild(this.layer);
 
     // Слушаем на сцене: слой прозрачен для мыши, чтобы не мешать плееру.
     stage.addEventListener('pointermove', (e) => this._local(e, 'm'));
@@ -218,14 +230,11 @@ export class Pointers {
 
     let el = this.cursors.get(id);
     if (!el) {
-      el = document.createElement('div');
-      el.className = 'ptr';
-      el.innerHTML =
-        '<svg viewBox="0 0 12 18" width="14" height="20"><path d="M1 1l10 8-4.5.6L9 15l-2 .9-2.4-5.3L1 13z"/></svg><span></span>';
+      el = make('div', { class: 'ptr', html: CURSOR });
       this.layer.appendChild(el);
       this.cursors.set(id, el);
     }
-    el.style.setProperty('--ptr', peer?.color ?? '#5b8cff');
+    el.style.setProperty('--ptr', peer?.color ?? PEER_COLOR);
     el.querySelector('span').textContent = peer?.name ?? '';
     el.style.transform = `translate(${left}px, ${top}px)`;
   }
@@ -233,9 +242,8 @@ export class Pointers {
   /** Короткая пульсирующая метка в точке клика. */
   _ping(x, y, peer) {
     const f = this._frame();
-    const ping = document.createElement('div');
-    ping.className = 'ptr-ping';
-    ping.style.setProperty('--ptr', peer?.color ?? '#5b8cff');
+    const ping = make('div', { class: 'ptr-ping' });
+    ping.style.setProperty('--ptr', peer?.color ?? PEER_COLOR);
     ping.style.transform =
       `translate(${f.left - f.stage.left + x * f.width}px, ${f.top - f.stage.top + y * f.height}px)`;
     this.layer.appendChild(ping);

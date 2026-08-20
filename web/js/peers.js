@@ -3,8 +3,7 @@
 import { control, native, settings, voice } from './core.js';
 import { hidden, isSelf, state, viewKey } from './state.js';
 import { painter, render } from './render.js';
-import { icon } from './icons.js';
-import { $, volumeSlider } from './ui.js';
+import { make, markButton, ui, volumeSlider } from './ui.js';
 import { setHidden } from './stage.js';
 import { allowButton, canMoonlight, moonlightButton } from './sunshine.js';
 
@@ -18,7 +17,7 @@ painter('peers', renderPeers);
  * вошёл, ни кто выключил микрофон.
  */
 function renderPeers() {
-  const list = $('#peer-list');
+  const list = ui('#peer-list');
 
   for (const [id, li] of state.peerEls) {
     if (state.peers.has(id)) continue;
@@ -36,7 +35,7 @@ function renderPeers() {
     updatePeerRow(li, p);
   }
 
-  $('#peer-count').textContent = state.peers.size;
+  ui('#peer-count').textContent = state.peers.size;
   render('cams');        // на плитках подписаны ники — они могли смениться
   applySpeaking();
 }
@@ -48,13 +47,11 @@ function renderPeers() {
  * в строке сами по себе.
  */
 function newPeerRow() {
-  const li = document.createElement('li');
-  for (const cls of ['peer-name', 'peer-marks', 'peer-acts']) {
-    const part = document.createElement('span');
-    part.className = cls;
-    li.appendChild(part);
-  }
-  return li;
+  return make(
+    'li',
+    {},
+    ...['peer-name', 'peer-marks', 'peer-acts'].map((cls) => make('span', { class: cls }))
+  );
 }
 
 function updatePeerRow(li, p) {
@@ -86,19 +83,12 @@ function updatePeerRow(li, p) {
  * «все, кроме меня», — и заодно видно, каким тебя видят остальные.
  */
 function stateMarks(p) {
-  const marks = [];
-  for (const [show, glyph, title] of [
+  return [
     [!p.voice || p.muted, 'mic-off', p.voice ? 'Микрофон заглушён' : 'Микрофон выключен'],
     [p.deaf, 'speaker-off', 'Звук выключен — участников не слышно'],
-  ]) {
-    if (!show) continue;
-    const mark = document.createElement('span');
-    mark.className = 'mark off';
-    mark.innerHTML = icon(glyph);
-    mark.title = title;
-    marks.push(mark);
-  }
-  return marks;
+  ]
+    .filter(([show]) => show)
+    .map(([, glyph, title]) => markButton({ glyph, title, off: true }));
 }
 
 /**
@@ -106,27 +96,25 @@ function stateMarks(p) {
  * вовсе, чтобы не тратить ни канал, ни процессор.
  */
 function shareToggles(p, mine) {
-  const toggles = [];
-  for (const [on, glyph, kind] of [
+  return [
     [p.screen, 'screen', 'screen'],
     [p.camera, 'camera', 'cam'],
-  ]) {
-    if (!on) continue;
-    const key = viewKey(p.id, kind);
-    const off = hidden.has(key);
-    const tag = document.createElement('button');
-    tag.type = 'button';
-    tag.className = 'mark' + (off ? ' off' : '');
-    tag.innerHTML = icon(glyph);
-    tag.title = off
-      ? 'Выключено у вас — вернуть'
-      : mine
-        ? 'Убрать у себя из виду (остальные продолжат видеть)'
-        : 'Не получать эту трансляцию';
-    tag.onclick = () => setHidden(key, !off);
-    toggles.push(tag);
-  }
-  return toggles;
+  ]
+    .filter(([on]) => on)
+    .map(([, glyph, kind]) => {
+      const key = viewKey(p.id, kind);
+      const off = hidden.has(key);
+      return markButton({
+        glyph,
+        off,
+        title: off
+          ? 'Выключено у вас — вернуть'
+          : mine
+            ? 'Убрать у себя из виду (остальные продолжат видеть)'
+            : 'Не получать эту трансляцию',
+        onclick: () => setHidden(key, !off),
+      });
+    });
 }
 
 function peerActions(p, mine) {
@@ -140,10 +128,7 @@ function peerActions(p, mine) {
   if (canMoonlight(p.id)) actions.push(moonlightButton(p.id));
 
   if (state.paused && control.granted.has(p.id)) {
-    const tag = document.createElement('span');
-    tag.className = 'tag warn';
-    tag.textContent = 'на паузе';
-    actions.push(tag);
+    actions.push(make('span', { class: 'tag warn', text: 'на паузе' }));
   }
   return actions;
 }
@@ -163,4 +148,3 @@ export function applySpeaking() {
     li.classList.toggle('speaking', voice.speaking.has(isSelf(id) ? 'self' : id));
   }
 }
-

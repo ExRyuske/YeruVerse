@@ -2,6 +2,7 @@
 // сервер голос не слышит и не платит за него трафиком. Плюс индикатор того,
 // кто сейчас говорит.
 
+import { Emitter } from './events.js';
 import { playback, meter, canChooseOutput, setOutput } from './audio.js';
 import { Denoiser, SILENT_OUT, isModel, modelTitle, modelWeight } from './denoise.js';
 
@@ -18,7 +19,7 @@ const HOLD_MS = 400;       // сколько держим индикатор п�
 const SPEAK_ON = 0.012;
 const SPEAK_OFF = 0.006;
 
-export class Voice extends EventTarget {
+export class Voice extends Emitter {
   constructor(mesh, settings) {
     super();
     this.mesh = mesh;
@@ -34,7 +35,7 @@ export class Voice extends EventTarget {
     // может не подняться, и знать об этом полезнее, чем верить настройке.
     this.denoising = 'off';
 
-    settings.on(({ key }) => {
+    settings.on('change', ({ key }) => {
       if (key === 'voiceVolume' || key === 'peerVolume') this.applyVolumes();
       if (key === 'outputDevice') this.applySink();
       if (key === 'monitor') this._applyMonitor();
@@ -50,9 +51,6 @@ export class Voice extends EventTarget {
     // смотрят, показывать индикатор некому: не считаем и не будим процессор.
     setInterval(() => document.hidden || this._sample(), 120);
   }
-
-  emit(type, detail) { this.dispatchEvent(new CustomEvent(type, { detail })); }
-  on(type, fn) { this.addEventListener(type, (e) => fn(e.detail)); }
 
   /**
    * Захват микрофона, который не сдаётся с первой попытки.

@@ -1,6 +1,7 @@
 // Настройки пользователя: живут в localStorage и переживают перезаход в комнату.
 // Громкости отдельных участников не сохраняем — id выдаются заново на каждый вход.
 
+import { Emitter } from './events.js';
 import { isModel } from './denoise.js';
 
 const KEY = 'yeruverse:settings';
@@ -81,7 +82,7 @@ function migrate(values) {
   return values;
 }
 
-export class Settings extends EventTarget {
+export class Settings extends Emitter {
   constructor() {
     super();
     let saved = {};
@@ -111,7 +112,7 @@ export class Settings extends EventTarget {
     this.names.set(id, name);
     if (this.byName.has(name) && !this.peerVolume.has(id)) {
       this.peerVolume.set(id, this.byName.get(name));
-      this.dispatchEvent(new CustomEvent('change', { detail: { key: 'peerVolume', value: id } }));
+      this.emit('change', { key: 'peerVolume', value: id });
     }
   }
 
@@ -121,7 +122,7 @@ export class Settings extends EventTarget {
     if (this.values[k] === v) return;
     this.values[k] = v;
     this._save();
-    this.dispatchEvent(new CustomEvent('change', { detail: { key: k, value: v } }));
+    this.emit('change', { key: k, value: v });
   }
 
   setPeerVolume(id, v) {
@@ -132,7 +133,7 @@ export class Settings extends EventTarget {
       this.values.peerVolumeByName = Object.fromEntries(this.byName);
       this._save();
     }
-    this.dispatchEvent(new CustomEvent('change', { detail: { key: 'peerVolume', value: id } }));
+    this.emit('change', { key: 'peerVolume', value: id });
   }
 
   peerVolumeOf(id) { return this.peerVolume.get(id) ?? 1; }
@@ -166,8 +167,6 @@ export class Settings extends EventTarget {
   }
 
   roomName(code) { return this.rooms.find((r) => r.code === code)?.name ?? ''; }
-
-  on(fn) { this.addEventListener('change', (e) => fn(e.detail)); }
 
   /**
    * Ограничения захвата микрофона — и только его.

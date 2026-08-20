@@ -14,7 +14,7 @@ import { Pointers } from './pointers.js';
 import { Hotkeys } from './hotkeys.js';
 import { RemoteControl } from './control.js';
 import { native } from './native.js';
-import { $ } from './ui.js';
+import { ui } from './ui.js';
 
 export const settings = new Settings();
 export const net = new Net();
@@ -23,7 +23,7 @@ export const swarm = new Swarm(mesh);
 export const voice = new Voice(mesh, settings);
 export const hotkeys = new Hotkeys(settings);
 export const control = new RemoteControl(mesh, native);
-export const pointers = new Pointers(mesh, $('#stage'));
+export const pointers = new Pointers(mesh, ui('#stage'));
 
 export { native };
 
@@ -33,4 +33,19 @@ export { native };
  */
 export function serverBase() {
   return location.origin;
+}
+
+/**
+ * Спросить у сервера маленький JSON: список ICE-серверов, номер версии,
+ * видно ли нас снаружи.
+ *
+ * Все три запроса выглядели одинаково и все три разбирались по отдельности:
+ * `fetch` от `serverBase()`, `no-store`, разбор и молчаливый пустой объект в
+ * ответ на любую беду. Молчание здесь намеренное: ни один из этих ответов не
+ * обязателен, а комната должна открываться и без них.
+ */
+export function askServer(path) {
+  return fetch(new URL(path, serverBase()), { cache: 'no-store' })
+    .then((r) => (r.ok ? r.json() : {}))
+    .catch(() => ({}));
 }

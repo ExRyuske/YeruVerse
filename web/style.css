@@ -6,6 +6,10 @@
   --accent: #5b8cff;
   --accent-text: #fff;
   --border: color-mix(in srgb, var(--text) 14%, transparent);
+  /* Три состояния на всё приложение: работает, внимание, не работает. */
+  --ok: #3ecf8e;
+  --warn: #f0a020;
+  --bad: #ff6b6b;
   --r-sm: 8px;         /* мелкие метки и значки */
   --radius: 12px;      /* кнопки, поля, карточки внутри панелей */
   --r-lg: 16px;        /* большие панели: карточка входа, окно настроек */
@@ -153,9 +157,9 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 }
 .room-code:hover { border: none; }
 .room-code.revealed { filter: none; user-select: all; }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: #f0a020; flex: none; }
-.dot.on { background: #3ecf8e; }
-.dot.off { background: #ff6b6b; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); flex: none; }
+.dot.on { background: var(--ok); }
+.dot.off { background: var(--bad); }
 
 .layout { flex: 1; display: flex; min-height: 0; }
 
@@ -225,7 +229,13 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
   background: #000; border-radius: var(--radius); overflow: hidden;
   display: flex; align-items: center; justify-content: center;
 }
-.stage video { width: 100%; height: 100%; display: block; border: 0; background: #000; }
+/* `contain`, а не растяжение: кадр приходит в своей пропорции, и она не наша,
+   чтобы её менять. Тем же прямоугольником меряет `pointers.js`, когда считает,
+   куда показывают чужие курсоры, — без этого правила метки уезжали. */
+.stage video {
+  width: 100%; height: 100%; display: block; border: 0;
+  background: #000; object-fit: contain;
+}
 /* Камеры видны всегда, независимо от того, чей экран на сцене: разговор в
    лицо — не то, что стоит прятать за переключателем. */
 /* Выше увеличенной камеры (`.lightbox.inside`, z-index 7): увеличили одну —
@@ -255,8 +265,6 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
 }
 @media (max-width: 860px) {
   .cam-tile { width: 108px; }
-  /* Полоса ниже — и место под неё нужно меньше. */
-  .lightbox.inside { padding-bottom: 96px; }
 }
 
 .stage-empty { text-align: center; padding: 20px; }
@@ -290,7 +298,15 @@ input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-of
   display: flex; flex-direction: column; gap: 10px;
   padding: 12px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
+  /* Раскрывается панель вверх, а места вверху может не оказаться: высоту ей
+     ставит `layout.js` по тому, сколько его есть, и лишнее уезжает в прокрутку
+     внутри самой панели, а не за верхний край экрана. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
+/* Списки и поля не должны сжиматься, когда панель упёрлась в потолок: сжимался
+   первым как раз выбор устройства, ради которого её и открывали. */
+.pop > * { flex: none; }
 .pop .field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
 .pop p { margin: 0; }
 
@@ -319,6 +335,16 @@ body.resizing { cursor: col-resize; user-select: none; }
    личным цветом ника и перебивать его нельзя. */
 .peers li { padding: 2px 6px; margin: 0 -6px; border-radius: var(--r-sm); }
 .peers li.speaking { background: color-mix(in srgb, #3ecf8e 18%, transparent); }
+/* Высота строки — по значку, а не по тому, есть ли он сейчас.
+   Значки приходят и уходят по ходу разговора: включил камеру — появился
+   выключатель, заглушил микрофон — появилась метка. Значок выше строки текста,
+   и каждое такое событие подбрасывало не только свою строку, но и весь список
+   под ней. Держим высоту постоянной: 24 точки значка плюс отступы строки. */
+.peers li { min-height: 28px; }
+/* Имя ужимается первым и обрывается многоточием. Иначе длинный ник растягивал
+   строку и выталкивал значки за край — вместе с горизонтальной прокруткой
+   всего списка. */
+.peer-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Всё, что стоит в строке участника, — один значок одного размера: и метка
    состояния, и выключатель трансляции, и замок, и громкость. Разные рамки и
    размеры превращали строку в набор случайных элементов.
@@ -399,8 +425,47 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
 .hotkeys .combo.recording { border-color: var(--accent); color: var(--accent); }
 .hotkeys .clear { padding: 6px 8px; }
 
-.diag { font-size: 12px; line-height: 1.7; white-space: pre-wrap; }
-.diag b { font-weight: 600; }
+/* Диагностика: строка = вопрос и ответ словами, а цвет точки говорит, надо ли
+   на неё вообще смотреть. */
+.diag { display: flex; flex-direction: column; gap: 14px; font-size: 13px; }
+.diag h4 {
+  margin: 0 0 6px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+}
+/* Три колонки, а не ряд с переносом.
+   Значения тут бывают длинные — «нет — за строгим NAT участник не соединится»,
+   адрес Sunshine со всеми оговорками, — и в одну строку не помещаются. Пока
+   строка была рядом с переносом, вторая половина значения падала под точку и
+   название, к левому краю: получалась не строка «вопрос — ответ», а рваный
+   текст, в котором не видно, где кончается один ответ и начинается другой.
+   В сетке продолжение остаётся в своей колонке, под началом ответа. */
+.diag-row {
+  display: grid; grid-template-columns: auto 92px minmax(0, 1fr);
+  align-items: baseline; gap: 2px 8px; padding: 2px 0;
+}
+.diag-row .dot { align-self: center; }
+/* Ник участника — тоже название строки, и он бывает длиннее колонки: переносим
+   его внутри неё, а не раздвигаем колонку, иначе ответы перестанут стоять на
+   одной вертикали. */
+.diag-row .k { color: var(--muted); overflow-wrap: anywhere; }
+.diag-row .v { overflow-wrap: anywhere; }
+.diag-row.warn .v { color: var(--warn); }
+.diag-row.bad .v { color: var(--bad); }
+/* Совсем узкий экран: колонка под названия съедает у ответа больше, чем стоит
+   сама. Ставим название над ответом, оба — с отступом от точки. */
+@media (max-width: 420px) {
+  .diag-row { grid-template-columns: auto minmax(0, 1fr); }
+  .diag-row .k, .diag-row .v { grid-column: 2; }
+}
+
+/* Вывод целиком — над разделами и покрупнее: когда всё в порядке, ниже читать
+   нечего. */
+.diag-verdict { font-size: 14px; padding: 0 0 2px; }
+/* У вывода названия нет — он и есть название. Место под него отдаём тексту:
+   сам элемент при этом остаётся в сетке пустым, иначе вывод встал бы в колонку
+   названий и не совпал бы ни с одной строкой ниже. */
+.diag-verdict .k { display: none; }
+.diag-verdict .v { grid-column: 2 / -1; }
 
 .chat { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .chat-log .at { color: var(--muted); font-size: 11px; margin-right: 6px; font-variant-numeric: tabular-nums; }
@@ -415,6 +480,9 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
 .chat-log > * { max-width: 100%; }
 .chat-log .who { color: var(--accent); font-weight: 600; margin-right: 5px; }
 .chat-log .sys { color: var(--muted); font-size: 13px; font-style: italic; }
+/* Час набран прямым: он такой же, как в остальных строках, и наклон делал бы
+   из него часть фразы. */
+.chat-log .sys .at { font-style: normal; }
 /* Поле и кнопки — один ряд: одна высота, одно скругление, один размер
    квадрата. Кнопки, тянувшиеся по высоте поля, выходили то выше, то ниже него
    и выглядели случайно составленными. */
@@ -458,16 +526,24 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
   background: rgba(0, 0, 0, .88);
 }
 /* Камера разворачивается в границах сцены, а не поверх всего окна: рядом
-   остаются и чат, и участники. Снизу оставляем место под полосу камер — она
-   лежит поверх, и без отступа увеличенное лицо уходило бы под соседние
-   плитки. Высота полосы — плитка 160px в пропорции 4:3 плюс её отступ. */
+   остаются и чат, и участники.
+
+   И занимает сцену целиком — ровно как трансляция. Раньше снизу оставлялось
+   место под полосу камер, и увеличенное лицо висело в верхней части чёрного
+   поля, не совпадая ни с чем вокруг: трансляция на той же сцене выглядела
+   иначе. Полоса камер лежит поверх (z-index 8) и накрывает угол — так же, как
+   она накрывает угол трансляции, и переключиться с неё по-прежнему можно. */
 .lightbox.inside {
-  position: absolute; z-index: 7; background: rgba(0, 0, 0, .92);
-  padding: 8px 8px 136px;
+  position: absolute; inset: 0; z-index: 7; padding: 0; background: #000;
 }
 .lightbox img, .lightbox video {
   max-width: 100%; max-height: 100%; width: auto; height: auto;
   object-fit: contain; border-radius: var(--r-sm);
+}
+/* Внутри сцены — тем же прямоугольником и без своих скруглений: сцена уже
+   скруглена и обрезает по себе. */
+.lightbox.inside video {
+  width: 100%; height: 100%; max-width: none; max-height: none; border-radius: 0;
 }
 .attach .meta { min-width: 0; flex: 1; }
 .attach .name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -560,8 +636,19 @@ body.fullscreen .stage { border-radius: 0; aspect-ratio: auto; flex: 1; }
 /* Самый низ экрана в полноэкранном режиме принадлежит не нам: там панель задач
    Windows, док macOS и полоса навигации Android — все они вылезают поверх
    полноэкранного окна, стоит подвести туда курсор или палец. Кнопка, прижатая к
-   краю, перехватывала это нажатие себе. Поэтому ряд поднят, а край свободен. */
-body.fullscreen { --edge: calc(env(safe-area-inset-bottom, 0px) + 44px); }
+   краю, перехватывала это нажатие себе. Поэтому край остаётся свободным.
+
+   Сколько именно занято, говорит сама система: `env(safe-area-inset-bottom)`
+   и есть полоса навигации Android, домашняя черта iPhone или ничего на
+   настольной машине (в разметке стоит `viewport-fit=cover`, без него система
+   молчала бы).
+
+   Берём большее из двух, а не сумму. Нужно одно: чтобы под кнопками не
+   оказалось чужого. Там, где система заняла край, её полосы и достаточно;
+   там, где не заняла, хватает десяти точек запаса от промаха. Складывать их
+   не за что — от сложения ряд на телефоне в горизонтали, где нижнего края и
+   так почти нет, отрывался от края и повисал посреди кадра. */
+body.fullscreen { --edge: max(env(safe-area-inset-bottom, 0px), 10px); }
 
 /* Управление — одной полосой у нижнего края: сверху оно закрывало бы то, на
    что смотрят, а двумя полосами закрывало бы вдвое больше. Переключатели
@@ -580,13 +667,35 @@ body.fullscreen .views {
 }
 body.fullscreen .views::-webkit-scrollbar { display: none; }
 /* Камеры поднимаются над полосой, чтобы не спорить с ней за нижний угол.
-   Вместе с ними поднимается и место, оставленное под них увеличенной камерой. */
-body.fullscreen .cams { bottom: calc(var(--edge) + 60px); }
-body.fullscreen .lightbox.inside { padding-bottom: calc(var(--edge) + 188px); }
+   Высота полосы приезжает замером из `layout.js`: она бывает в одну строку и в
+   две — переключатели трансляций встают отдельной строкой, когда есть что
+   переключать. Пока здесь стояло число, на телефоне кнопки лежали поверх
+   плитки камеры: числа хватало на полосу в одну строку. */
+body.fullscreen .cams { bottom: calc(var(--edge) + var(--bar, 56px) + 8px); }
 /* Мышь стоит — полоса гаснет: наведение на неподвижный курсор не заканчивается
    никогда, и она закрывала бы кадр всё время. Сам курсор при этом не прячем:
    пропавшая мышь читается как «всё зависло». */
 body.fullscreen.idle .sources { opacity: 0; pointer-events: none; }
+
+/* Нажатия ловят сами кнопки, а не полоса под ними.
+   Полоса тянется во всю ширину экрана, а кнопок в ней от силы треть — и всё
+   остальное её пространство забирало себе то, что метило в кадр. При удалённом
+   управлении внизу чужого экрана получалась мёртвая зона высотой в полторы
+   сотни точек: курсор туда доходит, а нажатие — нет.
+   Прозрачны для нажатий именно ряды, а не только внешняя коробка: `.src-row` на
+   телефоне растянут во всю ширину и ловил бы всё, что между кнопками. */
+body.fullscreen .sources,
+body.fullscreen .src-row,
+body.fullscreen .views { pointer-events: none; }
+body.fullscreen .src-row > *,
+body.fullscreen .views > *,
+body.fullscreen .pop { pointer-events: auto; }
+
+/* Плитки камер остаются, когда полоса гаснет. Гаснут кнопки — то, чем сейчас
+   не пользуются; лицо собеседника не кнопка, а вторая половина разговора, и
+   пропадать оно от неподвижной мыши не должно. Раньше уходило вместе с
+   полосой, и стоило замереть на минуту, как участник исчезал с экрана без
+   всякого повода. */
 
 @media (max-width: 860px) {
   .layout { flex-direction: column; }
@@ -649,9 +758,17 @@ body.fullscreen.idle .sources { opacity: 0; pointer-events: none; }
   .views::-webkit-scrollbar { display: none; }
   .views button { flex: none; }
 
-  /* Всплывающая настройка занимает ширину экрана: 260 пикселей от кнопки у
-     правого края уезжали за границу. */
-  .pop { left: 0; right: 0; min-width: 0; max-width: none; }
+  /* Всплывающая настройка на телефоне — панель у нижнего края экрана, а не
+     облачко над кнопкой. Места над кнопками там ровно столько, сколько
+     осталось от сцены: на экране 360×640 под настройки микрофона оставалось
+     сто семьдесят точек из нужных трёхсот пятидесяти, и панель приходилось
+     прокручивать по три строчки за раз. Отсчёт от края окна даёт втрое больше
+     и не зависит от того, что творится со сценой. */
+  .pop {
+    position: fixed; top: auto;
+    left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom));
+    min-width: 0; max-width: none; max-height: 70vh;
+  }
 
   /* В полном экране на телефоне ряд кнопок в одну строку с переключателями
      трансляций не помещается, и за краем экрана оказывалась последняя кнопка
@@ -660,9 +777,6 @@ body.fullscreen.idle .sources { opacity: 0; pointer-events: none; }
   body.fullscreen .sources { flex-wrap: wrap; }
   body.fullscreen .views { flex: 1 1 100%; order: -1; }
   body.fullscreen .src-row { flex: 1 1 100%; justify-content: space-between; }
-  /* Кнопки под пальцем выше, значит и полоса выше — камерам надо подняться. */
-  body.fullscreen .cams { bottom: calc(var(--edge) + 84px); }
-  body.fullscreen .lightbox.inside { padding-bottom: calc(var(--edge) + 172px); }
 
   .modal { padding: 0; align-items: stretch; }
   .modal-card {

@@ -3,11 +3,12 @@
 
 import { hotkeys, mesh, native, net, settings, voice } from './core.js';
 import { state } from './state.js';
+import { reason } from './errors.js';
 import { icon } from './icons.js';
 import { PRESETS, HEIGHTS } from './settings.js';
 import { ACTIONS, label as hotkeyLabel } from './hotkeys.js';
 import { modelTitle } from './denoise.js';
-import { $, toast, ui } from './ui.js';
+import { make, toast, ui } from './ui.js';
 import { hiddenLabels } from './stage.js';
 import { pollSunshine, sunshineHint } from './sunshine.js';
 import { enableMic } from './devices.js';
@@ -22,9 +23,12 @@ import { enableMic } from './devices.js';
  */
 const hasKeyboard = () => matchMedia('(any-pointer: fine)').matches;
 
+// Заглавных букв здесь больше нет: раньше диагностика была одноцветной
+// простынёй, и кричать было единственным способом отметить беду. Теперь у
+// строки есть цвет, и крик только мешает читать.
 const DENOISE = {
   browser: 'средствами движка',
-  off: 'НЕТ — ни модель, ни движок не взялись',
+  off: 'нет — ни модель, ни движок не взялись',
 };
 
 /** Что подавляет шум прямо сейчас: модель — по имени, остальное — словами. */
@@ -46,6 +50,9 @@ function wireSettings() {
   ui('#btn-settings').onclick = () => {
     modal.hidden = false;
     refreshDevices();
+    // Смотреть на «—» первую секунду незачем: диагностику рисуем сразу.
+    painted = '';
+    renderDiagnostics();
     if (hasKeyboard()) renderHotkeys();
   };
   ui('#btn-settings-close').onclick = () => {
@@ -110,22 +117,16 @@ function wireStream() {
   priority.value = settings.get('streamPriority');
   priority.onchange = () => settings.set('streamPriority', priority.value);
 
-  preset.innerHTML = '';
-  for (const [id, p] of Object.entries(PRESETS)) {
-    preset.append(new Option(p.title, id));
-  }
-  height.innerHTML = '';
-  for (const h of HEIGHTS) {
-    height.append(new Option(`${h}p`, String(h)));
-  }
+  preset.replaceChildren(...Object.entries(PRESETS).map(([id, p]) => new Option(p.title, id)));
+  height.replaceChildren(...HEIGHTS.map((h) => new Option(`${h}p`, String(h))));
 
   const show = () => {
     preset.value = settings.get('quality');
     height.value = String(settings.get('streamHeight'));
-    $('#set-fps').value = settings.get('streamFps');
-    $('#set-bitrate').value = settings.get('streamBitrate');
-    $('#out-fps').textContent = `${settings.get('streamFps')} к/с`;
-    $('#out-bitrate').textContent = `${settings.get('streamBitrate')} Мбит/с`;
+    ui('#set-fps').value = settings.get('streamFps');
+    ui('#set-bitrate').value = settings.get('streamBitrate');
+    ui('#out-fps').textContent = `${settings.get('streamFps')} к/с`;
+    ui('#out-bitrate').textContent = `${settings.get('streamBitrate')} Мбит/с`;
   };
 
   preset.onchange = () => {
@@ -145,13 +146,13 @@ function wireStream() {
     custom();
     show();
   };
-  $('#set-fps').oninput = () => {
-    settings.set('streamFps', Number($('#set-fps').value));
+  ui('#set-fps').oninput = () => {
+    settings.set('streamFps', Number(ui('#set-fps').value));
     custom();
     show();
   };
-  $('#set-bitrate').oninput = () => {
-    settings.set('streamBitrate', Number($('#set-bitrate').value));
+  ui('#set-bitrate').oninput = () => {
+    settings.set('streamBitrate', Number(ui('#set-bitrate').value));
     custom();
     show();
   };
@@ -161,8 +162,8 @@ function wireStream() {
 
 /** Ползунок «в процентах»: в настройках доля, на экране целые проценты. */
 function bindRange(sel, outSel, key) {
-  const el = $(sel);
-  const out = $(outSel);
+  const el = ui(sel);
+  const out = ui(outSel);
   const show = () => (out.textContent = `${Math.round(settings.get(key) * 100)}%`);
   el.value = Math.round(settings.get(key) * 100);
   show();
@@ -173,7 +174,7 @@ function bindRange(sel, outSel, key) {
 }
 
 function bindCheck(sel, key) {
-  const el = $(sel);
+  const el = ui(sel);
   el.checked = settings.get(key);
   el.onchange = () => settings.set(key, el.checked);
 }
@@ -188,18 +189,18 @@ function wireSunshine() {
   // Sunshine бывает только на настольной системе — на телефоне этот раздел
   // спрашивал бы пароль от того, чего там нет.
   if (!native.caps.remoteControl) return;
-  $('#sunshine-section').hidden = false;
-  $('#sunshine-reach').textContent = sunshineHint();
-  $('#btn-sun-save').onclick = async () => {
+  ui('#sunshine-section').hidden = false;
+  ui('#sunshine-reach').textContent = sunshineHint();
+  ui('#btn-sun-save').onclick = async () => {
     try {
-      await native.sunshineCreds($('#set-sun-user').value.trim(), $('#set-sun-pass').value);
-      $('#set-sun-pass').value = '';
+      await native.sunshineCreds(ui('#set-sun-user').value.trim(), ui('#set-sun-pass').value);
+      ui('#set-sun-pass').value = '';
       // Спрашиваем мост сразу: зрители должны узнать о новом порядке сопряжения
       // сейчас, а не через полминуты, когда подойдёт очередной опрос.
       await pollSunshine();
       toast('Сохранено: сопряжение с Moonlight теперь пройдёт без ручного PIN');
     } catch (e) {
-      toast(`Не вышло: ${e.message ?? e}`);
+      toast(`Не вышло: ${reason(e)}`);
     }
   };
 }
@@ -237,95 +238,230 @@ export function wireHotkeys() {
 
 /** Список сочетаний в настройках: нажал «изменить» — нажал клавиши. */
 function renderHotkeys() {
-  const host = $('#hotkeys');
-  host.innerHTML = '';
+  ui('#hotkeys').replaceChildren(...ACTIONS.map(hotkeyRow));
+}
 
-  for (const action of ACTIONS) {
-    const row = document.createElement('div');
-    row.className = 'row';
-
-    const title = document.createElement('span');
-    title.textContent = action.title;
-
-    const combo = document.createElement('button');
-    combo.type = 'button';
-    combo.className = 'combo';
-    combo.textContent = hotkeyLabel(hotkeys.get(action.id));
-
-    const clear = document.createElement('button');
-    clear.type = 'button';
-    clear.className = 'clear ghost';
-    clear.innerHTML = icon('close');
-    clear.title = 'Вернуть сочетание по умолчанию';
-    clear.onclick = () => {
-      hotkeys.reset(action.id);
-      renderHotkeys();
-    };
-
-    combo.onclick = async () => {
+function hotkeyRow(action) {
+  const combo = make('button', {
+    class: 'combo',
+    text: hotkeyLabel(hotkeys.get(action.id)),
+    onclick: async () => {
       combo.classList.add('recording');
       combo.textContent = 'нажмите клавиши…';
       const next = await hotkeys.record();
       combo.classList.remove('recording');
       if (next) hotkeys.set(action.id, next);
       renderHotkeys();
-    };
+    },
+  });
 
-    row.append(title, combo, clear);
-    host.appendChild(row);
-  }
-}
-
-/** Что видно про соединения — первое, куда смотреть, когда «не слышно». */
-async function renderDiagnostics() {
-  const lines = [
-    `сервер:     ${net.connected ? 'на связи' : 'нет связи'}  ${net.base}`,
-    // «Защищённый контекст» — это термин браузера, и в строке диагностики он
-    // спрашивает больше, чем отвечает. Пишем то, ради чего строка здесь стоит.
-    `устройства: ${
-      window.isSecureContext
-        ? 'доступны — страница по https'
-        : 'НЕДОСТУПНЫ — без https браузер не даёт ни микрофон, ни камеру'
-    }`,
-    `приложение: ${describeNative()}`,
-    `задержка:   ${Number.isFinite(net.rtt) ? Math.round(net.rtt) + ' мс' : '—'}`,
-    `TURN:       ${state.config.turn ? 'есть' : 'НЕТ — часть зрителей не соединится'}`,
-    `Sunshine:   ${sunshineLine()}`,
-    `выключено:  ${hiddenLabels().join(', ') || 'ничего'}`,
-    `микрофон:   ${voice.enabled ? (voice.muted ? 'включён, заглушён' : 'в эфире') : 'выключен'}`,
-    // Что подавляет шум на самом деле: выбор в настройках и то, что получилось,
-    // расходятся ровно там, где это важнее всего заметить.
-    `шумодав:    ${denoiseTitle(voice.denoising)}`,
-    `слышим:     ${voice.remotes.size} из ${Math.max(0, state.peers.size - 1)}`,
-    '',
-  ];
-
-  const rows = await mesh.diagnostics();
-  if (!rows.length) lines.push('соединений с участниками нет');
-  for (const r of rows) {
-    const name = state.peers.get(r.id)?.name ?? r.id.slice(0, 6);
-    lines.push(`${name}: ${r.state}/${r.ice} · канал ${r.ctl} · путь ${r.path} · дорожек ${r.tracks}`);
-  }
-  $('#diag').textContent = lines.join('\n');
+  return make(
+    'div',
+    { class: 'row' },
+    make('span', { text: action.title }),
+    combo,
+    make('button', {
+      class: 'clear ghost',
+      html: icon('close'),
+      title: 'Вернуть сочетание по умолчанию',
+      onclick: () => {
+        hotkeys.reset(action.id);
+        renderHotkeys();
+      },
+    })
+  );
 }
 
 /**
- * Состояние Sunshine одной строкой. Раньше здесь был только адрес, и по нему не
- * отличить «не запущен» от «запущен, но PIN придётся вводить руками» — а это
- * ровно те два случая, из-за которых подключение через Moonlight и не выходит.
+ * Диагностика.
+ *
+ * Сюда приходят с одним вопросом: «почему меня не слышно» — и раньше в ответ
+ * получали простыню из `connected/connected · канал open · путь srflx`. Это
+ * состояние соединения на языке WebRTC, а не ответ; чтобы им воспользоваться,
+ * надо было заранее знать, что `relay` — это TURN, а `srflx` — это хорошо.
+ *
+ * Теперь каждая строка отвечает словами и несёт цвет: зелёный — работает,
+ * жёлтый — работает не так, красный — не работает. Наверху вывод целиком,
+ * чтобы не читать все строки, когда всё в порядке.
  */
-function sunshineLine() {
-  if (!native.caps.remoteControl) return 'только в настольной версии';
-  if (!state.sunshine) return 'не запущен';
-  const seen = state.sunshineOpen ? 'виден из интернета' : 'только в своей сети';
-  const pin = state.sunshineCanPair ? 'PIN подтверждаем сами' : 'PIN вводить вручную';
-  return `${state.sunshine} · ${seen} · ${pin}`;
+const OK = 'ok';
+const WARN = 'warn';
+const BAD = 'bad';
+
+const row = (status, name, value) => ({ status, name, value });
+
+/** Тип кандидата — словами. Человеку важно одно: напрямую или через сервер. */
+const PATHS = {
+  host: 'напрямую',
+  srflx: 'напрямую',
+  prflx: 'напрямую',
+  relay: 'через TURN',
+};
+
+/** Состояние соединения — тоже словами, и сразу с оценкой. */
+const LINKS = {
+  new: [WARN, 'соединяемся'],
+  connecting: [WARN, 'соединяемся'],
+  connected: [OK, ''],
+  disconnected: [WARN, 'связь пропала, восстанавливаем'],
+  failed: [BAD, 'связи нет'],
+  closed: [BAD, 'соединение закрыто'],
+};
+
+let painted = '';
+
+async function renderDiagnostics() {
+  const groups = [
+    { title: 'Связь', rows: linkRows() },
+    { title: 'Звук', rows: soundRows() },
+    { title: 'Участники', rows: await peerRows() },
+  ];
+
+  // Панель перерисовывается раз в секунду, а меняется в ней редко: лишняя
+  // перерисовка сбивает выделение текста, который как раз собирались скопировать.
+  const shot = JSON.stringify(groups);
+  if (shot === painted) return;
+  painted = shot;
+  paintDiagnostics(groups);
 }
 
-function describeNative() {
-  if (!native.available) return 'нет, обычный браузер';
-  if (native.error) return `мост не отвечает: ${native.error}`;
-  return native.caps.platform;
+function linkRows() {
+  const rows = [];
+
+  rows.push(
+    net.connected
+      ? row(OK, 'Сервер', `на связи${Number.isFinite(net.rtt) ? ` · ${Math.round(net.rtt)} мс` : ''}`)
+      : row(BAD, 'Сервер', 'связи нет — переподключаемся')
+  );
+
+  rows.push(
+    state.config.turn
+      ? row(OK, 'TURN', 'есть — соединятся все')
+      : row(WARN, 'TURN', 'нет — за строгим NAT участник не соединится')
+  );
+
+  // «Защищённый контекст» — это термин браузера, и в строке диагностики он
+  // спрашивает больше, чем отвечает. Пишем то, ради чего строка здесь стоит.
+  rows.push(
+    window.isSecureContext
+      ? row(OK, 'Устройства', 'доступны — страница по https')
+      : row(BAD, 'Устройства', 'без https браузер не даёт ни микрофон, ни камеру')
+  );
+
+  if (!native.available) rows.push(row(OK, 'Оболочка', 'обычный браузер'));
+  else if (native.error) rows.push(row(BAD, 'Оболочка', `мост не отвечает: ${native.error}`));
+  else rows.push(row(OK, 'Оболочка', `приложение — ${native.caps.platform}`));
+
+  // Sunshine бывает только в настольной версии; в браузере эта строка была бы
+  // про то, чего здесь нет и быть не может.
+  if (native.caps.remoteControl) rows.push(sunshineRow());
+  return rows;
+}
+
+/**
+ * Состояние Sunshine. Важны два разных «не выйдет»: не запущен вовсе — и
+ * запущен, но PIN придётся вводить руками. Из-за них подключение через
+ * Moonlight и не получается.
+ */
+function sunshineRow() {
+  if (!state.sunshine) return row(WARN, 'Sunshine', 'не запущен — управлять этим компьютером нельзя');
+  const seen = state.sunshineOpen ? 'виден из интернета' : 'только в своей сети';
+  const pin = state.sunshineCanPair ? 'PIN подтвердим сами' : 'PIN вводить вручную';
+  return row(OK, 'Sunshine', `${state.sunshine} · ${seen} · ${pin}`);
+}
+
+function soundRows() {
+  const rows = [];
+
+  rows.push(
+    !voice.enabled
+      ? row(WARN, 'Микрофон', 'выключен — вас не слышно')
+      : voice.muted
+        ? row(WARN, 'Микрофон', 'включён, но заглушён — вас не слышно')
+        : row(OK, 'Микрофон', 'в эфире')
+  );
+
+  // Что подавляет шум на самом деле: выбор в настройках и то, что получилось,
+  // расходятся ровно там, где это важнее всего заметить. При выключенном
+  // микрофоне строки нет вовсе — она отвечала бы про тракт, которого сейчас
+  // не существует.
+  if (voice.enabled) {
+    rows.push(
+      voice.denoising === 'off'
+        ? row(WARN, 'Шумодав', denoiseTitle('off'))
+        : row(OK, 'Шумодав', denoiseTitle(voice.denoising))
+    );
+  }
+
+  const others = Math.max(0, state.peers.size - 1);
+  if (!others) rows.push(row(OK, 'Слышим', 'в комнате пока вы один'));
+  else {
+    const heard = voice.remotes.size;
+    rows.push(row(heard === others ? OK : WARN, 'Слышим', `${heard} из ${others}`));
+  }
+
+  if (voice.deafened) rows.push(row(WARN, 'Звук', 'выключен вами — участников не слышно'));
+
+  const off = hiddenLabels();
+  if (off.length) rows.push(row(WARN, 'Выключено', off.join(', ')));
+  return rows;
+}
+
+async function peerRows() {
+  const links = await mesh.diagnostics();
+  if (!links.length) {
+    return state.peers.size > 1
+      ? [row(BAD, 'Соединений', 'нет ни одного, хотя участники в комнате есть')]
+      : [row(OK, 'Никого', 'кроме вас в комнате пока никого')];
+  }
+
+  return links.map((link) => {
+    const [status, note] = LINKS[link.state] ?? [WARN, link.state];
+    const bits = [];
+    if (note) bits.push(note);
+    if (link.path) bits.push(PATHS[link.path] ?? link.path);
+    if (Number.isFinite(link.rtt)) bits.push(`${Math.round(link.rtt)} мс`);
+    const media = [link.audio && 'звук', link.video && 'видео'].filter(Boolean).join(' и ');
+    bits.push(media || 'пока ничего не передаёт');
+    if (link.ctl !== 'open') bits.push('канал чата закрыт');
+    return row(status, state.peers.get(link.id)?.name ?? 'Участник', bits.join(' · '));
+  });
+}
+
+/** Общий вывод: когда всё в порядке, читать остальное незачем. */
+function verdict(groups) {
+  const all = groups.flatMap((g) => g.rows);
+  if (all.some((r) => r.status === BAD)) return row(BAD, '', 'Есть поломка — смотрите красные строки');
+  if (all.some((r) => r.status === WARN)) return row(WARN, '', 'Работает, но с оговорками — жёлтые строки');
+  return row(OK, '', 'Всё в порядке');
+}
+
+function paintDiagnostics(groups) {
+  ui('#diag').replaceChildren(
+    paintRow(verdict(groups), 'diag-verdict'),
+    ...groups
+      .filter((g) => g.rows.length)
+      .map(({ title, rows }) =>
+        make(
+          'div',
+          { class: 'diag-group' },
+          make('h4', { text: title }),
+          ...rows.map((r) => paintRow(r))
+        )
+      )
+  );
+}
+
+function paintRow({ status, name, value }, cls = '') {
+  return make(
+    'div',
+    { class: `diag-row ${status}${cls ? ` ${cls}` : ''}` },
+    // Точка тут та же, что у связи с сервером в шапке: зелёная — хорошо,
+    // жёлтая — внимание, красная — не работает.
+    make('span', { class: `dot${status === OK ? ' on' : status === BAD ? ' off' : ''}` }),
+    make('span', { class: 'k', text: name }),
+    make('span', { class: 'v', text: value })
+  );
 }
 
 function levelBar(level) {
@@ -369,9 +505,10 @@ function uniqueDevices(list) {
  * и стирать по нему чужую настройку нельзя.
  */
 function fillDevices(select, list, auto, key) {
-  select.innerHTML = '';
-  select.append(new Option(auto, ''));
-  for (const d of list) select.append(new Option(d.label, d.deviceId));
+  select.replaceChildren(
+    new Option(auto, ''),
+    ...list.map((d) => new Option(d.label, d.deviceId))
+  );
   select.disabled = false;
 
   select.value = settings.get(key);
@@ -380,12 +517,12 @@ function fillDevices(select, list, auto, key) {
 
 /** Список устройств вывода. Переключение поддерживают не все движки. */
 async function refreshOutputs() {
-  const select = $('#pick-output');
-  const note = $('#output-note');
+  const select = ui('#pick-output');
+  const note = ui('#output-note');
 
   if (!voice.canChooseOutput) {
     select.disabled = true;
-    select.innerHTML = '<option>Как в системе</option>';
+    select.replaceChildren(new Option('Как в системе'));
     // На движке WebKit — это Safari и окно приложения на macOS — выбирать
     // устройство нечем: звук идёт туда же, куда системный. Меняется он в
     // «Звук» системных настроек, и это не поломка, а единственный путь.
@@ -409,14 +546,12 @@ async function refreshCameras() {
     (await navigator.mediaDevices?.enumerateDevices().catch(() => []) ?? [])
       .filter((d) => d.kind === 'videoinput')
   );
-  fillDevices($('#pick-cam'), list, 'По умолчанию', 'camDevice');
+  fillDevices(ui('#pick-cam'), list, 'По умолчанию', 'camDevice');
 }
 
 export async function refreshDevices() {
   await refreshOutputs();
   await refreshCameras();
   const list = uniqueDevices(await voice.devices().catch(() => []));
-  fillDevices($('#pick-mic'), list, 'По умолчанию', 'micDevice');
+  fillDevices(ui('#pick-mic'), list, 'По умолчанию', 'micDevice');
 }
-
-

@@ -13,10 +13,13 @@
 // События идут по WebRTC напрямую хосту, сервер их не видит. Доступ выдаётся
 // поимённо тем же замком, что открывает адрес Sunshine.
 
+import { Emitter } from './events.js';
+import { reason } from './errors.js';
+
 const NS = 'rc';
 const MOVE_MS = 30;      // 33 движения в секунду — глазу хватает
 
-export class RemoteControl extends EventTarget {
+export class RemoteControl extends Emitter {
   constructor(mesh, native) {
     super();
     this.mesh = mesh;
@@ -39,9 +42,6 @@ export class RemoteControl extends EventTarget {
       this.emit('change', {});
     });
   }
-
-  emit(type, detail) { this.dispatchEvent(new CustomEvent(type, { detail })); }
-  on(type, fn) { this.addEventListener(type, (e) => fn(e.detail)); }
 
   // ---------------------------------------------------------------- хост
 
@@ -179,7 +179,7 @@ export class RemoteControl extends EventTarget {
           break;
       }
     } catch (e) {
-      this.emit('error', { message: String(e?.message ?? e) });
+      this.emit('error', { message: reason(e) });
     }
   }
 }

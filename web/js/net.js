@@ -1,7 +1,9 @@
 // Тонкий транспорт до сервера: вход в комнату, чат, карточки файлов и транзит
 // WebRTC-сигналинга. Всё остальное идёт мимо него, напрямую между участниками.
 
-export class Net extends EventTarget {
+import { Emitter } from './events.js';
+
+export class Net extends Emitter {
   constructor() {
     super();
     this.ws = null;
@@ -53,14 +55,14 @@ export class Net extends EventTarget {
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.t === 'pong') return this._onPong(msg);
       if (msg.t === 'welcome') this.selfId = msg.you.id;
-      this.dispatchEvent(new CustomEvent(msg.t, { detail: msg }));
+      this.emit(msg.t, msg);
     };
 
     ws.onclose = () => {
       if (!alive()) return;
       this.ws = null;
       clearInterval(this._pingTimer);
-      this.dispatchEvent(new CustomEvent('status', { detail: { online: false } }));
+      this.emit('status', { online: false });
       if (this._closedByUs) return;
       // Экспоненциальный бэкофф: мобильные сети любят рвать сокеты.
       const wait = Math.min(1000 * 2 ** this._retry++, 15000);
@@ -105,7 +107,7 @@ export class Net extends EventTarget {
     // Показываем наименьший из последних замеров: он меньше всех искажён
     // джиттером, а скачущее вдвое число в подсказке ни о чём не говорит.
     this.rtt = Math.min(...this._samples);
-    this.dispatchEvent(new CustomEvent('status', { detail: { online: true, rtt: this.rtt } }));
+    this.emit('status', { online: true, rtt: this.rtt });
   }
 
   send(obj) {

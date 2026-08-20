@@ -4,6 +4,8 @@
 // Передач может идти несколько одновременно — видео комнаты и вложения в чате
 // живут в одном рое и различаются идентификатором файла.
 
+import { Emitter } from './events.js';
+
 const NS = 'swarm';
 const CHUNK = 64 * 1024;      // помещается в дефолтный лимит DataChannel
 const MAX_INFLIGHT = 8;       // одновременных запросов к одному пиру
@@ -56,7 +58,7 @@ class Transfer {
   }
 }
 
-export class Swarm extends EventTarget {
+export class Swarm extends Emitter {
   constructor(mesh) {
     super();
     this.mesh = mesh;
@@ -80,9 +82,6 @@ export class Swarm extends EventTarget {
     // делает и не будит вкладку.
     setInterval(() => this.transfers.size && this._pumpAll(), 3000);
   }
-
-  emit(type, detail) { this.dispatchEvent(new CustomEvent(type, { detail })); }
-  on(type, fn) { this.addEventListener(type, (e) => fn(e.detail)); }
 
   get(id) { return this.transfers.get(id) ?? null; }
 
