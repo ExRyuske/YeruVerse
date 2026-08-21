@@ -237,7 +237,6 @@ jobs:
             artifacts: |
               desktop/src-tauri/target/**/release/bundle/**/*.exe
               desktop/src-tauri/target/**/release/bundle/**/*.msi
-              desktop/src-tauri/target/**/release/bundle/**/*.zip
               desktop/src-tauri/target/**/release/bundle/**/*.sig
           - name: Android
             os: ubuntu-latest
@@ -413,4 +412,3 @@ jobs:
             dist/**/*.msi
             dist/**/*.apk
             dist/**/*.tar.gz
-            dist/**/*.zip

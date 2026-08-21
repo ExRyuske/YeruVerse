@@ -92,13 +92,19 @@ def replace_lock_version(path: pathlib.Path, name: str, old: str, new: str) -> N
     write(path, text)
 
 
-# Какой архив для какой системы. macOS собирается только под Apple Silicon,
+# Какой пакет для какой системы. macOS собирается только под Apple Silicon,
 # поэтому Intel в манифест не попадает: обновлятель иначе скачал бы им
 # приложение, которое не запустится.
+#
+# Имена не наши — их даёт `createUpdaterArtifacts`, и под Windows в Tauri 2 это
+# сам установщик с подписью рядом (`-setup.exe.sig`, `.msi.sig`). Архивы
+# `.nsis.zip`/`.msi.zip` остались в Tauri 1; пока мы искали их, в манифест не
+# попадало ни одной записи для Windows — и обновление там молчало, хотя macOS
+# обновлялся.
 TARGETS = [
     ('.app.tar.gz', ['darwin-aarch64']),
-    ('-setup.nsis.zip', ['windows-x86_64']),
-    ('.msi.zip', ['windows-x86_64']),
+    ('-setup.exe', ['windows-x86_64']),
+    ('.msi', ['windows-x86_64']),
 ]
 
 
@@ -135,9 +141,11 @@ def cmd_manifest(args: argparse.Namespace) -> None:
 
     root = pathlib.Path(args.dir)
     platforms: dict[str, dict] = {}
+    taken: set[pathlib.Path] = set()
 
     for suffix, keys in TARGETS:
         for sig in sorted(root.rglob(f'*{suffix}.sig')):
+            taken.add(sig)
             archive = sig.with_suffix('')       # тот же файл без .sig
             if not archive.exists():
                 print(f'нет пакета к подписи: {sig.name}', file=sys.stderr)
@@ -150,6 +158,17 @@ def cmd_manifest(args: argparse.Namespace) -> None:
             # а ставить лучше тем же способом, каким ставили изначально.
             for key in keys:
                 platforms.setdefault(key, entry)
+
+    # Подпись, которую мы не узнали, — это платформа, оставшаяся без обновления:
+    # пакет собран и подписан, а в манифесте его нет, и там, где стоит эта
+    # сборка, кнопки «Обновить» просто не появится. Молча так уже случилось
+    # однажды, когда Tauri переименовал пакеты Windows, поэтому теперь кричим.
+    if lost := sorted(set(root.rglob('*.sig')) - taken):
+        raise SystemExit(
+            'подписанные пакеты, которых нет в TARGETS: '
+            + ', '.join(sig.name for sig in lost)
+            + '\nОни собраны, но обновлятель их не увидит — поправьте TARGETS.'
+        )
 
     if not platforms:
         raise SystemExit(

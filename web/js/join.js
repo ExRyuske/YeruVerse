@@ -111,13 +111,24 @@ function randomCode() {
  */
 async function checkUpdate() {
   const found = native.caps.updates
-    ? await native.updateCheck().catch(() => null)
+    ? await native.updateCheck().catch(failedCheck)
     : await releasedVersion();
   if (!found) return;
 
   ui('#update-version').textContent = found;
   ui('#update-notice').hidden = false;
   if (state.joined) toast(`Вышла версия ${found} — обновиться можно после выхода из комнаты`);
+}
+
+/**
+ * Молчим для человека, но не для того, кто чинит. Отказ проверки выглядит
+ * снаружи ровно как «обновлений нет», и однажды так пропала целая платформа:
+ * в манифесте не было записи под Windows, обновлятель отвечал ошибкой, а мы
+ * её глотали. В консоли она теперь видна.
+ */
+function failedCheck(e) {
+  console.warn('YeruVerse: не удалось проверить обновления —', reason(e));
+  return null;
 }
 
 /** Что лежит в релизе, если это новее нас. Иначе — ничего. */
