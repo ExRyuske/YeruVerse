@@ -152,6 +152,33 @@ note(report.every((r) => !/connected|srflx|relay|host/.test(r.value)),
      'в диагностике не осталось языка WebRTC');
 note(report.some((r) => r.name === '' && r.value), 'наверху есть общий вывод');
 
+// Каким уходит сам звук. Движок по умолчанию собирает его телефонным — моно и
+// около тридцати килобит, — и разговор это ещё терпит, а звук игры уже нет.
+// Поэтому обе стороны просят у Opus стерео и потолок повыше, а сколько взять на
+// самом деле, отправитель решает для каждой дорожки отдельно.
+const sound = await b.evaluate(async () => {
+  const { mesh } = await import('/js/core.js');
+  const c = [...mesh.conns.values()][0];
+  const stats = await c.pc.getStats();
+  const codecs = new Map();
+  stats.forEach((s) => s.type === 'codec' && codecs.set(s.id, s));
+  let fmtp = '';
+  stats.forEach((s) => {
+    if (s.type === 'outbound-rtp' && s.kind === 'audio') fmtp = codecs.get(s.codecId)?.sdpFmtpLine ?? '';
+  });
+  const mic = c.pc.getSenders().find((s) => s.track?.kind === 'audio');
+  return {
+    fmtp,
+    hint: mic?.track?.contentHint ?? '',
+    cap: mic?.getParameters().encodings?.[0]?.maxBitrate ?? 0,
+  };
+});
+const ceiling = Number(/maxaveragebitrate=(\d+)/.exec(sound.fmtp)?.[1] ?? 0);
+note(/stereo=1/.test(sound.fmtp), 'собеседник просит стерео', sound.fmtp);
+note(ceiling > 32000, 'и потолок выше телефонного', `${ceiling} бит/с`);
+note(sound.hint === 'speech' && sound.cap > 32000,
+     'у микрофона своя подсказка и свой предел', `${sound.hint} · ${sound.cap} бит/с`);
+
 // ------------------------------------------------------ настройки микрофона
 //
 // Микрофон — дело личное: его настройки не должны быть слышны ни в трансляции,
@@ -182,13 +209,21 @@ await a.waitForTimeout(1500);
 note((await micTrack(a)) === micBefore, 'и обратно — тоже');
 note(/RNNoise/.test(diagValue(await diag(a), 'Шумодав')), 'модель вернулась на место');
 
-// А вот подавление движком просят у самого устройства — тут перезахват честен.
-await setDenoise(a, 'browser');
-await a.waitForTimeout(2000);
-note((await micTrack(a)) !== micBefore, 'подавление движком просят у устройства');
-await setDenoise(a, 'rnnoise');
-await a.waitForTimeout(2000);
-note(/RNNoise/.test(diagValue(await diag(a), 'Шумодав')), 'и модель поднимается обратно');
+// Обработки движка на микрофоне нет вовсе — ни эхоподавления, ни автоусиления,
+// ни его шумодава. Спрашиваем саму дорожку, а не настройки: настройка говорит,
+// о чём просили, а дорожка — что из этого вышло. Всё это не только про свой
+// голос: стоит попросить у движка хоть что-нибудь, как телефон переводит в
+// разговорный режим весь звук разом, вместе с чужими голосами.
+const processing = await a.evaluate(async () => {
+  const { voice } = await import('/js/core.js');
+  const s = voice.raw?.getAudioTracks()[0]?.getSettings() ?? {};
+  return { эхо: s.echoCancellation, шумодав: s.noiseSuppression, усиление: s.autoGainControl };
+});
+note(
+  Object.values(processing).every((v) => v === false || v === undefined),
+  'движок микрофон не обрабатывает',
+  JSON.stringify(processing)
+);
 
 note(
   (await a.evaluate(() => window.__contexts)) === 1,

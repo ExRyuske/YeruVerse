@@ -136,13 +136,8 @@ voice.on('denoise-loading', ({ kind }) =>
 
 // Шумодав не взялся или отвалился на ходу. Сказать об этом важнее, чем кажется:
 // молча подменённая обработка звучит иначе, и человек ищет причину в микрофоне.
-voice.on('denoise-fallback', ({ from, to }) =>
-  toast(
-    to === 'browser'
-      ? `${modelTitle(from)} не заработал — подавляем шум средствами системы`
-      : `${modelTitle(from)} не заработал, и подавления шума больше нет`,
-    8000
-  )
+voice.on('denoise-fallback', ({ from }) =>
+  toast(`${modelTitle(from)} не заработал, и подавления шума больше нет`, 8000)
 );
 
 voice.on('devices', () => refreshDevices());

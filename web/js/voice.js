@@ -39,7 +39,7 @@ export class Voice extends Emitter {
       if (key === 'voiceVolume' || key === 'peerVolume') this.applyVolumes();
       if (key === 'outputDevice') this.applySink();
       if (key === 'monitor') this._applyMonitor();
-      if (['micDevice', 'autoGainControl', 'denoise'].includes(key)) this._micChanged();
+      if (['micDevice', 'denoise'].includes(key)) this._micChanged();
     });
 
     // Выбранное устройство вывода должно действовать с первой секунды, а не
@@ -61,9 +61,13 @@ export class Voice extends Emitter {
    * человек оставался вовсе без голоса — с сообщением, которое ничего не
    * подсказывает.
    *
-   * Поэтому отступаем по шагам: сначала забываем выбранное устройство, потом
-   * просим только то, без чего нельзя. Отказ от эхоподавления держится и в
-   * последней попытке: с ним движок отдаёт не микрофон, а телефонную трубку.
+   * Поэтому отступаем: забываем выбранное устройство и просим любое. Отступать
+   * дальше некуда и незачем — из всей просьбы остаются три «нет» обработке
+   * (см. `micConstraints`), а их устройство отвергнуть не может: это не
+   * требования к железу, а слова о том, чего мы от движка не хотим. Раньше
+   * последним шагом стояла попытка «хоть как-нибудь», без этих трёх, — и
+   * микрофон в ней возвращался уже с полной обработкой движка, той самой,
+   * которую мы отовсюду убрали.
    */
   async _capture() {
     const wanted = this.settings.micConstraints();
@@ -78,22 +82,14 @@ export class Voice extends Emitter {
     try {
       return await attempt(wanted);
     } catch (e) {
-      if (e?.name !== 'OverconstrainedError') throw e;
+      if (e?.name !== 'OverconstrainedError' || !wanted.deviceId) throw e;
     }
 
-    if (wanted.deviceId) {
-      // Выбранного микрофона нет. Оставить настройку значит получать этот же
-      // отказ при каждом входе, поэтому забываем её насовсем.
-      this.settings.set('micDevice', '');
-      const { deviceId, ...rest } = wanted;
-      try {
-        return await attempt(rest);
-      } catch (e) {
-        if (e?.name !== 'OverconstrainedError') throw e;
-      }
-    }
-
-    return attempt({ echoCancellation: false });
+    // Выбранного микрофона нет. Оставить настройку значит получать этот же
+    // отказ при каждом входе, поэтому забываем её насовсем.
+    this.settings.set('micDevice', '');
+    const { deviceId, ...rest } = wanted;
+    return attempt(rest);
   }
 
   async enable() {
@@ -111,9 +107,9 @@ export class Voice extends Emitter {
   /**
    * Слышать себя.
    *
-   * Играем не сырой микрофон, а то, что уходит собеседникам: после шумодава и
-   * после автоусиления. Смысл именно в этом — услышать себя чужими ушами, а не
-   * проверить, что микрофон подключён.
+   * Играем не сырой микрофон, а то, что уходит собеседникам: после шумодава.
+   * Смысл именно в этом — услышать себя чужими ушами, а не проверить, что
+   * микрофон подключён.
    *
    * Заглушённый микрофон не слышно и здесь: дорожка выключена, а значит через
    * обработку идёт тишина. Так и надо — иначе выходит, что тебя слышно тебе, а
@@ -231,11 +227,13 @@ export class Voice extends Emitter {
       this.denoising = kind;
       return this.chain.stream;
     } catch (e) {
-      // Модель не поднялась. Раньше отсюда уходили вовсе без подавления, молча:
-      // человек выбрал шумодав, а его не было. Просим подавление у самого
-      // движка — оно есть везде и работает тем лучше, чем хуже микрофон.
-      console.warn(`${modelTitle(kind)} недоступен, просим подавление у движка:`, e);
-      this.denoising = (await this._engineDenoise(raw)) ? 'browser' : 'off';
+      // Модель не поднялась — голос идёт как есть. Запасным вариантом тут стоял
+      // шумодав движка, но просьба к движку никогда не остаётся при микрофоне:
+      // телефон на неё переводит в разговорный режим весь звук разом, вместе с
+      // воспроизведением. Платить чужим голосом за свой шум не стоит — молчать
+      // об этом тем более нельзя, поэтому человеку скажут.
+      console.warn(`${modelTitle(kind)} недоступен — подавления шума не будет:`, e);
+      this.denoising = 'off';
       this.emit('denoise-fallback', { from: kind, to: this.denoising });
       return bare();
     }
@@ -247,7 +245,7 @@ export class Voice extends Emitter {
    * Отказ, о котором не сказали, здесь стоит дороже всего: человек говорит,
    * видит свою полоску уровня и не догадывается, что собеседники слышат тишину.
    * Поэтому сверяем вход с выходом: копим замеры, где на входе голос, а на
-   * выходе пусто, и по их числу уходим на подавление средствами движка.
+   * выходе пусто, и по их числу снимаем модель с тракта.
    *
    * Счёт идёт с перевесом, а не подряд и не насовсем — оба края уже стоили
    * своего. Сброс на каждом тихом замере не срабатывал никогда: тише порога
@@ -285,43 +283,21 @@ export class Voice extends Emitter {
     this._dropDenoiser().catch(() => {});
   }
 
-  /** Снять модель с тракта и отдать голос как есть, с подавлением от движка. */
+  /** Снять модель с тракта и отдать голос как есть — шумный, но живой. */
   async _dropDenoiser() {
     const chain = this.chain;
     if (!chain) return;
-    console.warn(`${modelTitle(chain.kind)} не отдаёт звук — переходим на подавление движком`);
+    console.warn(`${modelTitle(chain.kind)} не отдаёт звук — снимаем подавление`);
 
     this.chain = null;
     this._rawMeter = meter(this.raw);
     this.stream = this.raw;
-    this.denoising = (await this._engineDenoise(this.raw)) ? 'browser' : 'off';
+    this.denoising = 'off';
     await this.mesh.replaceStream('mic', this.stream);
     this._applyMonitor();
     chain.close();
     this.emit('denoise-fallback', { from: chain.kind, to: this.denoising });
     this.emit('change', this.status());
-  }
-
-  /**
-   * Включить подавление шума средствами самого движка на живой дорожке.
-   *
-   * Ограничения аудио применяются без перезахвата: просить микрофон второй раз
-   * значило бы отпустить его и получить отказ там, где устройство одно, — а это
-   * ровно тот телефон, где всё и случилось.
-   */
-  async _engineDenoise(raw) {
-    const track = raw.getAudioTracks()[0];
-    if (!track) return false;
-    // Выбор устройства живой дорожке применить нельзя — движки отвечают на это
-    // отказом, и подавление, которое мы просили как запасное, молча не
-    // включалось. Просим только обработку.
-    const { deviceId, ...processing } = this.settings.micConstraints();
-    try {
-      await track.applyConstraints({ ...processing, noiseSuppression: true });
-      return track.getSettings().noiseSuppression !== false;
-    } catch {
-      return false;
-    }
   }
 
   /**

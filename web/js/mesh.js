@@ -20,6 +20,80 @@ const STUN = {
   ],
 };
 
+/**
+ * Чего мы хотим от Opus — и просим об этом собеседника.
+ *
+ * По умолчанию движок настраивает звук на разговор по телефону: моно и около
+ * тридцати килобит. Голосу этого хватает впритык, а звуку игры — нет вовсе:
+ * музыка и взрывы превращаются в шипение, стерео теряется целиком, и слышно
+ * это сразу.
+ *
+ * Настройка живёт в SDP, потому что решает её принимающая сторона: `stereo=1`
+ * значит «шли мне стерео», `maxaveragebitrate` — «можно вот столько». Читает
+ * это кодировщик собеседника, поэтому обе стороны просят одинаково.
+ *
+ * `usedtx=0` — не выключать передачу в тишине: в разговоре пауза это пауза, а
+ * в игре тихое место — это тихое место, и обрывать его нельзя.
+ *
+ * Сколько на самом деле уйдёт байтов, решает не этот потолок, а `tuneAudio` —
+ * там у голоса и у звука игры разные пределы.
+ */
+const OPUS = 'stereo=1;sprop-stereo=1;maxaveragebitrate=128000;maxplaybackrate=48000;useinbandfec=1;usedtx=0';
+const OPUS_KEYS = new Set(OPUS.split(';').map((p) => p.split('=')[0]));
+
+/**
+ * Вписать эту просьбу в описание, которое уходит собеседнику.
+ *
+ * Правится именно отправляемое описание, а не своё собственное: своему
+ * соединению эти строчки не нужны — принятый Opus всё равно декодируется хоть
+ * в моно, хоть в стерео, — а править описание до `setLocalDescription` значит
+ * встать между `createOffer` и установкой и сломать разбор столкновений
+ * предложений, на котором всё здесь держится.
+ *
+ * Старая версия на том конце ничего не заметит: не поймёт просьбу — пришлёт
+ * звук по-прежнему, и разговор от этого не развалится.
+ */
+function askForGoodSound({ type, sdp }) {
+  const eol = sdp.includes('\r\n') ? '\r\n' : '\n';
+  const out = [];
+  let pt = null;    // номер полезной нагрузки Opus в текущей m-секции
+  let fmtp = -1;    // куда вписать параметры, если своей строки у него нет
+
+  // Секция кончилась, а параметров у Opus так и не было — добавляем свои.
+  const close = () => {
+    if (fmtp >= 0) out.splice(fmtp, 0, `a=fmtp:${pt} ${OPUS}`);
+    pt = null;
+    fmtp = -1;
+  };
+
+  for (const line of sdp.split(/\r?\n/)) {
+    if (line.startsWith('m=')) close();
+
+    const opus = /^a=rtpmap:(\d+) opus\/48000\/2/i.exec(line);
+    if (opus) {
+      pt = opus[1];
+      out.push(line);
+      fmtp = out.length;   // сразу за строкой кодека
+      continue;
+    }
+
+    const params = pt && new RegExp(`^a=fmtp:${pt} (.*)$`).exec(line);
+    if (params) {
+      // Своё дописываем к чужому, а не поверх: там `minptime` и прочее, о чём
+      // движок договорился сам.
+      const keep = params[1].split(';').filter((p) => p && !OPUS_KEYS.has(p.split('=')[0]));
+      out.push(`a=fmtp:${pt} ${[...keep, OPUS].join(';')}`);
+      fmtp = -1;
+      continue;
+    }
+
+    out.push(line);
+  }
+  close();
+
+  return { type, sdp: out.join(eol) };
+}
+
 class Conn {
   constructor(mesh, id) {
     this.mesh = mesh;
@@ -44,7 +118,7 @@ class Conn {
       try {
         this.makingOffer = true;
         await pc.setLocalDescription();
-        mesh.net.signal(id, { description: pc.localDescription });
+        mesh.net.signal(id, { description: askForGoodSound(pc.localDescription) });
       } catch (e) {
         console.warn('negotiation', e);
       } finally {
@@ -73,11 +147,30 @@ class Conn {
 
       // Приёмник по умолчанию копит буфер ради плавности. В игре это
       // превращается в задержку в полсекунды и больше — просим минимум.
-      try {
-        if ('playoutDelayHint' in event.receiver) event.receiver.playoutDelayHint = 0;
-        if ('jitterBufferTarget' in event.receiver) event.receiver.jitterBufferTarget = 0;
-      } catch {}
+      //
+      // Просим только у картинки. Звуку эта просьба не нужна: его буфер держит
+      // не запас кадров, а разброс прихода пакетов, и укоротить этот разброс
+      // нельзя — можно только заставить тракт подгонять сам звук. Движки, к
+      // счастью, читают ноль как «своего минимума не ставлю» и остаются при
+      // своём (замерено: счётчики растяжений и сжатий в звуке не отличаются ни
+      // на один), но просить у звука видеонастройку всё равно незачем.
+      if (event.track.kind === 'video') {
+        try {
+          if ('playoutDelayHint' in event.receiver) event.receiver.playoutDelayHint = 0;
+          if ('jitterBufferTarget' in event.receiver) event.receiver.jitterBufferTarget = 0;
+        } catch {}
+      }
       mesh._sawStream(id, stream);
+    };
+
+    // Согласование закончилось. Только теперь у отправителей есть то, чему
+    // можно ставить пределы: до первого обмена описаниями движок отдаёт их без
+    // единого слоя, а самим слой не добавить — на попытку изменить их число он
+    // отвечает отказом. Пока пределы ставились один раз, сразу за `addTrack`,
+    // та сторона, что подключалась второй, нередко оставалась вовсе без них:
+    // и без потолка звука, и без потолка картинки.
+    pc.onsignalingstatechange = () => {
+      if (pc.signalingState === 'stable') this.retune();
     };
 
     pc.ondatachannel = ({ channel }) => this._bind(channel);
@@ -118,7 +211,7 @@ class Conn {
     this.removeStream(kind);
     const senders = stream.getTracks().map((t) => this.pc.addTrack(t, stream));
     this.senders.set(kind, senders);
-    for (const sender of senders) this.mesh.tune(sender);
+    for (const sender of senders) this.mesh.tune(sender, kind);
   }
 
   /**
@@ -144,6 +237,13 @@ class Conn {
       try { this.pc.removeTrack(s); } catch {}
     }
     this.senders.delete(kind);
+  }
+
+  /** Заново проставить пределы всему, что уходит этому собеседнику. */
+  retune() {
+    for (const [kind, senders] of this.senders) {
+      for (const sender of senders) this.mesh.tune(sender, kind);
+    }
   }
 
   _bind(ch) {
@@ -173,7 +273,7 @@ class Conn {
         await pc.setRemoteDescription(data.description);
         if (data.description.type === 'offer') {
           await pc.setLocalDescription();
-          this.mesh.net.signal(this.id, { description: pc.localDescription });
+          this.mesh.net.signal(this.id, { description: askForGoodSound(pc.localDescription) });
         }
       } else if (data.candidate) {
         try { await pc.addIceCandidate(data.candidate); }
@@ -204,6 +304,15 @@ export class Mesh extends Emitter {
     this.seen = new Map();
     this.videoBitrate = 8_000_000;   // потолок для трансляции, бит/с
     this.videoFramerate = 60;
+    // Потолки звука. Речь при шестидесяти килобитах уже прозрачна, а звуку
+    // игры — музыке, взрывам, стерео — нужно заметно больше: движок сам по себе
+    // даёт вчетверо меньше, и слышно это сразу.
+    this.voiceBitrate = 64_000;
+    this.soundBitrate = 128_000;
+    // Отправители, у которых просьба к движку сейчас в пути, и те, кому надо
+    // будет повторить её следом: см. `apply`.
+    this.applying = new WeakSet();
+    this.waiting = new WeakSet();
     // Что беречь, когда канала не хватает. Решает транслирующий: см. tune().
     this.degradation = 'maintain-resolution';
     // TURN приезжает из /config.json уже после загрузки модуля, а у Cloudflare
@@ -375,19 +484,18 @@ export class Mesh extends Emitter {
    * важно прочитать буквы, а не увидеть плавную прокрутку. Поэтому приоритет
    * выбирает транслирующий, а `degradation` приезжает из его настроек.
    */
-  tune(sender) {
-    // Только видео. У демонстрации экрана дорожек две, и звуковая попадала
-    // сюда наравне с картинкой: ей ставили `contentHint: 'motion'`, потолок в
-    // восемь мегабит и частоту кадров — всё то, чего у звука не бывает. Движок
-    // на такой набор отвечает отказом от всего вызова разом, то есть заодно
-    // терялась и настройка самой картинки.
-    if (sender?.track?.kind !== 'video') return;
+  tune(sender, kind) {
+    // У звука свои пределы и свои подсказки: потолок в восемь мегабит и частота
+    // кадров ему не просто не нужны — движок на такой набор отвечает отказом от
+    // всего вызова разом, то есть заодно теряется и настройка картинки.
+    if (!sender?.track) return;
+    if (sender.track.kind === 'audio') return this.tuneAudio(sender, kind);
     try {
       // Подсказка кодировщику: в потоке движение, а не статичный документ.
       sender.track.contentHint = 'motion';
 
-      const params = sender.getParameters();
-      params.encodings ??= [{}];
+      const params = this.layers(sender);
+      if (!params) return;
       params.degradationPreference = this.degradation;
       for (const e of params.encodings) {
         e.maxBitrate = this.videoBitrate;
@@ -395,19 +503,86 @@ export class Mesh extends Emitter {
         e.networkPriority = 'high';
         e.priority = 'high';
       }
-      sender.setParameters(params).catch((err) => console.warn('параметры кодека', err));
+      this.apply(sender, params, () => this.tune(sender, kind));
     } catch (e) {
       console.warn('не удалось настроить отправителя', e);
     }
   }
 
+  /**
+   * Настройка звука.
+   *
+   * Голос и звук игры — разные задачи, и потолок у них разный. Речь при
+   * шестидесяти килобитах уже не отличить от студийной, и брать больше незачем;
+   * музыке и стерео этого мало — им отдаём вдвое.
+   *
+   * Выше не поднимаем: сеть тут полносвязная, и каждый слушатель получает свою
+   * копию. Вчетвером один только звук — это три потока туда и три обратно.
+   *
+   * Приоритет высокий у обоих, и это важнее самих чисел. Когда канала не
+   * хватает, движок делит его между дорожками, и картинка с потолком в восемь
+   * мегабит забирает всё: звук проседает первым и первым же становится слышно.
+   * А терпят люди ровно наоборот — рассыпающуюся картинку терпят, пропадающий
+   * голос нет.
+   *
+   * Про стерео и потолок повыше собеседник узнаёт из SDP: см. `askForGoodSound`.
+   */
+  tuneAudio(sender, kind) {
+    try {
+      // Подсказка кодировщику: голос можно ужимать по-речевому, музыку нельзя.
+      sender.track.contentHint = kind === 'mic' ? 'speech' : 'music';
+
+      const params = this.layers(sender);
+      if (!params) return;
+      for (const e of params.encodings) {
+        e.maxBitrate = kind === 'mic' ? this.voiceBitrate : this.soundBitrate;
+        e.networkPriority = 'high';
+        e.priority = 'high';
+      }
+      this.apply(sender, params, () => this.tune(sender, kind));
+    } catch (e) {
+      console.warn('не удалось настроить звук', e);
+    }
+  }
+
+  /**
+   * Параметры отправителя — или ничего, если ставить их ещё некуда.
+   *
+   * До первого обмена описаниями слоёв у отправителя нет вовсе, а добавить их
+   * самим нельзя: движок отвечает отказом на любую попытку изменить их число.
+   * Молча пропускаем — за нас это повторят, когда согласование дойдёт до
+   * `stable`.
+   */
+  layers(sender) {
+    const params = sender.getParameters();
+    params.encodings ??= [{}];
+    return params.encodings.length ? params : null;
+  }
+
+  /**
+   * Отправить параметры, не наступив на предыдущую такую же просьбу.
+   *
+   * Каждая пара «прочитал — записал» помечена своим номером, и вторая запись
+   * обесценивает первую: движок отвечает отказом. Поэтому пока одна просьба в
+   * пути, вторую не шлём, а запоминаем — и повторяем её потом целиком, вместе с
+   * чтением: старый номер к тому времени уже ничего не значит, да и значения
+   * могли смениться.
+   */
+  apply(sender, params, redo) {
+    if (this.applying.has(sender)) return void this.waiting.add(sender);
+    this.applying.add(sender);
+    sender
+      .setParameters(params)
+      .catch((err) => console.warn('параметры кодека', err))
+      .finally(() => {
+        this.applying.delete(sender);
+        if (this.waiting.delete(sender)) redo();
+      });
+  }
+
   /** Перенастроить уже идущие трансляции — например, после смены качества. */
   retune() {
-    for (const c of this.conns.values()) {
-      for (const senders of c.senders.values()) {
-        for (const sender of senders) this.tune(sender);
-      }
-    }
+    for (const c of this.conns.values()) c.retune();
   }
 
   /**
@@ -425,6 +600,9 @@ export class Mesh extends Emitter {
       if (senders?.length && track) {
         try {
           await senders[0].replaceTrack(track);
+          // Подсказка кодировщику живёт на самой дорожке, а дорожка теперь
+          // другая: без этого сменённый микрофон уходил бы уже без неё.
+          this.tune(senders[0], kind);
           continue;
         } catch {}
       }

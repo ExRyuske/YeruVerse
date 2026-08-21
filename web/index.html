@@ -85,7 +85,7 @@
         <div class="src-row">
           <span class="with-pick">
             <button id="btn-mute" class="icon" data-icon="mic" title="Свой микрофон"></button>
-            <button class="caret" type="button" data-pop="pop-mic" title="Микрофон и эффекты"></button>
+            <button class="caret" type="button" data-pop="pop-mic" title="Микрофон и шумодав"></button>
           </span>
           <span class="with-pick">
             <button id="btn-deafen" class="icon" data-icon="speaker" title="Заглушить остальных"></button>
@@ -111,11 +111,9 @@
             <select id="set-denoise">
               <option value="rnnoise">Нейросетью — RNNoise</option>
               <option value="deepfilter">Нейросетью — DeepFilterNet 3 (сильнее, 18 МБ)</option>
-              <option value="browser">Средствами браузера</option>
               <option value="off">Без подавления</option>
             </select>
           </label>
-          <label class="check"><input id="set-agc" type="checkbox"> Автоматическое усиление</label>
           <label class="check"><input id="set-monitor" type="checkbox"> Слышать себя</label>
           <p class="muted small">Уровень: <span id="mic-level" class="mono">—</span></p>
         </div>

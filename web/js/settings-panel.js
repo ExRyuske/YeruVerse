@@ -23,17 +23,6 @@ import { enableMic } from './devices.js';
  */
 const hasKeyboard = () => matchMedia('(any-pointer: fine)').matches;
 
-// Заглавных букв здесь больше нет: раньше диагностика была одноцветной
-// простынёй, и кричать было единственным способом отметить беду. Теперь у
-// строки есть цвет, и крик только мешает читать.
-const DENOISE = {
-  browser: 'средствами движка',
-  off: 'нет — ни модель, ни движок не взялись',
-};
-
-/** Что подавляет шум прямо сейчас: модель — по имени, остальное — словами. */
-const denoiseTitle = (kind) => DENOISE[kind] ?? `нейросетью — ${modelTitle(kind)}`;
-
 export function initSettingsPanel() {
   wireSettings();
   wireSunshine();
@@ -77,7 +66,6 @@ function wireSettings() {
   const denoise = ui('#set-denoise');
   denoise.value = settings.get('denoise');
   denoise.onchange = () => settings.set('denoise', denoise.value);
-  bindCheck('#set-agc', 'autoGainControl');
 
   ui('#pick-mic').onchange = () => settings.set('micDevice', ui('#pick-mic').value);
   ui('#pick-cam').onchange = () => settings.set('camDevice', ui('#pick-cam').value);
@@ -283,6 +271,10 @@ function hotkeyRow(action) {
  * Теперь каждая строка отвечает словами и несёт цвет: зелёный — работает,
  * жёлтый — работает не так, красный — не работает. Наверху вывод целиком,
  * чтобы не читать все строки, когда всё в порядке.
+ *
+ * Заглавных букв здесь больше нет: пока диагностика была одноцветной простынёй,
+ * кричать было единственным способом отметить беду. Теперь у строки есть цвет,
+ * и крик только мешает читать.
  */
 const OK = 'ok';
 const WARN = 'warn';
@@ -385,12 +377,19 @@ function soundRows() {
   // расходятся ровно там, где это важнее всего заметить. При выключенном
   // микрофоне строки нет вовсе — она отвечала бы про тракт, которого сейчас
   // не существует.
+  //
+  // «Выключен» и «не поднялся» — разные вещи: первое человек выбрал сам, и
+  // жёлтому тут взяться неоткуда. Пока строка была одна на оба случая, она
+  // предупреждала о том, о чём её же и просили.
   if (voice.enabled) {
-    rows.push(
-      voice.denoising === 'off'
-        ? row(WARN, 'Шумодав', denoiseTitle('off'))
-        : row(OK, 'Шумодав', denoiseTitle(voice.denoising))
-    );
+    const chosen = settings.get('denoise');
+    if (voice.denoising !== 'off') {
+      rows.push(row(OK, 'Шумодав', `нейросетью — ${modelTitle(voice.denoising)}`));
+    } else if (chosen === 'off') {
+      rows.push(row(OK, 'Шумодав', 'выключен вами'));
+    } else {
+      rows.push(row(WARN, 'Шумодав', `${modelTitle(chosen)} не поднялся — шум идёт как есть`));
+    }
   }
 
   const others = Math.max(0, state.peers.size - 1);
@@ -431,8 +430,8 @@ async function peerRows() {
 /** Общий вывод: когда всё в порядке, читать остальное незачем. */
 function verdict(groups) {
   const all = groups.flatMap((g) => g.rows);
-  if (all.some((r) => r.status === BAD)) return row(BAD, '', 'Есть поломка — смотрите красные строки');
-  if (all.some((r) => r.status === WARN)) return row(WARN, '', 'Работает, но с оговорками — жёлтые строки');
+  if (all.some((r) => r.status === BAD)) return row(BAD, '', 'Есть поломка');
+  if (all.some((r) => r.status === WARN)) return row(WARN, '', 'Работает, но с оговорками');
   return row(OK, '', 'Всё в порядке');
 }
 
