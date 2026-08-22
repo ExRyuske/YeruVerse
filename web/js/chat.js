@@ -4,7 +4,7 @@
 import { icon } from './icons.js';
 import { net, swarm } from './core.js';
 import { isSelf, state } from './state.js';
-import { fmtClock, fmtSize, make, showImage, toast, ui } from './ui.js';
+import { fmtClock, fmtSize, make, openExternal, showImage, toast, ui } from './ui.js';
 
 export function initChat() {
   ui('#btn-attach').onclick = () => ui('#in-attach').click();
@@ -224,7 +224,73 @@ function append(row) {
 }
 
 export function addChat(who, text, mine, at, color) {
-  append(make('div', {}, stamp(at), whoLabel({ name: who, color }, mine), text));
+  append(make('div', {}, stamp(at), whoLabel({ name: who, color }, mine), ...withLinks(text)));
+}
+
+/**
+ * Ссылка в сообщении — только `https`.
+ *
+ * Приглашение в игру, адрес сервера, статья — их кидают в чат постоянно, а
+ * нажать было нельзя: строка приходит от чужого клиента и кладётся сюда
+ * текстом, как и всё остальное чужое. Текстом она и остаётся: разбираем
+ * сообщение на куски и собираем из узлов, а не из разметки. Подставить сюда
+ * свой тег по-прежнему нечем.
+ *
+ * Схема ровно одна. `javascript:` мимо этого правила не пройдёт, а вместе с ним
+ * не пройдёт и `file:` — то есть чужая строка не сможет открыть ни своего кода,
+ * ни чужого диска.
+ */
+const LINK = /https:\/\/[^\s<>"'`]+/g;
+
+/**
+ * Знаки, которыми кончается предложение, а не ссылка. Скобку отрезаем, только
+ * если открывающей в ссылке не было: в адресах вроде `.../Foo_(bar)` она своя.
+ */
+function trim(url) {
+  let end = url.length;
+  while (end > 0) {
+    const last = url[end - 1];
+    if ('.,!?;:»"\''.includes(last) || (last === ')' && !url.slice(0, end).includes('('))) {
+      end--;
+    } else {
+      break;
+    }
+  }
+  return url.slice(0, end);
+}
+
+function withLinks(text) {
+  const parts = [];
+  let at = 0;
+  for (const found of text.matchAll(LINK)) {
+    const url = trim(found[0]);
+    if (!url) continue;
+    if (found.index > at) parts.push(text.slice(at, found.index));
+    parts.push(linkNode(url));
+    at = found.index + url.length;
+  }
+  if (at < text.length) parts.push(text.slice(at));
+  return parts;
+}
+
+/**
+ * Открываем системой, а не переходом в окне: в приложении переход увёл бы
+ * человека из комнаты, а вернуться оттуда нечем. `href` при этом настоящий —
+ * ради «копировать ссылку» в контекстном меню и подсказки браузера внизу окна.
+ */
+function linkNode(url) {
+  return make('a', {
+    class: 'link',
+    href: url,
+    text: url,
+    title: url,
+    rel: 'noopener noreferrer',
+    target: '_blank',
+    onclick: (e) => {
+      e.preventDefault();
+      openExternal(url);
+    },
+  });
 }
 
 /**

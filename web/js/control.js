@@ -37,7 +37,15 @@ export class RemoteControl extends Emitter {
     mesh.on('peer-close', ({ id }) => {
       // Ушедший мог держать клавишу или кнопку мыши — снимаем всё, иначе хост
       // останется с намертво нажатой клавишей.
-      if (this.granted.delete(id)) this.native.releaseInput?.().catch(() => {});
+      if (this.granted.delete(id)) {
+        this.native.releaseInput?.().catch(() => {});
+        // И закрываем приём, когда ушёл последний, кому было разрешено, — ровно
+        // как при снятии замка руками. Иначе система оставалась готовой принять
+        // чужой ввод до конца разговора: отдавать его было уже некому, но дверь
+        // так и стояла открытой, а закрыть её человек не мог — замок в списке
+        // участников исчез вместе с ушедшим.
+        if (!this.granted.size) this.native.setControl?.(false).catch(() => {});
+      }
       this.myGrants.delete(id);
       this.emit('change', {});
     });

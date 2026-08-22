@@ -274,21 +274,27 @@ fn button_of(name: &str) -> Button {
     }
 }
 
+/// Нажать или отпустить клавишу.
+///
+/// Клавиша ищется по своему месту на клавиатуре, а символ на ней — запасной
+/// путь для того, чему места в таблице не нашлось. Символ система вставляет
+/// текстом, а текст вставляется целиком, вместе с отпусканием: поэтому на
+/// отпускании этот путь молчит, иначе буква уходила бы дважды.
 #[cfg(desktop)]
 fn press(e: &mut Enigo, code: Option<&str>, text: Option<&str>, down: bool) -> Result<(), String> {
-    let single = |t: &str| t.chars().count() == 1;
-    let key = code
-        .and_then(key_of)
-        .or_else(|| text.filter(|t| single(t)).and_then(|t| t.chars().next()).map(Key::Unicode));
-    match key {
-        Some(k) => e.key(k, dir(down)).map_err(|err| err.to_string()),
+    if let Some(key) = code.and_then(key_of) {
+        return e.key(key, dir(down)).map_err(|err| err.to_string());
+    }
+    let typed =
+        text.filter(|t| t.chars().count() == 1).and_then(|t| t.chars().next()).filter(|_| down);
+    match typed {
+        Some(c) => e.key(Key::Unicode(c), Direction::Click).map_err(|err| err.to_string()),
         None => Ok(()),
     }
 }
 
-/// Физическое положение клавиши → клавиша системы. Буквы и цифры отдаём
-/// символом латинской раскладки: положение важнее того, что нарисовано на
-/// клавише, иначе на кириллице ничего бы не работало.
+/// Физическое положение клавиши → клавиша системы. Положение важнее того, что
+/// на клавише нарисовано: на кириллице буква другая, а место то же.
 #[cfg(desktop)]
 fn key_of(code: &str) -> Option<Key> {
     let named = match code {
@@ -323,25 +329,44 @@ fn key_of(code: &str) -> Option<Key> {
         "F10" => Key::F10,
         "F11" => Key::F11,
         "F12" => Key::F12,
-        _ => return char_of(code).map(Key::Unicode),
+        _ => return main_block(code),
     };
     Some(named)
 }
 
-/// Символ латинской раскладки для клавиши основного блока.
-#[cfg(desktop)]
-fn char_of(code: &str) -> Option<char> {
-    if let Some(letter) = code.strip_prefix("Key") {
-        let mut it = letter.chars();
-        let c = it.next()?;
-        return (it.next().is_none() && c.is_ascii_alphabetic()).then(|| c.to_ascii_lowercase());
+/// Клавиша основного блока — номером, каким её знает система.
+///
+/// Раньше отсюда уходил символ латинской раскладки: `KeyT` превращался в «t», а
+/// систему просили найти клавишу, которая этот символ печатает. Пока раскладка
+/// на том конце латинская, клавиша находится и всё сходится. На кириллице
+/// клавиши с «t» нет, и обе системы отвечают на это по-своему, но одинаково
+/// плохо.
+///
+/// Windows перестаёт нажимать клавишу и вставляет символ текстом — а текст она
+/// вставляет целиком, не разбирая, нажатие пришло или отпускание. Буква уходила
+/// дважды: вместо «тест» получалось «ттеесстт». macOS клавиши не находит и
+/// берёт нулевой номер, а это «A», — и любое нажатие печатало одну и ту же
+/// букву.
+///
+/// Поэтому раскладку не спрашиваем вовсе. Номер клавиши от языка не зависит, и
+/// нажатие получается ровно тем же, каким было бы рукой на этом месте: что
+/// напечатать, решит раскладка того компьютера — как и должно быть. Таблица
+/// номеров общая со слежением за клавиатурой (`codes.rs`): разъехавшись, они
+/// дали бы сочетание, которое срабатывает не на ту клавишу, что назначили.
+#[cfg(all(desktop, any(target_os = "windows", target_os = "macos")))]
+fn main_block(code: &str) -> Option<Key> {
+    crate::codes::number_of(code).map(Key::Other)
+}
+
+/// Там, где номера клавиш зависят от драйвера и сервера окон, остаётся прежний
+/// путь — символ латинской раскладки. Нажатие и отпускание он различает, и
+/// двойных букв здесь не бывало.
+#[cfg(all(desktop, not(any(target_os = "windows", target_os = "macos"))))]
+fn main_block(code: &str) -> Option<Key> {
+    if let Some(c) = ascii_of(code) {
+        return Some(Key::Unicode(c));
     }
-    if let Some(digit) = code.strip_prefix("Digit") {
-        let mut it = digit.chars();
-        let c = it.next()?;
-        return (it.next().is_none() && c.is_ascii_digit()).then_some(c);
-    }
-    Some(match code {
+    let c = match code {
         "Minus" => '-',
         "Equal" => '=',
         "BracketLeft" => '[',
@@ -354,5 +379,23 @@ fn char_of(code: &str) -> Option<char> {
         "Period" => '.',
         "Slash" => '/',
         _ => return None,
-    })
+    };
+    Some(Key::Unicode(c))
+}
+
+/// Буква или цифра, нарисованная на клавише в латинской раскладке.
+#[cfg(all(desktop, not(any(target_os = "windows", target_os = "macos"))))]
+fn ascii_of(code: &str) -> Option<char> {
+    let one = |s: &str| {
+        let mut it = s.chars();
+        let c = it.next()?;
+        it.next().is_none().then_some(c)
+    };
+    if let Some(letter) = code.strip_prefix("Key") {
+        return one(letter).filter(char::is_ascii_alphabetic).map(|c| c.to_ascii_lowercase());
+    }
+    if let Some(digit) = code.strip_prefix("Digit") {
+        return one(digit).filter(char::is_ascii_digit);
+    }
+    None
 }

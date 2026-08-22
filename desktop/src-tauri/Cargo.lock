@@ -5323,6 +5323,8 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 name = "yeruverse-desktop"
 version = "0.1.13"
 dependencies = [
+ "core-foundation",
+ "core-graphics",
  "enigo",
  "serde_json",
  "tauri",
@@ -5332,6 +5334,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tracing",
  "tracing-subscriber",
+ "windows",
 ]
 
 [[package]]

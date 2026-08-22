@@ -488,6 +488,14 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
 }
 .chat-log > * { max-width: 100%; }
 .chat-log .who { color: var(--accent); font-weight: 600; margin-right: 5px; }
+/* Ссылка подчёркнута, а не только окрашена: цвет ника здесь тот же, и без
+   черты строка «Вы:» и адрес выглядели бы одним и тем же. Подчёркивание
+   приспущено, чтобы не резать буквы с хвостами. */
+.chat-log .link {
+  color: var(--accent);
+  text-underline-offset: 2px;
+}
+.chat-log .link:hover { text-decoration-thickness: 2px; }
 .chat-log .sys { color: var(--muted); font-size: 13px; font-style: italic; }
 /* Час набран прямым: он такой же, как в остальных строках, и наклон делал бы
    из него часть фразы. */

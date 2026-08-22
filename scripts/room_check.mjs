@@ -120,6 +120,25 @@ await b.press('#chat-input', 'Enter');
 await a.waitForTimeout(900);
 note((await a.textContent('#chat-log')).includes('слышно?'), 'чат доходит');
 
+// Ссылку в сообщении можно нажать, а вот подставить через неё разметку или
+// чужую схему — нельзя: строка приходит от чужого клиента, и кладётся она
+// текстом. Проверяем оба края разом, одним сообщением.
+await b.fill('#chat-input', 'вот https://s.team/p/abc, а вот javascript:alert(1) <b>жирным</b>');
+await b.press('#chat-input', 'Enter');
+await a.waitForTimeout(900);
+const links = await a.evaluate(() => ({
+  hrefs: [...document.querySelectorAll('#chat-log a.link')].map((el) => el.href),
+  tags: document.querySelectorAll('#chat-log b').length,
+  text: document.querySelector('#chat-log')?.textContent ?? '',
+}));
+note(links.hrefs.includes('https://s.team/p/abc'), 'ссылка в чате нажимается', links.hrefs.join(' '));
+note(
+  !links.hrefs.some((h) => h.startsWith('javascript:')) && links.tags === 0,
+  'чужая схема и разметка остаются текстом',
+  `тегов ${links.tags}`
+);
+note(links.text.includes('<b>жирным</b>'), 'разметка видна как написана');
+
 // Системные строки — с часами, как и всё остальное в чате: «вышел» без времени
 // в разговоре, к которому вернулись через полчаса, ни о чём не говорит.
 const sysTimes = await a.evaluate(() =>

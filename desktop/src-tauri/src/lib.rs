@@ -21,7 +21,10 @@
 //! через `cfg(desktop)`, а `capabilities()` честно сообщает фронтенду, чего в
 //! этой сборке нет.
 
+mod codes;
 mod input;
+#[cfg(desktop)]
+mod keys;
 
 use std::time::Duration;
 
@@ -291,12 +294,32 @@ fn parse_shortcut(combo: &str) -> Option<Shortcut> {
     Some(Shortcut::new(Some(mods), code?))
 }
 
-/// Регистрирует сочетания системно — они срабатывают, даже когда окно свёрнуто
-/// и человек в игре. Список приходит целиком: так проще держать его в согласии
+/// Новый список сочетаний. Приходит целиком: так проще держать его в согласии
 /// с настройками, чем ловить отдельные добавления и удаления.
+///
+/// Путей два, и они не равнозначны. Обычно мы просто смотрим за клавиатурой
+/// (см. `keys.rs`): клавиша срабатывает у нас и всё равно уходит дальше, в игру
+/// или в браузер. Где смотреть нечем — на Linux, и на macOS, пока человек не
+/// разрешил мониторинг ввода, — остаётся регистрация у системы, а она клавишу
+/// забирает себе целиком. Об этом фронтенд узнаёт из `capabilities` и
+/// предупреждает, когда назначают одиночную клавишу.
 #[cfg(desktop)]
 #[tauri::command]
-fn set_hotkeys(app: tauri::AppHandle, hotkeys: Vec<(String, String)>) -> Result<(), String> {
+fn set_hotkeys(
+    app: tauri::AppHandle,
+    watcher: tauri::State<'_, keys::Keys>,
+    hotkeys: Vec<(String, String)>,
+) -> Result<(), String> {
+    if watcher.set(hotkeys.clone()) {
+        return Ok(());
+    }
+    grab_hotkeys(app, hotkeys)
+}
+
+/// Запасной путь: отдать сочетания системе. Клавиша при этом достаётся нам
+/// монопольно — другие приложения её больше не увидят.
+#[cfg(desktop)]
+fn grab_hotkeys(app: tauri::AppHandle, hotkeys: Vec<(String, String)>) -> Result<(), String> {
     let manager = app.global_shortcut();
     let _ = manager.unregister_all();
 
@@ -448,23 +471,65 @@ async fn overlay(_enabled: bool) -> Result<(), String> {
 
 /// Что умеет эта сборка — фронтенд прячет по ней недоступные кнопки.
 ///
+/// `hotkeyMode` — как достаются системные сочетания и достаются ли вообще.
+/// Отдельного «умеем ли» рядом с ним больше нет: два поля про одно и то же
+/// расходились бы ровно тогда, когда это важнее всего.
+///
 /// `updates` — умеет ли приложение обновиться само, не выходя наружу. Это
 /// настольная сборка: там плагин скачивает пакет и проверяет его подпись. На
 /// Android пакет ставит система, поэтому там страница сравнивает `version` с
 /// той, что отдаёт сервер комнат, и открывает ссылку на APK.
 #[tauri::command]
-fn capabilities() -> serde_json::Value {
+fn capabilities(app: tauri::AppHandle) -> serde_json::Value {
+    let _ = &app;
+    // Как достаются системные сочетания: `watch` — смотрим за клавиатурой, и
+    // клавиша остаётся рабочей для всех остальных; `grab` — забираем её у
+    // системы себе, и больше её никто не увидит. Страница по этому решает,
+    // предупреждать ли о назначении одиночной клавиши.
+    #[cfg(desktop)]
+    let hotkeys = if app.state::<keys::Keys>().watching() { "watch" } else { "grab" };
+    #[cfg(not(desktop))]
+    let hotkeys = "none";
+
     serde_json::json!({
         "platform": std::env::consts::OS,
         "version": env!("CARGO_PKG_VERSION"),
         "overlay": cfg!(desktop),
-        "globalHotkeys": cfg!(desktop),
+        "hotkeyMode": hotkeys,
         "remoteControl": cfg!(desktop),
         "updates": cfg!(desktop),
     })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Главное окно закрыли — значит, приложения больше нет.
+///
+/// Окон у нас два, и второе человеку не видно вовсе: прозрачное окно с
+/// курсорами зрителей живёт поверх всех приложений, без рамки и без строки в
+/// панели задач. Для системы это всё равно окно, а приложение заканчивается
+/// только вместе с последним из них — и, закрыв комнату во время трансляции,
+/// человек оставлял процесс жить дальше. Увидеть его было негде.
+///
+/// Дороже всего это обходилось системным сочетаниям. Windows отдаёт
+/// зарегистрированную клавишу владельцу монопольно и забирает регистрацию
+/// только со смертью процесса: назначенная на перехват клавиша переставала
+/// работать во всей системе — и «после выхода из YeruVerse» тоже, потому что
+/// никакого выхода на самом деле не было.
+///
+/// Поэтому сочетания снимаем сами и закрываемся целиком, не дожидаясь, пока
+/// закончатся окна.
+#[cfg(desktop)]
+fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    if window.label() != "main" || !matches!(event, tauri::WindowEvent::Destroyed) {
+        return;
+    }
+    let app = window.app_handle();
+    let _ = app.global_shortcut().unregister_all();
+    app.exit(0);
+}
+
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -478,7 +543,8 @@ pub fn run() {
     #[cfg(desktop)]
     let builder = builder
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_updater::Builder::new().build());
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .on_window_event(on_window_event);
 
     builder
         .manage(input::Input::start())
@@ -505,6 +571,11 @@ pub fn run() {
             input::input_release,
         ])
         .setup(|app| {
+            // Слежение за клавиатурой поднимаем здесь: до появления `AppHandle`
+            // сообщить о нажатии всё равно некому.
+            #[cfg(desktop)]
+            app.manage(keys::Keys::start(app.handle().clone()));
+
             // Уходим на сохранённый сервер, только если он отвечает. Молчит —
             // остаёмся на адресе по умолчанию: сервер мог переехать, лечь или
             // оказаться опечаткой, и во всех трёх случаях белое окно без единой

@@ -14,14 +14,14 @@ import { pollSunshine, sunshineHint } from './sunshine.js';
 import { enableMic } from './devices.js';
 
 /**
- * Есть ли чем нажимать сочетания.
+ * Есть ли кому ловить сочетания.
  *
- * На телефоне назначать их не на чем: экранная клавиатура вылезает только в
- * поле ввода и никаких Ctrl+Alt не отдаёт. Спрашиваем не «телефон ли это», а
- * есть ли точный указатель: планшет с клавиатурой и мышью сочетания получит,
- * а телефон с одним касанием — нет.
+ * Ловит их одна только оболочка приложения — на уровне системы, чтобы работало
+ * и из полноэкранной игры. В браузере такого нет и быть не может, и раздел там
+ * обещал бы настройку, которой неоткуда сработать; на телефоне их вдобавок
+ * нечем и нажать.
  */
-const hasKeyboard = () => matchMedia('(any-pointer: fine)').matches;
+const hasHotkeys = () => native.caps.hotkeyMode !== 'none';
 
 export function initSettingsPanel() {
   wireSettings();
@@ -32,9 +32,9 @@ function wireSettings() {
   const modal = ui('#settings');
   const close = () => (modal.hidden = true);
 
-  // Раздел сочетаний на телефоне не показываем вовсе: настройка, которую там
-  // нечем ни задать, ни применить, — это просто мусор в окне.
-  ui('#hotkeys-section').hidden = !hasKeyboard();
+  // Раздел прячем там, где ловить сочетания некому: настройка, которой неоткуда
+  // сработать, — это просто мусор в окне.
+  ui('#hotkeys-section').hidden = !hasHotkeys();
 
   ui('#btn-settings').onclick = () => {
     modal.hidden = false;
@@ -42,7 +42,7 @@ function wireSettings() {
     // Смотреть на «—» первую секунду незачем: диагностику рисуем сразу.
     painted = '';
     renderDiagnostics();
-    if (hasKeyboard()) renderHotkeys();
+    if (hasHotkeys()) renderHotkeys();
   };
   ui('#btn-settings-close').onclick = () => {
     hotkeys.cancelRecording();
@@ -214,14 +214,56 @@ export function wireHotkeys() {
     }
   });
 
-  if (!native.caps.globalHotkeys) return;
+  if (!hasHotkeys()) return;
 
-  // В приложении те же сочетания регистрируются системно — иначе они работали
-  // бы только когда окно в фокусе, а нужны они как раз из игры.
-  const sync = () => native.setHotkeys(hotkeys.globalCombos()).catch(() => {});
+  // Ловит сочетания оболочка, и она же решает, как: смотреть за клавиатурой или
+  // забрать клавишу у системы. Наше дело — держать её список в согласии с
+  // настройками и звать действие, когда она сообщит о срабатывании.
+  const sync = () => native.setHotkeys(hotkeys.combos()).catch(() => {});
   hotkeys.onChange = sync;
   native.onHotkey(({ id, down }) => hotkeys.fire(id, down));
   sync();
+}
+
+/**
+ * Одиночная клавиша там, где сочетания забираются у системы.
+ *
+ * Обычно приложение за клавиатурой просто смотрит, и назначенная клавиша
+ * продолжает работать везде. Но где смотреть нечем — на Linux, и на macOS, пока
+ * не выдан мониторинг ввода, — сочетание приходится регистрировать у системы, а
+ * она отдаёт клавишу владельцу целиком: в игре и в любой другой программе та
+ * перестаёт работать вовсе. С модификатором это незаметно (уходит сочетание, а
+ * не клавиша), поэтому говорим только про одиночные — и говорим сразу, а не
+ * оставляем человека выяснять это через неделю в игре.
+ */
+function warnAboutGrab(combo) {
+  if (native.caps.hotkeyMode !== 'grab') return;
+  const mac = native.caps.platform === 'macos';
+  // Совет один и тот же на оба случая: там, где смотреть за вводом можно,
+  // работает и мышь, и одиночная клавиша.
+  const fix = mac
+    ? 'Разрешите YeruVerse мониторинг ввода в настройках безопасности и ' +
+      'перезапустите его.'
+    : '';
+
+  // Мышь достаётся только слежению: система отдаёт по имени одни клавиши, и
+  // назначенная кнопка здесь не сработает вообще нигде — молчать об этом
+  // нельзя, иначе она выглядит назначенной и рабочей.
+  if (combo.includes('Mouse')) {
+    return toast(
+      `${hotkeyLabel(combo)} здесь не сработает: система отдаёт сочетания ` +
+        `только с клавиатуры. ${fix || 'Назначьте клавишу.'}`,
+      14000
+    );
+  }
+
+  if (combo.includes('+')) return;
+  toast(
+    `${hotkeyLabel(combo)} назначена, но пока YeruVerse запущен, эта клавиша ` +
+      'достанется только ему — в играх и других программах она работать не будет. ' +
+      (fix || 'Добавьте к ней Ctrl или Alt, чтобы этого избежать.'),
+    14000
+  );
 }
 
 /** Список сочетаний в настройках: нажал «изменить» — нажал клавиши. */
@@ -238,7 +280,10 @@ function hotkeyRow(action) {
       combo.textContent = 'нажмите клавиши…';
       const next = await hotkeys.record();
       combo.classList.remove('recording');
-      if (next) hotkeys.set(action.id, next);
+      if (next) {
+        hotkeys.set(action.id, next);
+        warnAboutGrab(next);
+      }
       renderHotkeys();
     },
   });

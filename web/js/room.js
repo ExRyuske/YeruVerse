@@ -141,9 +141,13 @@ net.on('welcome', ({ you, peers }) => {
   state.everJoined = true;
 
   announceShares();
+  // Микрофон включён по умолчанию — и «не слышать остальных» тут ни при чём.
+  // Пока `else` стоял за строкой про `deafened`, тот, кто выключил у себя звук,
+  // входил в комнату ещё и немым: собственный микрофон не поднимался вовсе, а
+  // выглядело это как поломка ровно у того, кто просто не хотел слушать.
   if (voice.enabled) net.send({ t: 'presence', voice: true, muted: voice.muted });
+  else enableMic();
   if (voice.deafened) net.send({ t: 'presence', deaf: true });
-  else enableMic();   // микрофон включён по умолчанию
 });
 
 net.on('peer_join', ({ peer }) => {

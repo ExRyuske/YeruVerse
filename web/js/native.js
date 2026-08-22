@@ -11,7 +11,9 @@ export const native = {
   caps: {
     platform: 'web',
     overlay: false,
-    globalHotkeys: false,
+    // Как достаются системные сочетания: `watch` — клавишу видим и пропускаем
+    // дальше, `grab` — забираем её у всей системы себе, `none` — их нет вовсе.
+    hotkeyMode: 'none',
     remoteControl: false,
     updates: false,
   },
