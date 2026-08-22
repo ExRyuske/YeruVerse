@@ -501,7 +501,6 @@ fn capabilities(app: tauri::AppHandle) -> serde_json::Value {
     })
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Главное окно закрыли — значит, приложения больше нет.
 ///
 /// Окон у нас два, и второе человеку не видно вовсе: прозрачное окно с
@@ -530,6 +529,7 @@ fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     app.exit(0);
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
