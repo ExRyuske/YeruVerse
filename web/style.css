@@ -3,8 +3,11 @@
   --panel: #171a21;
   --text: #e8eaed;
   --muted: #8b93a1;
-  --accent: #5b8cff;
+  --accent: #8b5cf6;
   --accent-text: #fff;
+  /* Тот же тон, но светлее: заливкой #8b5cf6 читается, а текстом по тёмному
+     фону не дотягивает до контраста 4.5:1 — им набраны ники в чате и ссылки. */
+  --accent-soft: #a78bfa;
   --border: color-mix(in srgb, var(--text) 14%, transparent);
   /* Три состояния на всё приложение: работает, внимание, не работает. */
   --ok: #3ecf8e;
@@ -360,7 +363,7 @@ button.mark:hover:not(:disabled) {
   border: none; color: var(--text); background: var(--panel);
 }
 .mark.off { color: #ff6b6b; }
-.mark.on { color: var(--accent); }
+.mark.on { color: var(--accent-soft); }
 
 /* Значки внутри строки участника стоят вплотную, а группы отделены общим
    отступом ряда. Пока они были прямыми участниками ряда, между каждыми двумя
@@ -422,7 +425,7 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
   padding: 6px 10px; min-width: 150px; text-align: center;
 }
-.hotkeys .combo.recording { border-color: var(--accent); color: var(--accent); }
+.hotkeys .combo.recording { border-color: var(--accent); color: var(--accent-soft); }
 .hotkeys .clear { padding: 6px 8px; }
 
 /* Диагностика: строка = вопрос и ответ словами, а цвет точки говорит, надо ли
@@ -487,12 +490,12 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
   min-width: 0;
 }
 .chat-log > * { max-width: 100%; }
-.chat-log .who { color: var(--accent); font-weight: 600; margin-right: 5px; }
+.chat-log .who { color: var(--accent-soft); font-weight: 600; margin-right: 5px; }
 /* Ссылка подчёркнута, а не только окрашена: цвет ника здесь тот же, и без
    черты строка «Вы:» и адрес выглядели бы одним и тем же. Подчёркивание
    приспущено, чтобы не резать буквы с хвостами. */
 .chat-log .link {
-  color: var(--accent);
+  color: var(--accent-soft);
   text-underline-offset: 2px;
 }
 .chat-log .link:hover { text-decoration-thickness: 2px; }
@@ -526,7 +529,7 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
   display: flex; align-items: center; justify-content: center;
   border: 2px dashed var(--accent); border-radius: var(--radius);
   background: color-mix(in srgb, var(--bg) 72%, transparent);
-  color: var(--accent); font-weight: 600;
+  color: var(--accent-soft); font-weight: 600;
 }
 
 /* Картинка из чата: показываем целиком, но не даём растянуть колонку. */

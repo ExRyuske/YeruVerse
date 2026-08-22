@@ -397,16 +397,30 @@ fn limit(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }
 
+/// Палитра ников — та же, что в `web/js/settings.js`. Свой цвет человек
+/// выбирает там, здесь она нужна только для клиента, который цвета не прислал.
+const NICK_PALETTE: [&str; 10] = [
+    "#5b8cff", "#3ecf8e", "#f0a020", "#ff6b6b", "#c586ff", "#ff8bd0", "#4ecdc4", "#ffd93d",
+    "#9aa5b1", "#ff7043",
+];
+
 /// Цвет ника приходит от клиента и попадает в чужой DOM — пропускаем только
-/// строгий `#rrggbb`, всё остальное заменяем цветом по умолчанию.
+/// строгий `#rrggbb`.
+///
+/// Не прошедшему замена — случайный цвет из палитры, а не один и тот же на
+/// всех: цвет ника нужен, чтобы участники различались, и одинаковый запасной
+/// ровно эту работу и отменял бы. Клиент на первом запуске выбирает так же.
 fn sanitize_color(raw: Option<&str>) -> String {
-    const DEFAULT: &str = "#5b8cff";
-    let Some(c) = raw else { return DEFAULT.to_string() };
+    fn random() -> String {
+        let n = uuid::Uuid::new_v4().as_bytes()[0] as usize;
+        NICK_PALETTE[n % NICK_PALETTE.len()].to_string()
+    }
+    let Some(c) = raw else { return random() };
     let ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit());
     if ok {
         c.to_ascii_lowercase()
     } else {
-        DEFAULT.to_string()
+        random()
     }
 }
 
@@ -426,14 +440,24 @@ mod tests {
         assert_eq!(sanitize_room("://?#").len(), 8);
     }
 
-    /// Цвет уезжает в чужой style — только строгий `#rrggbb`.
+    /// Цвет уезжает в чужой style — только строгий `#rrggbb`. Остальному
+    /// замена из палитры, а какой именно — дело случая, поэтому сверяем
+    /// принадлежность, а не значение.
     #[test]
-    fn color_is_either_a_hex_triplet_or_the_default() {
+    fn color_is_either_a_hex_triplet_or_one_from_the_palette() {
         assert_eq!(sanitize_color(Some("#AABBCC")), "#aabbcc");
-        assert_eq!(sanitize_color(Some("red")), "#5b8cff");
-        assert_eq!(sanitize_color(Some("#abc")), "#5b8cff");
-        assert_eq!(sanitize_color(Some("#00ff00;x")), "#5b8cff");
-        assert_eq!(sanitize_color(None), "#5b8cff");
+        for raw in [Some("red"), Some("#abc"), Some("#00ff00;x"), None] {
+            assert!(NICK_PALETTE.contains(&sanitize_color(raw).as_str()), "{raw:?}");
+        }
+    }
+
+    /// Случайный — значит разный: на сотне подряд одинаковый цвет означал бы,
+    /// что выбор сломан и все такие участники слились в один.
+    #[test]
+    fn fallback_color_is_not_always_the_same() {
+        let seen: std::collections::HashSet<String> =
+            (0..100).map(|_| sanitize_color(None)).collect();
+        assert!(seen.len() > 1, "выпал один цвет на сто попыток: {seen:?}");
     }
 
     /// Метка для логов должна отличать комнаты и не выдавать их кодов.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Иконки проекта — и приложения, и интерфейса.
 
-    python3 scripts/icons.py app     # PNG и ICO всех размеров из одного рисунка
+    python3 scripts/icons.py app     # PNG всех размеров из контура Font Awesome
     python3 scripts/icons.py ui      # web/js/icons.js из Font Awesome Free
 
 Две половины независимы, но дело одно, и держать под него два скрипта с
@@ -19,12 +19,30 @@ import urllib.request
 import zlib
 from pathlib import Path
 
-BG_TOP = (0x1B, 0x20, 0x30)
+BG_TOP = (0x22, 0x1A, 0x30)
 BG_BOTTOM = (0x0B, 0x0D, 0x12)
-RING_A = (0x5B, 0x8C, 0xFF)
-RING_B = (0xA7, 0x8B, 0xFA)
-PLAY = (0xF2, 0xF5, 0xFF)
-MOON = (0x3E, 0xCF, 0x8E)
+MARK_A = (0x7C, 0x3A, 0xED)
+MARK_B = (0xA7, 0x8B, 0xFA)
+
+# Знак приложения — circle-play из Font Awesome Free 6.7.2, стиль Solid: тот же
+# набор, что и у иконок интерфейса, поэтому иконка на рабочем столе и кнопки
+# внутри окна нарисованы одной рукой.
+#
+# Контур берём числами, а не разбором SVG: circle-play — это ровно круг и
+# вырезанный из него треугольник, а растеризатор ниже обе фигуры уже умеет.
+# Разбор кривых пришлось бы писать с нуля ради формы, которую он всё равно
+# вернул бы такой же. Числа — из поля 512×512 самого контура, в долях стороны.
+#
+# Font Awesome Free — CC BY 4.0, https://fontawesome.com/license/free
+# Copyright Fonticons, Inc.
+GLYPH = 0.66                        # какую долю картинки занимает круг
+FA_R = 0.5 * GLYPH                  # круг: центр 256, радиус 256
+FA_TRI = (                          # треугольник относительно центра
+    (-80 / 512 * GLYPH, -88 / 512 * GLYPH),     # (176, 168)
+    (100 / 512 * GLYPH, 0.0),                   # (356, 256)
+    (-80 / 512 * GLYPH, 88 / 512 * GLYPH),      # (176, 344)
+)
+FA_TRI_R = 12 / 512 * GLYPH         # скругление его углов
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -42,18 +60,44 @@ def sd_rounded_rect(px, py, half, r):
 
 
 def sd_polygon(px, py, pts):
-    """Точный SDF выпуклого многоугольника: максимум расстояний до его сторон."""
-    best = -1e9
+    """SDF выпуклого многоугольника, обойдённого по часовой стрелке.
+
+    Расстояние до ближайшей стороны — именно до отрезка, а не до прямой, на
+    которой он лежит. Максимум расстояний до прямых был бы дешевле, но у
+    внешних углов он занижает ответ, и скруглить такие углы, вычтя радиус, не
+    получится: вычитание раздвинуло бы стороны, оставив углы острыми.
+    """
+    best = 1e9
+    inside = True
     n = len(pts)
     for i in range(n):
         ax, ay = pts[i]
         bx, by = pts[(i + 1) % n]
         ex, ey = bx - ax, by - ay
-        length = math.hypot(ex, ey)
+        wx, wy = px - ax, py - ay
+        t = min(1.0, max(0.0, (wx * ex + wy * ey) / (ex * ex + ey * ey)))
+        best = min(best, math.hypot(wx - ex * t, wy - ey * t))
         # Нормаль наружу для обхода по часовой стрелке.
-        nx, ny = ey / length, -ex / length
-        best = max(best, (px - ax) * nx + (py - ay) * ny)
-    return best
+        if wx * ey - wy * ex > 0:
+            inside = False
+    return -best if inside else best
+
+
+def inset_triangle(pts, r):
+    """Треугольник со сторонами, сдвинутыми внутрь на r.
+
+    Скруглить углы — это ужать фигуру на радиус и раздуть обратно. У
+    треугольника ужатый подобен исходному: тот же центр вписанной окружности,
+    её радиус меньше на r.
+    """
+    (ax, ay), (bx, by), (cx, cy) = pts
+    la, lb, lc = math.dist(pts[1], pts[2]), math.dist(pts[2], pts[0]), math.dist(pts[0], pts[1])
+    per = la + lb + lc
+    ix = (la * ax + lb * bx + lc * cx) / per
+    iy = (la * ay + lb * by + lc * cy) / per
+    area = abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) / 2
+    k = 1.0 - r / (2 * area / per)
+    return [(ix + (x - ix) * k, iy + (y - iy) * k) for x, y in pts]
 
 
 def lerp(a, b, t):
@@ -69,21 +113,9 @@ def render(size):
     aa = s / 512.0            # ширина полосы сглаживания в пикселях
     cx = cy = s / 2.0
 
-    ring_r = 0.315 * s        # радиус средней линии орбиты
-    ring_w = 0.052 * s        # половина толщины
-    play_r = 0.014 * s        # скругление углов треугольника
-
-    # Треугольник по часовой стрелке, слегка ужат — скругление добавит объём.
-    tri = [
-        (cx - 0.075 * s, cy - 0.115 * s),
-        (cx + 0.135 * s, cy),
-        (cx - 0.075 * s, cy + 0.115 * s),
-    ]
-
-    moon_a = math.radians(-52)
-    mx = cx + math.cos(moon_a) * ring_r
-    my = cy + math.sin(moon_a) * ring_r
-    moon_r = 0.062 * s
+    mark_r = FA_R * s
+    tri = inset_triangle([(cx + x * s, cy + y * s) for x, y in FA_TRI], FA_TRI_R * s)
+    tri_r = FA_TRI_R * s
 
     rows = []
     for y in range(size):
@@ -96,27 +128,19 @@ def render(size):
             # Фон: скруглённый квадрат с вертикальным градиентом.
             d_bg = sd_rounded_rect(px - cx, py - cy, s / 2.0, 0.225 * s)
             bg_alpha = smoothstep(aa, d_bg)
-            color = lerp(BG_TOP, BG_BOTTOM, py / s)
+            bg = lerp(BG_TOP, BG_BOTTOM, py / s)
+            color = bg
 
-            # Орбита.
-            d_ring = abs(math.hypot(px - cx, py - cy) - ring_r) - ring_w
-            a = smoothstep(aa, d_ring)
+            # Круг.
+            a = smoothstep(aa, math.hypot(px - cx, py - cy) - mark_r)
             if a > 0:
-                color = over(color, lerp(RING_A, RING_B, (px + py) / (2 * s)), a)
+                color = over(color, lerp(MARK_A, MARK_B, (px + py) / (2 * s)), a)
 
-            # Спутник: тёмный ободок отделяет его от орбиты.
-            d_moon = math.hypot(px - mx, py - my) - moon_r
-            a = smoothstep(aa, d_moon + 0.022 * s)
+            # Треугольник вырезан из круга, а не положен сверху: в контуре
+            # Font Awesome он дырка, и сквозь него виден тот же фон, что вокруг.
+            a = smoothstep(aa, sd_polygon(px, py, tri) - tri_r)
             if a > 0:
-                color = over(color, BG_BOTTOM, a)
-            a = smoothstep(aa, d_moon)
-            if a > 0:
-                color = over(color, MOON, a)
-
-            # Треугольник воспроизведения.
-            a = smoothstep(aa, sd_polygon(px, py, tri) - play_r)
-            if a > 0:
-                color = over(color, PLAY, a)
+                color = over(color, bg, a)
 
             row += bytes(int(round(min(255, max(0, c)))) for c in color)
             row.append(int(round(255 * bg_alpha)))
@@ -266,6 +290,9 @@ def ui_icons() -> None:
         'Контуры иконок из набора Font Awesome Free, стиль Solid. В репозитории\n'
         'они лежат не файлами, а внутри `web/js/icons.js` — его собирает\n'
         '`scripts/icons.py ui`, там же список используемых иконок.\n\n'
+        'Из того же набора нарисован и знак приложения — `circle-play`:\n'
+        '`web/icon.svg` берёт контур целиком, а растровые иконки собирает\n'
+        '`scripts/icons.py app` по его размерам.\n\n'
         '* Иконки — CC BY 4.0: https://creativecommons.org/licenses/by/4.0/\n'
         '* Проект и лицензия целиком: https://fontawesome.com/license/free\n'
         '* Copyright Fonticons, Inc.\n'

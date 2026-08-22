@@ -131,9 +131,17 @@ const links = await a.evaluate(() => ({
   tags: document.querySelectorAll('#chat-log b').length,
   text: document.querySelector('#chat-log')?.textContent ?? '',
 }));
-note(links.hrefs.includes('https://s.team/p/abc'), 'ссылка в чате нажимается', links.hrefs.join(' '));
 note(
-  !links.hrefs.some((h) => h.startsWith('javascript:')) && links.tags === 0,
+  links.hrefs.some((h) => h === 'https://s.team/p/abc'),
+  'ссылка в чате нажимается',
+  links.hrefs.join(' ')
+);
+// Схему сверяем со списком разрешённого, а не запрещённого: `javascript:` —
+// лишь один способ из нескольких, рядом с ним всегда стоят `data:` и
+// `vbscript:`, и запрет по имени всегда отстаёт на одну схему. Разрешена ровно
+// одна — та же, что и в `withLinks`.
+note(
+  links.hrefs.every((h) => new URL(h).protocol === 'https:') && links.tags === 0,
   'чужая схема и разметка остаются текстом',
   `тегов ${links.tags}`
 );
