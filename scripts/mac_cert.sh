@@ -36,8 +36,12 @@ if [ -f "$CERT" ]; then
 else
   mkdir -p "$(dirname "$CERT")"
   # Пароль рождается сам и ложится рядом — как у ключа обновлений и keystore.
+  # Два UUID вместо чтения /dev/urandom через канал: конструкция
+  # `tr ... < /dev/urandom | head -c N` намертво вешала сборку в CI, где
+  # SIGPIPE игнорируется и `tr` не узнаёт, что его читателя уже нет
+  # (подробности — в scripts/build_app.sh).
   if [ ! -f "$PASS_FILE" ]; then
-    LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32 > "$PASS_FILE"
+    printf %s "$(uuidgen)$(uuidgen)" > "$PASS_FILE"
     chmod 600 "$PASS_FILE"
   fi
   pass="$(tr -d '\n' < "$PASS_FILE")"

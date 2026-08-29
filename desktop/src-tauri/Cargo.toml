@@ -59,21 +59,36 @@ core-foundation = "0.10"
 #
 # Фичи перечислены поимённо: у этих крейтов почти всё под своим флагом, и без
 # них компилируется пустой модуль, а ошибка выглядит как «нет такого метода».
+#
+# Везде `default-features = false`: набор по умолчанию тянет привязки ко всему
+# фреймворку разом. У ScreenCaptureKit в нём лежит AVFoundation — шестьдесят
+# тысяч строк сгенерированного кода, из которого мы не зовём ни строчки.
+# На время сборки это влияет мало (замерено: секунда с небольшим из пятнадцати),
+# но и держать их незачем — в дерево они больше не попадают. Перечислено ровно
+# то, что зовётся из `sysaudio`.
 objc2 = "0.6"
 objc2-foundation = "0.3"
-objc2-core-audio-types = { version = "0.3", features = ["objc2"] }
-objc2-core-media = { version = "0.3", features = [
+objc2-core-audio-types = { version = "0.3", default-features = false, features = [
+  "std",
+  "objc2",
+] }
+objc2-core-media = { version = "0.3", default-features = false, features = [
+  "std",
+  "objc2",
+  "CMBase",
+  "CMTime",
   "CMSampleBuffer",
   "CMBlockBuffer",
-  "CMFormatDescription",
-  "CMSync",
   "objc2-core-audio-types",
 ] }
-objc2-screen-capture-kit = { version = "0.3", features = [
+objc2-screen-capture-kit = { version = "0.3", default-features = false, features = [
+  "std",
   "SCStream",
   "SCShareableContent",
   "SCError",
   "objc2-core-media",
+  "objc2-core-foundation",
+  "objc2-core-graphics",
   "dispatch2",
   "block2",
 ] }

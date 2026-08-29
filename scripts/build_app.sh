@@ -46,7 +46,13 @@ if [ "$(uname -s)" = "Darwin" ]; then
   cert_pass=''
   if [ -n "${MAC_CERTIFICATE:-}" ]; then
     cert="$(mktemp -t yeruverse-cert).p12"
-    printf %s "$MAC_CERTIFICATE" | tr -d '[:space:]' | base64 --decode > "$cert"
+    # Через файлы, а не одним каналом: `base64` на испорченном секрете
+    # заканчивается досрочно, и тогда `tr` остаётся писать в закрытый канал —
+    # см. рассказ про SIGPIPE у пароля связки ниже.
+    printf %s "$MAC_CERTIFICATE" > "$cert.b64"
+    tr -d '[:space:]' < "$cert.b64" > "$cert.b64.clean"
+    base64 --decode < "$cert.b64.clean" > "$cert"
+    rm -f "$cert.b64" "$cert.b64.clean"
     cert_pass="${MAC_CERTIFICATE_PASSWORD:-}"
   elif [ -f "${MAC_CERT:-$HOME/.yeruverse/macos.p12}" ]; then
     cert="${MAC_CERT:-$HOME/.yeruverse/macos.p12}"
@@ -57,8 +63,27 @@ if [ "$(uname -s)" = "Darwin" ]; then
     echo "::warning::нет сертификата macOS — приложение выйдет неподписанным, и права доступа слетят при следующем обновлении. Сделайте его: make mac-cert"
   else
     trap cleanup EXIT INT TERM
+    echo "готовим связку ключей для подписи"
     keychain="$HOME/Library/Keychains/yeruverse-build.keychain-db"
-    kpass="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)"
+    # Пароль временной связки: два UUID и ни одного канала.
+    #
+    # Раньше здесь стояло `tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24`, и
+    # на этой строчке сборка в CI вставала намертво — сорок три минуты без
+    # единой строки вывода, до отмены по таймауту. В логе оставался осиротевший
+    # процесс `tr`, и по нему всё и нашлось.
+    #
+    # Устроено это так. `head` уходит, забрав свои двадцать четыре байта, и
+    # закрывает канал; `tr` при следующей записи должен получить SIGPIPE и
+    # умереть. Но раннер GitHub запускает шаги с SIGPIPE, выставленным в
+    # «игнорировать», а такая настройка переживает exec и достаётся всем
+    # потомкам. Вместо сигнала `tr` получает ошибку записи, ошибку эту не
+    # проверяет — и вечно читает бесконечный /dev/urandom, а подстановка ждёт
+    # от него конца вывода. На своей машине этого не видно никогда: там SIGPIPE
+    # обычный, и `tr` умирает мгновенно.
+    #
+    # Отсюда правило: не оставлять никого читать бесконечный поток и не
+    # ставить перед ним читателя, который вправе уйти раньше времени.
+    kpass="$(uuidgen)$(uuidgen)"
 
     security delete-keychain "$keychain" 2>/dev/null || true
     security create-keychain -p "$kpass" "$keychain"
