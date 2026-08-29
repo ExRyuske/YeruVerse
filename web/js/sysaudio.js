@@ -35,8 +35,9 @@ export async function captureSound() {
   if (!Channel) throw new Error('нативный слой недоступен');
 
   // Контекст может быть приостановлен — тогда дорожка молчала бы, а причина
-  // была бы не видна ни в одном месте.
-  await resume();
+  // была бы не видна ни в одном месте. Ответ проверяем: спящий тракт означает
+  // тишину в трансляции, и молчать об этом нельзя.
+  if (!(await resume())) throw new Error('звуковой тракт не проснулся');
   const ctx = context();
   await ctx.audioWorklet.addModule(new URL('./sound-worklet.js', import.meta.url).href);
 

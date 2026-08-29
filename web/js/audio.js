@@ -63,10 +63,26 @@ export function running() {
   return context().state === 'running';
 }
 
-/** То же, но с ожиданием: нужно тем, кто следом строит на нём граф. */
-export async function resume() {
+/**
+ * То же, но с ожиданием: нужно тем, кто следом строит на нём граф.
+ *
+ * Ждём с оглядкой на часы, и это не перестраховка. На движке WebKit (Safari и
+ * окно приложения на macOS) `resume()` вне жеста пользователя не разрешается и
+ * не отклоняется — промис просто не завершается никогда. Всё, что его ждало,
+ * вставало молча и навсегда: ни ошибки, ни сообщения, ни признака, что
+ * что-то пошло не так. Проверено в настоящем WKWebView.
+ *
+ * Поэтому здесь гонка с таймером, а наружу уходит честное «не поднялся» —
+ * с ним зовущий хотя бы может сказать об этом человеку.
+ */
+export async function resume(wait = 3000) {
   const ctx = context();
-  if (ctx.state !== 'running') await ctx.resume().catch(() => {});
+  if (ctx.state !== 'running') {
+    await Promise.race([
+      ctx.resume().catch(() => {}),
+      new Promise((r) => setTimeout(r, wait)),
+    ]);
+  }
   return ctx.state === 'running';
 }
 

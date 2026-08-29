@@ -19,9 +19,9 @@ const SHARES = {
   screen: {
     button: '#btn-screen',
     presence: 'screen',
-    capture: () => {
+    capture: async () => {
       const q = streamSettings();
-      return navigator.mediaDevices.getDisplayMedia({
+      const stream = await navigator.mediaDevices.getDisplayMedia({
         // ideal, а не exact: если экран меньше или система не тянет, браузер
         // подберёт ближайшее вместо отказа в захвате.
         video: {
@@ -40,6 +40,20 @@ const SHARES = {
         selfBrowserSurface: 'exclude',   // не предлагать транслировать сам YeruVerse
         surfaceSwitching: 'include',     // окно можно сменить, не пересоздавая поток
       });
+
+      // Там, где звук добирает оболочка (macOS), снимаем то, что дал движок.
+      // Он системный звук всё равно не отдаёт, но дорожку под него завести
+      // может — пустую. Уйди она в эфир, зритель получил бы две звуковые
+      // дорожки, одну из них немую, а наша добавилась бы к мёртвой вместо того,
+      // чтобы её заменить. Снимаем здесь, до того как поток разошёлся по
+      // соединениям, — потом это стоило бы лишнего отправителя навсегда.
+      if (canCaptureSound()) {
+        for (const track of stream.getAudioTracks()) {
+          track.stop();
+          stream.removeTrack(track);
+        }
+      }
+      return stream;
     },
     missing: 'Захват экрана недоступен: нужен HTTPS и браузер с его поддержкой',
   },
@@ -145,7 +159,7 @@ export async function toggleShare(kind) {
  * сказать, иначе он будет искать причину в настройках трансляции.
  */
 async function addSystemSound(stream) {
-  if (!canCaptureSound() || stream.getAudioTracks().length) return;
+  if (!canCaptureSound()) return;
   try {
     const track = await captureSound();
     // Пока мы ходили за звуком, трансляцию могли уже выключить.

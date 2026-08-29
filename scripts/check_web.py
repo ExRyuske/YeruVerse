@@ -9,6 +9,9 @@
 * каждый `$('#id')` и `ui('#id')` есть в разметке;
 * модули не ходят по кругу — при циклическом импорте один из модулей начинает
   работу с недоинициализированным соседом, и падает это не всегда и не сразу;
+* команды оболочки, которые зовёт страница, объявлены в ней и разрешены в
+  permissions/native.toml — забытая там строчка видна только в собранном
+  приложении, и только как «not allowed by ACL»;
 * синтаксис (только macOS: разбор через JavaScriptCore, если он есть).
 
 Запуск: `python3 scripts/check_web.py` из корня репозитория.
@@ -21,6 +24,7 @@ from pathlib import Path
 
 WEB = Path(__file__).resolve().parent.parent / "web"
 JS = WEB / "js"
+SHELL = Path(__file__).resolve().parent.parent / "desktop/src-tauri"
 
 IMPORT_RE = re.compile(
     r"^import\s+(?:(?P<names>\{[^}]*\}|[\w*]+(?:\s*,\s*\{[^}]*\})?)\s+from\s+)?"
@@ -264,8 +268,62 @@ def to_script(src):
     return re.sub(r"\bimport\s*\(", "Promise.resolve(", text)
 
 
+INVOKE_RE = re.compile(r"invoke\(\s*['\"]([a-z_][\w]*)['\"]")
+HANDLER_RE = re.compile(r"generate_handler!\[(?P<body>.*?)\]", re.S)
+ALLOW_RE = re.compile(r"allow\s*=\s*\[(?P<body>.*?)\]", re.S)
+
+
+def commands():
+    """Команды оболочки: что она объявляет, что разрешает и что зовёт страница.
+
+    Ловится этим ровно одна беда, и другого способа её поймать нет. Окно грузится
+    с сервера по https, а для удалённого адреса Tauri пропускает только те
+    команды, которые перечислены поимённо в permissions/native.toml. Забыть там
+    строчку легко: код собирается, clippy молчит, в браузере всё как обычно —
+    и только в собранном приложении вызов отвечает «not allowed by ACL».
+    Именно так однажды уехал в релиз звук компьютера на macOS.
+    """
+    lib = SHELL / "src/lib.rs"
+    acl = SHELL / "permissions/native.toml"
+    if not lib.exists() or not acl.exists():
+        return []
+
+    handler = HANDLER_RE.search(lib.read_text())
+    if not handler:
+        return ["lib.rs: не нашли generate_handler! — проверка команд не работает"]
+    # `input::set_control` и `set_control` — для IPC это одно и то же имя.
+    registered = {
+        part.strip().rsplit("::", 1)[-1]
+        for part in handler.group("body").split(",")
+        if part.strip()
+    }
+
+    allowed_block = ALLOW_RE.search(acl.read_text())
+    allowed = set(re.findall(r"['\"]([\w]+)['\"]", allowed_block.group("body"))) if allowed_block else set()
+
+    called = {}
+    for path in sorted(JS.glob("*.js")):
+        # Только комментарии: `strip_strings` выел бы и само имя команды —
+        # оно ведь и есть строка.
+        for name in INVOKE_RE.findall(strip_comments(path.read_text())):
+            called.setdefault(name, path.name)
+
+    problems = []
+    for name, where in sorted(called.items()):
+        if name not in registered:
+            problems.append(f"{where}: зовёт команду {name}, а оболочка её не объявляет")
+        elif name not in allowed:
+            problems.append(
+                f"{where}: команда {name} не разрешена в permissions/native.toml — "
+                f"с удалённой страницы IPC ответит «not allowed by ACL»"
+            )
+    for name in sorted(allowed - registered):
+        problems.append(f"permissions/native.toml: разрешена команда {name}, а её больше нет")
+    return problems
+
+
 def main():
-    problems = check() + syntax()
+    problems = check() + commands() + syntax()
     for p in problems:
         print(p)
     count = len(list(JS.glob("*.js")))

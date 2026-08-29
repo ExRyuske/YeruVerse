@@ -4,7 +4,7 @@
 
 [[permission]]
 identifier = "allow-native-api"
-description = "Нативные команды YeruVerse: выбор сервера, локальный сервер и приём чужого ввода."
+description = "Нативные команды YeruVerse: выбор сервера, приём чужого ввода, жизнь комнаты в фоне и звук системы."
 
 [permission.commands]
 allow = [
@@ -28,5 +28,8 @@ allow = [
   "update_check",
   "update_install",
   "moonlight",
+  "set_room",
+  "sound_start",
+  "sound_stop",
 ]
 deny = []
