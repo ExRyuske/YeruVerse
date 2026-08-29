@@ -9,7 +9,7 @@ import { addScreen, removeScreen } from './stage.js';
 import { deviceProblem } from './devices.js';
 import { reason } from './errors.js';
 import { refreshDevices } from './settings-panel.js';
-import { canCaptureSound, captureSound, stopSound } from './sysaudio.js';
+import { canCaptureSound, captureSound, soundBytes, stopSound } from './sysaudio.js';
 
 /**
  * Экран и камера отличаются только способом захвата и подписью — всё остальное
@@ -139,6 +139,18 @@ export async function toggleShare(kind) {
     stream.getVideoTracks()[0].addEventListener('ended', () => stopShare(kind));
     if (kind === 'screen') addSystemSound(stream);
   } catch (e) {
+    // `AbortError` от захвата экрана в приложении под macOS — это почти всегда
+    // невыданная «Запись экрана», а вовсе не то, о чём говорит `share.missing`.
+    // Про «нужен HTTPS» здесь читать особенно обидно: адрес и так https, и
+    // человек уходит искать несуществующую беду. Отказ самого человека — это
+    // `NotAllowedError`, и его мы по-прежнему не трогаем.
+    if (kind === 'screen' && e?.name === 'AbortError' && native.caps.platform === 'macos') {
+      return toast(
+        'Система не дала захватить экран. Разрешите «Запись экрана» в настройках '
+          + 'приватности и перезапустите приложение — без перезапуска разрешение не действует.',
+        12000,
+      );
+    }
     if (e?.name !== 'NotAllowedError') toast(`${share.missing}: ${deviceProblem(e)}`);
   }
 }
@@ -159,7 +171,15 @@ export async function toggleShare(kind) {
  * сказать, иначе он будет искать причину в настройках трансляции.
  */
 async function addSystemSound(stream) {
-  if (!canCaptureSound()) return;
+  if (!canCaptureSound()) {
+    // Приложение старее страницы: страницу отдаёт сервер, а .app обновляют
+    // отдельно. Молчать нельзя — снаружи это выглядит как «звук просто не
+    // работает», и искать причину человек будет где угодно, только не здесь.
+    if (native.available && native.caps.platform === 'macos') {
+      toast('Звук компьютера требует свежей версии приложения — обновите его', 8000);
+    }
+    return;
+  }
   try {
     const track = await captureSound();
     // Пока мы ходили за звуком, трансляцию могли уже выключить.
@@ -168,9 +188,33 @@ async function addSystemSound(stream) {
     // Поток уже разошёлся по соединениям, и сам он о новой дорожке никому не
     // скажет.
     mesh.addTrack('screen', track);
+    watchSound(stream);
   } catch (e) {
     toast(`Звук компьютера не пошёл: ${reason(e)}`, 8000);
   }
+}
+
+/**
+ * Убедиться, что звук и правда пошёл.
+ *
+ * Захват может завестись и молчать: разрешение «Запись экрана» выдают
+ * приложению один раз, и до его перезапуска система отдаёт пустоту, ни на что
+ * не жалуясь. Снаружи это неотличимо от «у меня сейчас тихо», и человек ждёт
+ * звука, которого не будет.
+ *
+ * Отличить одно от другого можно точно: ScreenCaptureKit шлёт посылки
+ * постоянно, даже в полной тишине — она приезжает нулевыми отсчётами. Поэтому
+ * ноль байт через пару секунд означает не «тихо», а «не работает».
+ */
+function watchSound(stream) {
+  setTimeout(() => {
+    if (state.shares.get('screen') !== stream || soundBytes() > 0) return;
+    toast(
+      'Звук компьютера не идёт. Разрешите «Запись экрана» в настройках '
+        + 'приватности и перезапустите приложение — без перезапуска разрешение не действует.',
+      12000,
+    );
+  }, 3000);
 }
 
 export function stopShare(kind) {

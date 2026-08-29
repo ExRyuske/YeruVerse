@@ -564,6 +564,16 @@ pub fn run() {
     builder
         .manage(input::Input::start())
         .manage(sysaudio::Sound::new())
+        // Страница уходит на перезагрузку — снимаем захват звука за неё.
+        // Сама она об этом сказать уже не успеет, а переживший её захват
+        // держит экран занятым: следующая демонстрация получит от системы
+        // «The operation was aborted» и не начнётся вовсе.
+        .on_page_load(|webview, payload| {
+            use tauri::webview::PageLoadEvent;
+            if payload.event() == PageLoadEvent::Started {
+                sysaudio::stop(&webview.state::<sysaudio::Sound>());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             capabilities,
             overlay,

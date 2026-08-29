@@ -16,6 +16,19 @@ import { reason } from './errors.js';
 /** Идущий захват. Он один: снимать звук системы дважды незачем и нечем. */
 let live = null;
 
+/**
+ * Сколько байт пришло от оболочки с начала захвата.
+ *
+ * Нужно для одной-единственной проверки, зато решающей. ScreenCaptureKit шлёт
+ * посылки постоянно, даже когда в системе полная тишина: замерено — за пять
+ * секунд молчания приходит ровно пять секунд нулевых отсчётов. Значит ноль
+ * байт означает не «нечего транслировать», а «захват не работает», и об этом
+ * можно честно сказать человеку, не заставляя его гадать.
+ */
+export function soundBytes() {
+  return live ? live.bytes : 0;
+}
+
 /** Умеет ли эта сборка отдавать звук системы. */
 export function canCaptureSound() {
   return !!native.caps.systemAudio;
@@ -28,7 +41,9 @@ export function canCaptureSound() {
  * этом надо сказать, иначе он будет искать причину в настройках трансляции.
  */
 export async function captureSound() {
-  if (live) return live.track;
+  // Именно `track`, а не сам `live`: во время настройки он уже заведён, но
+  // дорожки в нём ещё нет.
+  if (live?.track) return live.track;
   if (!canCaptureSound()) throw new Error('захват звука системы недоступен');
 
   const Channel = window.__TAURI__?.core?.Channel;
@@ -55,22 +70,30 @@ export async function captureSound() {
     // процессору с передачей владения: копировать по двести килобайт в
     // секунду незачем.
     const buf = data instanceof ArrayBuffer ? data : data?.buffer;
-    if (buf) node.port.postMessage(buf, [buf]);
+    if (!buf) return;
+    // Считаем до передачи владения: после неё длина обнулится.
+    if (live) live.bytes += buf.byteLength;
+    node.port.postMessage(buf, [buf]);
   };
 
+  // Заводим счётчик до запуска: первые посылки приходят раньше, чем `invoke`
+  // успевает вернуться, и без этого они бы не посчитались.
+  live = { node, dest, track: null, bytes: 0 };
   try {
     // Частоту берём у графа, а не считаем: движок вправе не дать 48 кГц, и
     // тогда наши отсчёты играли бы не с той скоростью — звук поехал бы по
     // высоте, а понять почему было бы неоткуда.
     await native.invoke('sound_start', { channel, rate: Math.round(ctx.sampleRate) });
   } catch (e) {
+    live = null;
     node.port.postMessage('stop');
     node.disconnect();
     throw new Error(reason(e));
   }
 
   const track = dest.stream.getAudioTracks()[0];
-  live = { node, dest, track };
+  // Счётчик не обнуляем: посылки пошли ещё до того, как `invoke` вернулся.
+  live = { node, dest, track, bytes: live ? live.bytes : 0 };
   return track;
 }
 

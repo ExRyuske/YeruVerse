@@ -178,6 +178,9 @@ export class Voice extends Emitter {
       const oldChain = this.chain;
       this.raw = fresh;
       this.stream = await this._process(fresh);
+      // Выход собрался заново — заглушение на нём надо проставить снова, иначе
+      // смена микрофона или шумодава молча включает голос обратно.
+      this.stream?.getAudioTracks().forEach((t) => (t.enabled = !this.muted));
       // replaceTrack меняет дорожку без пересогласования SDP — собеседники не
       // слышат щелчка и разрыва, а видео у них не вздрагивает вовсе.
       await this.mesh.replaceStream('mic', this.stream);
@@ -338,10 +341,25 @@ export class Voice extends Emitter {
     this.emit('change', this.status());
   }
 
-  /** Заглушить свой микрофон, не разрывая соединение. */
+  /**
+   * Заглушить свой микрофон, не разрывая соединение.
+   *
+   * Глушим в двух местах, и это не перестраховка. Выключенная дорожка обязана
+   * отдавать тишину, и на сыром микрофоне так и происходит — но между ним и
+   * собеседниками стоит шумодав, то есть граф WebAudio, а движок WebKit
+   * (Safari и окно приложения на macOS) с дорожками MediaStream внутри графа
+   * дружит через раз: об этом в проекте уже спотыкались и в `audio.js`, и в
+   * `denoise.js`. Там, где он не заметит выключения на входе, микрофон остаётся
+   * слышен собеседникам, хотя у себя человек видит перечёркнутый значок — хуже
+   * этого в разговоре нет ничего.
+   *
+   * Поэтому гасим ещё и то, что уходит в сеть. Эту дорожку читает уже не граф,
+   * а сам WebRTC, и выключенную он передаёт тишиной без всяких «через раз».
+   */
   setMuted(muted) {
     this.muted = muted;
     this.raw?.getAudioTracks().forEach((t) => (t.enabled = !muted));
+    this.stream?.getAudioTracks().forEach((t) => (t.enabled = !muted));
     if (muted) this.speaking.delete('self');
     this.emit('change', this.status());
   }
