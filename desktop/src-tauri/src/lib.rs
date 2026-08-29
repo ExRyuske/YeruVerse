@@ -598,6 +598,7 @@ pub fn run() {
             room::set_room,
             sysaudio::sound_start,
             sysaudio::sound_stop,
+            sysaudio::sound_stats,
         ])
         .setup(|app| {
             // Слежение за клавиатурой поднимаем здесь: до появления `AppHandle`

@@ -29,6 +29,15 @@ export function soundBytes() {
   return live ? live.bytes : 0;
 }
 
+/**
+ * Сколько байт отправила сама оболочка. Ноль здесь и ноль там — разные беды:
+ * там звука не дала система, здесь он не доехал через IPC. Снаружи обе
+ * выглядят одинаковой тишиной, и без этого числа их не различить.
+ */
+export function soundSent() {
+  return native.invoke('sound_stats').catch(() => -1);
+}
+
 /** Умеет ли эта сборка отдавать звук системы. */
 export function canCaptureSound() {
   return !!native.caps.systemAudio;
@@ -97,13 +106,30 @@ export async function captureSound() {
   return track;
 }
 
+/**
+ * Дождаться, пока оболочка отпустит экран.
+ *
+ * Звать можно всегда и сколько угодно раз: если захвата нет, ответ приходит
+ * сразу. Нужно это перед каждым запуском демонстрации — ScreenCaptureKit
+ * отпускает экран не мгновенно, и начатая слишком рано демонстрация получает
+ * от системы «The operation was aborted».
+ *
+ * Отдельно от `stopSound`, потому что спрашивать надо оболочку, а не своё
+ * состояние: его к этому моменту уже могли обнулить.
+ */
+export function releaseSound() {
+  if (!canCaptureSound()) return Promise.resolve();
+  return native.invoke('sound_stop').catch(() => {});
+}
+
 /** Прекратить. Звать можно всегда — если не начинали, ничего не случится. */
 export function stopSound() {
-  if (!live) return;
+  if (!live) return Promise.resolve();
   const { node, track } = live;
   live = null;
-  native.invoke('sound_stop').catch(() => {});
   node.port.postMessage('stop');
   node.disconnect();
-  track.stop();
+  // Дорожки может ещё не быть: остановить могли и посреди настройки.
+  track?.stop();
+  return releaseSound();
 }

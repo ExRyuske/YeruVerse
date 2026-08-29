@@ -9,7 +9,14 @@ import { addScreen, removeScreen } from './stage.js';
 import { deviceProblem } from './devices.js';
 import { reason } from './errors.js';
 import { refreshDevices } from './settings-panel.js';
-import { canCaptureSound, captureSound, soundBytes, stopSound } from './sysaudio.js';
+import {
+  canCaptureSound,
+  captureSound,
+  releaseSound,
+  soundBytes,
+  soundSent,
+  stopSound,
+} from './sysaudio.js';
 
 /**
  * Экран и камера отличаются только способом захвата и подписью — всё остальное
@@ -19,9 +26,14 @@ const SHARES = {
   screen: {
     button: '#btn-screen',
     presence: 'screen',
-    capture: async () => {
+    capture: () => {
       const q = streamSettings();
-      const stream = await navigator.mediaDevices.getDisplayMedia({
+      // Что вернул движок, тем и пользуемся. Была здесь попытка снимать пустую
+      // звуковую дорожку, которую он якобы заводит на macOS, — от неё
+      // отказались: заводит он её или нет, никто не видел, а останавливать
+      // чужую дорожку захвата ради догадки опасно. Похоже, именно из-за этого
+      // второй запуск трансляции стал отвечать «The operation was aborted».
+      return navigator.mediaDevices.getDisplayMedia({
         // ideal, а не exact: если экран меньше или система не тянет, браузер
         // подберёт ближайшее вместо отказа в захвате.
         video: {
@@ -40,20 +52,6 @@ const SHARES = {
         selfBrowserSurface: 'exclude',   // не предлагать транслировать сам YeruVerse
         surfaceSwitching: 'include',     // окно можно сменить, не пересоздавая поток
       });
-
-      // Там, где звук добирает оболочка (macOS), снимаем то, что дал движок.
-      // Он системный звук всё равно не отдаёт, но дорожку под него завести
-      // может — пустую. Уйди она в эфир, зритель получил бы две звуковые
-      // дорожки, одну из них немую, а наша добавилась бы к мёртвой вместо того,
-      // чтобы её заменить. Снимаем здесь, до того как поток разошёлся по
-      // соединениям, — потом это стоило бы лишнего отправителя навсегда.
-      if (canCaptureSound()) {
-        for (const track of stream.getAudioTracks()) {
-          track.stop();
-          stream.removeTrack(track);
-        }
-      }
-      return stream;
     },
     missing: 'Захват экрана недоступен: нужен HTTPS и браузер с его поддержкой',
   },
@@ -113,6 +111,12 @@ export async function toggleShare(kind) {
   if (!navigator.mediaDevices?.[capture]) return toast(share.missing);
 
   try {
+    // Прошлый захват звука мог ещё не отпустить экран: система освобождает его
+    // не мгновенно, а «выключил и сразу включил обратно» — самый обычный
+    // способ пользоваться кнопкой. Не дождавшись, получаем отказ на ровном
+    // месте, и выглядит он как невыданное разрешение.
+    if (kind === 'screen') await releaseSound();
+
     const stream = await share.capture();
     state.shares.set(kind, stream);
     mesh.setStream(kind, stream);
@@ -145,9 +149,13 @@ export async function toggleShare(kind) {
     // человек уходит искать несуществующую беду. Отказ самого человека — это
     // `NotAllowedError`, и его мы по-прежнему не трогаем.
     if (kind === 'screen' && e?.name === 'AbortError' && native.caps.platform === 'macos') {
+      // Не утверждаем, что разрешения нет: тот же отказ приходит и когда оно
+      // выдано, а экран ещё занят прошлым захватом. Сначала предлагаем самое
+      // безобидное и самое частое.
       return toast(
-        'Система не дала захватить экран. Разрешите «Запись экрана» в настройках '
-          + 'приватности и перезапустите приложение — без перезапуска разрешение не действует.',
+        'Система не дала захватить экран — попробуйте ещё раз. Если не помогает, '
+          + 'проверьте «Запись экрана» в настройках приватности и перезапустите '
+          + 'приложение: без перезапуска новое разрешение не действует.',
         12000,
       );
     }
@@ -207,11 +215,22 @@ async function addSystemSound(stream) {
  * ноль байт через пару секунд означает не «тихо», а «не работает».
  */
 function watchSound(stream) {
-  setTimeout(() => {
+  setTimeout(async () => {
     if (state.shares.get('screen') !== stream || soundBytes() > 0) return;
+
+    // Спрашиваем оболочку, сколько она отправила. Тишина у неё и тишина у нас —
+    // это две разные беды с разным лечением, и по одному лишь молчанию их не
+    // различить: раньше здесь стояла догадка про «Запись экрана», и она
+    // отправляла человека выдавать разрешение, которое уже выдано.
+    const sent = await soundSent();
+    if (state.shares.get('screen') !== stream || soundBytes() > 0) return;
+
     toast(
-      'Звук компьютера не идёт. Разрешите «Запись экрана» в настройках '
-        + 'приватности и перезапустите приложение — без перезапуска разрешение не действует.',
+      sent > 0
+        ? `Звук снимается (${Math.round(sent / 1024)} КБ), но не доходит до страницы — `
+          + 'перезапустите трансляцию, и если не поможет, перезапустите приложение.'
+        : 'Система не отдаёт звук приложению. Если «Запись экрана» уже разрешена — '
+          + 'перезапустите приложение: без перезапуска новое разрешение не действует.',
       12000,
     );
   }, 3000);

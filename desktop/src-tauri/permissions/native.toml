@@ -31,5 +31,6 @@ allow = [
   "set_room",
   "sound_start",
   "sound_stop",
+  "sound_stats",
 ]
 deny = []

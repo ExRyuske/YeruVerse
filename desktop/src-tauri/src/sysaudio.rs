@@ -27,20 +27,52 @@
 //! Поток живёт в своём потоке ОС: объекты ScreenCaptureKit не `Send`, а
 //! состояние Tauri обязано им быть. Наружу торчит только отправитель «стоп».
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tauri::ipc::{Channel, InvokeResponseBody};
+
+/// Ручка идущего захвата: чем его просят закончить и чем он подтверждает конец.
+///
+/// Подтверждение здесь не для порядка. Остановка ScreenCaptureKit не мгновенна,
+/// а следующая демонстрация экрана начинается с вопроса к той же системе:
+/// уйди мы, не дождавшись, и экран для неё всё ещё занят — вебвью получит
+/// «The operation was aborted» и трансляция не начнётся вовсе.
+struct Live {
+    stop: std::sync::mpsc::Sender<()>,
+    /// Поднимается в `true`, когда захват действительно закончился.
+    ///
+    /// Не канал, а условная переменная: просящих остановиться бывает двое —
+    /// сначала выход из трансляции, следом её повторный запуск, — и оба должны
+    /// дождаться одного и того же конца. Из канала же конец достаётся только
+    /// первому, а второй уходит думать, что всё уже готово.
+    finished: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
 
 /// Идущий захват. Пустое поле — не захватываем.
 #[derive(Default)]
 pub struct Sound {
-    stop: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    live: Mutex<Option<Live>>,
+    /// Сколько байт мы отправили странице с начала захвата.
+    ///
+    /// Нужно ровно затем, чтобы разделить две беды, которые снаружи выглядят
+    /// одинаково — тишиной. Ноль здесь значит, что звука не дала система; не
+    /// ноль при пустой стороне страницы — что байты не доехали через IPC.
+    /// Гадать об этом по одному лишь молчанию нельзя, а машины, где оно
+    /// случается, у нас под рукой нет.
+    sent: Arc<AtomicU64>,
 }
 
 impl Sound {
     pub fn new() -> Self {
         Self::default()
     }
+}
+
+/// Сколько байт звука оболочка отправила странице с начала захвата.
+#[tauri::command]
+pub fn sound_stats(state: tauri::State<'_, Sound>) -> u64 {
+    state.sent.load(Ordering::Relaxed)
 }
 
 /// Начать снимать звук системы.
@@ -58,7 +90,7 @@ pub fn sound_start(
     if !(8_000..=192_000).contains(&rate) {
         return Err("странная частота дискретизации".into());
     }
-    let mut slot = state.stop.lock().unwrap();
+    let mut slot = state.live.lock().unwrap();
     // Предыдущий захват гасим, а не отказываемся начинать новый.
     //
     // Отказ здесь был прямой дорогой к беде. Страница может уйти и вернуться —
@@ -68,18 +100,50 @@ pub fn sound_start(
     // и следующий `getDisplayMedia` в вебвью отвечает «The operation was
     // aborted» — то есть ломается уже и сама трансляция, к звуку отношения не
     // имеющая.
-    if let Some(stop) = slot.take() {
-        let _ = stop.send(());
+    if let Some(live) = slot.take() {
+        let _ = live.stop.send(());
+        await_finish(&live.finished);
     }
-    *slot = Some(start(channel, rate)?);
+    state.sent.store(0, Ordering::Relaxed);
+    *slot = Some(start(channel, rate, Arc::clone(&state.sent))?);
     Ok(())
 }
 
-/// Прекратить. Молчит, если и не начинали: выход из комнаты зовёт это на всякий
-/// случай, и жаловаться там не на что.
+/// Сколько ждём, пока захват действительно закончится.
+const WAIT_STOP: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// Прекратить — и дождаться, пока система отпустит экран.
+///
+/// Возвращается только после подтверждения: страница зовёт это перед тем, как
+/// снова просить демонстрацию, и уйти раньше времени значит сломать ей запуск.
+/// Ожидание уходит в отдельный поток — держать на нём исполнителя асинхронных
+/// команд нельзя.
+///
+/// Молчит, если и не начинали: выход из комнаты зовёт это на всякий случай, и
+/// жаловаться там не на что.
 #[tauri::command]
-pub fn sound_stop(state: tauri::State<'_, Sound>) {
-    stop(&state);
+pub async fn sound_stop(state: tauri::State<'_, Sound>) -> Result<(), String> {
+    // Ручку берём копией, а не забираем: пока идёт остановка, о ней должен
+    // узнать и тот, кто спросит следом.
+    let Some((stop, finished)) =
+        state.live.lock().unwrap().as_ref().map(|l| (l.stop.clone(), Arc::clone(&l.finished)))
+    else {
+        return Ok(());
+    };
+    let _ = stop.send(());
+    tauri::async_runtime::spawn_blocking(move || await_finish(&finished))
+        .await
+        .map_err(|e| e.to_string())?;
+    state.live.lock().unwrap().take();
+    Ok(())
+}
+
+/// Дождаться конца захвата. Не дождались — идём дальше: подвесить страницу
+/// навсегда хуже, чем начать демонстрацию с риском отказа.
+fn await_finish(finished: &(Mutex<bool>, std::sync::Condvar)) {
+    let (lock, notify) = finished;
+    let guard = lock.lock().unwrap();
+    let _ = notify.wait_timeout_while(guard, WAIT_STOP, |done| !*done);
 }
 
 /// То же самое, но изнутри оболочки: страница ушла и попросить уже некому.
@@ -88,9 +152,12 @@ pub fn sound_stop(state: tauri::State<'_, Sound>) {
 /// состояние обнуляется, наше нет, и поток ScreenCaptureKit оставался бы жить
 /// до конца работы приложения — держа экран занятым и ломая уже саму
 /// демонстрацию, а не только звук.
+///
+/// Здесь не ждём: это главный поток, и задерживать на нём загрузку страницы
+/// ради подтверждения нельзя.
 pub fn stop(state: &Sound) {
-    if let Some(stop) = state.stop.lock().unwrap().take() {
-        let _ = stop.send(());
+    if let Some(live) = state.live.lock().unwrap().take() {
+        let _ = live.stop.send(());
     }
 }
 
@@ -98,7 +165,7 @@ pub fn stop(state: &Sound) {
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use std::sync::mpsc::{self, Sender};
+    use std::sync::mpsc;
     use std::time::Duration;
 
     use block2::RcBlock;
@@ -135,6 +202,8 @@ mod imp {
 
     pub struct Ivars {
         channel: Channel<InvokeResponseBody>,
+        /// Общий с состоянием счётчик отправленного — см. `Sound::sent`.
+        sent: std::sync::Arc<std::sync::atomic::AtomicU64>,
         /// Накопитель: чередующиеся отсчёты каналов, по 16 бит.
         pending: std::sync::Mutex<Vec<i16>>,
         /// Сколько чисел должно набраться до отправки.
@@ -165,9 +234,14 @@ mod imp {
     );
 
     impl Sink {
-        fn new(channel: Channel<InvokeResponseBody>, chunk: usize) -> Retained<Self> {
+        fn new(
+            channel: Channel<InvokeResponseBody>,
+            chunk: usize,
+            sent: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        ) -> Retained<Self> {
             let this = Self::alloc().set_ivars(Ivars {
                 channel,
+                sent,
                 pending: std::sync::Mutex::new(Vec::with_capacity(chunk * 2)),
                 chunk,
             });
@@ -253,13 +327,15 @@ mod imp {
                     let ready = std::mem::replace(&mut *pending, rest);
                     // Отправляем без блокировки: канал сам разберётся, а
                     // задерживать здесь нельзя — мы на очереди захвата.
-                    let bytes = ready.iter().flat_map(|s| s.to_le_bytes()).collect();
+                    let bytes: Vec<u8> = ready.iter().flat_map(|s| s.to_le_bytes()).collect();
+                    let len = bytes.len() as u64;
                     if self.ivars().channel.send(InvokeResponseBody::Raw(bytes)).is_err() {
                         // Страница ушла — дальше слать некому, а копить тем
                         // более: захват остановят, но не в эту же миллисекунду.
                         pending.clear();
                         break;
                     }
+                    self.ivars().sent.fetch_add(len, std::sync::atomic::Ordering::Relaxed);
                 }
             }
 
@@ -277,9 +353,16 @@ mod imp {
     }
 
     /// Поднять захват. Возвращает отправитель, которым его останавливают.
-    pub fn start(channel: Channel<InvokeResponseBody>, rate: u32) -> Result<Sender<()>, String> {
+    pub fn start(
+        channel: Channel<InvokeResponseBody>,
+        rate: u32,
+        sent: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Result<super::Live, String> {
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+        let finished =
+            std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let raised = std::sync::Arc::clone(&finished);
 
         // Объекты ScreenCaptureKit не `Send`, поэтому живут целиком в этом
         // потоке: он их создаёт, он же и разбирает. Наружу уходит только
@@ -287,35 +370,43 @@ mod imp {
         std::thread::Builder::new()
             .name("sysaudio".into())
             .spawn(move || {
-                let (stream, _sink) = match setup(channel, rate) {
-                    Ok(pair) => {
-                        let _ = ready_tx.send(Ok(()));
-                        pair
-                    }
-                    Err(e) => {
-                        let _ = ready_tx.send(Err(e));
-                        return;
-                    }
-                };
-                // Ждём «стоп». Оборванный канал — это ушедшее состояние
-                // приложения, то есть тот же «стоп».
-                let _ = stop_rx.recv();
+                // Область нужна затем, чтобы поток и приёмник успели умереть
+                // до подтверждения: экран система отпускает вместе с ними, а
+                // подтверждение обещает именно это.
+                {
+                    let (stream, _sink) = match setup(channel, rate, sent) {
+                        Ok(pair) => {
+                            let _ = ready_tx.send(Ok(()));
+                            pair
+                        }
+                        Err(e) => {
+                            let _ = ready_tx.send(Err(e));
+                            return;
+                        }
+                    };
+                    // Ждём «стоп». Оборванный канал — это ушедшее состояние
+                    // приложения, то есть тот же «стоп».
+                    let _ = stop_rx.recv();
 
-                let (done_tx, done_rx) = mpsc::channel::<()>();
-                let done = RcBlock::new(move |_err: *mut NSError| {
-                    let _ = done_tx.send(());
-                });
-                unsafe { stream.stopCaptureWithCompletionHandler(Some(&done)) };
-                // Ответа ждём, но недолго: не дождались — всё равно отпускаем,
-                // поток захвата умрёт вместе с потоком.
-                let _ = done_rx.recv_timeout(Duration::from_secs(5));
+                    let (done_tx, done_rx) = mpsc::channel::<()>();
+                    let done = RcBlock::new(move |_err: *mut NSError| {
+                        let _ = done_tx.send(());
+                    });
+                    unsafe { stream.stopCaptureWithCompletionHandler(Some(&done)) };
+                    // Ответа ждём, но недолго: не дождались — всё равно
+                    // отпускаем, поток захвата умрёт вместе с этим потоком.
+                    let _ = done_rx.recv_timeout(Duration::from_secs(5));
+                }
+                let (lock, notify) = &*raised;
+                *lock.lock().unwrap() = true;
+                notify.notify_all();
             })
             .map_err(|e| format!("не подняли поток захвата: {e}"))?;
 
         ready_rx
             .recv_timeout(WAIT + Duration::from_secs(5))
             .map_err(|_| "ScreenCaptureKit не ответил".to_string())??;
-        Ok(stop_tx)
+        Ok(super::Live { stop: stop_tx, finished })
     }
 
     /// Поток и приёмник отдаются вместе: ScreenCaptureKit держит на приёмник
@@ -324,6 +415,7 @@ mod imp {
     fn setup(
         channel: Channel<InvokeResponseBody>,
         rate: u32,
+        sent: std::sync::Arc<std::sync::atomic::AtomicU64>,
     ) -> Result<(Retained<SCStream>, Retained<Sink>), String> {
         // Что вообще можно снимать. Первый же вызов и поднимает запрос
         // «Запись экрана» — до него ScreenCaptureKit молчит.
@@ -398,7 +490,7 @@ mod imp {
 
         // Кусок в отсчётах: сорок миллисекунд на два канала.
         let chunk = (rate as usize * CHUNK_MS / 1000) * 2;
-        let sink = Sink::new(channel, chunk);
+        let sink = Sink::new(channel, chunk, sent);
         // Своя очередь, а не главная: разбор посылок не должен ждать интерфейс.
         let queue = DispatchQueue::new("cc.yeru.yeruverse.sysaudio", None);
         unsafe {
@@ -435,7 +527,8 @@ use imp::start;
 fn start(
     _channel: Channel<InvokeResponseBody>,
     _rate: u32,
-) -> Result<std::sync::mpsc::Sender<()>, String> {
+    _sent: Arc<AtomicU64>,
+) -> Result<Live, String> {
     // На Windows и Linux этого моста не нужно: там движок отдаёт звук системы
     // сам, прямо в `getDisplayMedia`. Страница сюда и не постучится —
     // `capabilities` про эту сборку скажет «не умею».

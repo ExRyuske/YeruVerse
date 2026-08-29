@@ -23,6 +23,25 @@ use tracing::warn;
 /// ответа `/config.json` не открывается вовсе.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Почему не вышло — со всей цепочкой причин.
+///
+/// `reqwest` в `to_string()` показывает только верхний слой: «error sending
+/// request for url (…)». Что именно случилось — не разрешилось имя, не пустили
+/// на порт, истекло время — лежит в источнике ошибки, и без него запись в логе
+/// сообщает лишь то, что мы и так знаем. Один раз это уже стоило разбирательства
+/// вслепую: сервер прекрасно ходил к Cloudflare и молча не мог достучаться до
+/// GitHub, а лог об этом не говорил ничего.
+pub fn why(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = e.to_string();
+    let mut source = e.source();
+    while let Some(next) = source {
+        out.push_str(" ← ");
+        out.push_str(&next.to_string());
+        source = next.source();
+    }
+    out
+}
+
 /// HTTP-клиент для походов наружу — один и тот же у всех.
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()

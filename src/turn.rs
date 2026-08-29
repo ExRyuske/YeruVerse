@@ -16,7 +16,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::cache::{http_client, Cache};
+use crate::cache::{http_client, why, Cache};
 
 /// Как долго держим выданные учётки, прежде чем просить новые.
 const REFRESH_BEFORE: Duration = Duration::from_secs(60 * 30);
@@ -91,7 +91,7 @@ impl Turn {
             .json(&json!({ "ttl": ttl }))
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| why(&e))?;
 
         if !resp.status().is_success() {
             let code = resp.status();
@@ -99,7 +99,7 @@ impl Turn {
             return Err(format!("{code}: {}", body.chars().take(200).collect::<String>()));
         }
 
-        let parsed: Shape = resp.json().await.map_err(|e| e.to_string())?;
+        let parsed: Shape = resp.json().await.map_err(|e| why(&e))?;
         Ok(parsed.into_list())
     }
 }
