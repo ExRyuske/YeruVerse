@@ -5,7 +5,7 @@ import { isSelf, state, viewKey } from './state.js';
 import { render } from './render.js';
 import { copy, openExternal, showScreen, toast, ui } from './ui.js';
 import { addChat, clearChat, sysMsg } from './chat.js';
-import { removeScreen, resetStage } from './stage.js';
+import { removeScreen, resetStage, syncScreens } from './stage.js';
 import { announceShares, stopShare } from './shares.js';
 import { pollSunshine, resetSunshine } from './sunshine.js';
 import { enableMic } from './devices.js';
@@ -161,6 +161,10 @@ net.on('welcome', ({ you, peers }) => {
   // Не `add` по одному, а сверка целиком: после обрыва наш id другой, и старые
   // соединения надо не дополнить, а заменить — см. `Mesh.sync`.
   mesh.sync(peers.map((p) => p.id));
+  // Соединения сверены со списком — сцену надо сверить с ним же: за время
+  // нашего отсутствия участник мог вернуться под новым id, и его прежняя
+  // трансляция осталась бы висеть мёртвой.
+  syncScreens();
   render('peers');
 
   // Переподключение — это тоже welcome, но сообщать о входе повторно незачем.

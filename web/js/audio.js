@@ -95,7 +95,8 @@ export function canChooseOutput() {
   return ctxSink() || elSink();
 }
 
-const players = new Set();   // всё, что сейчас звучит, — им назначаем устройство
+/** Всё, что сейчас звучит: элемент -> чем его перезапустить, если он встанет. */
+const players = new Map();
 let sink = '';
 
 /**
@@ -144,12 +145,40 @@ export async function setOutput(deviceId) {
   if (ctxSink() && (sink || shared)) {
     try { await context().setSinkId(sink); } catch {}
   }
-  for (const el of players) applySink(el);
+  for (const el of players.keys()) applySink(el);
 }
 
 function applySink(el) {
   if (elSink()) el.setSinkId(sink).catch(() => {});
 }
+
+/**
+ * Набор устройств изменился — поднимаем звук заново.
+ *
+ * Случается это не только когда наушники воткнули. На Windows достаточно
+ * открыть «Параметры звука»: система перебирает устройства, движок видит смену
+ * того, что назначено по умолчанию, и пересоздаёт выход. Тракт при этом
+ * остаётся живым, а вот элементы с чужими голосами уходят в паузу — и сами из
+ * неё не возвращаются: `retryOnGesture` ждёт касания только после неудачного
+ * первого запуска, а здесь первый запуск давно удался. Снаружи это выглядит
+ * так: заглянул в настройки звука и перестал слышать всех до конца разговора.
+ * Замечено на Windows 10.
+ *
+ * Поэтому будим тракт, заново назначаем выбранный выход — его устройство могло
+ * исчезнуть вместе со сменой, и тогда движок вернётся к системному, — и
+ * до-запускаем всё, что встало. Отказ в запуске означает, что движок ждёт
+ * касания: откладываем до него тем же путём, что и первый запуск.
+ */
+function revive() {
+  wake();
+  setOutput(sink).catch(() => {});
+  for (const [el, restart] of players) {
+    if (!el.paused) continue;
+    restart().catch(() => retryOnGesture(restart));
+  }
+}
+
+navigator.mediaDevices?.addEventListener?.('devicechange', revive);
 
 /**
  * Замер уровня на узле графа.
@@ -209,7 +238,10 @@ export function meter(stream) {
  * Теперь в этом случае громкость просто упирается в сто процентов.
  */
 export function volume(el, stream) {
-  players.add(el);
+  // Одно и то же замыкание на все перезапуски: отложенные до касания лежат
+  // множеством, и новое замыкание на каждой неудаче копилось бы в нём без конца.
+  const restart = () => el.play();
+  players.set(el, restart);
   applySink(el);
 
   let boost = null;
@@ -242,6 +274,8 @@ export function volume(el, stream) {
     },
     close() {
       players.delete(el);
+      // Элемента больше нет — ждать ради него касания незачем.
+      forgetGesture(restart);
       boost?.close();
       boost = null;
     },

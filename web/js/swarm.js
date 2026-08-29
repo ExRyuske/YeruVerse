@@ -9,7 +9,16 @@ import { Emitter } from './events.js';
 const NS = 'swarm';
 const CHUNK = 64 * 1024;      // помещается в дефолтный лимит DataChannel
 const MIN_CHUNK = 4 * 1024;   // меньше — и число кусков перестаёт быть конечным
-const MAX_SIZE = 2 * 1024 ** 3;   // столько же не пускает `sendFile` в chat.js
+/**
+ * Предел на файл. Держит его память браузера: рой собирает куски в куче, и
+ * больше двух гигабайт вкладка просто не переживёт.
+ *
+ * Отсюда же его берёт `sendFile` в `chat.js` — раньше там стояло то же число
+ * вторым литералом, и разъехаться им было нечем, кроме внимательности. Тот же
+ * предел стоит и на сервере (`MAX_FILE` в `src/server.rs`): проверку делают оба
+ * конца, потому что сервер бывает чужим ровно так же, как участник.
+ */
+export const MAX_SIZE = 2 * 1024 ** 3;
 const MAX_INFLIGHT = 8;       // одновременных запросов к одному пиру
 const REQ_TIMEOUT = 15000;
 
@@ -226,8 +235,17 @@ export class Swarm extends Emitter {
     if (this._draining.has(key)) return;
     this._draining.add(key);
     try {
-      const q = t.serving.get(peer);
-      while (q?.length) {
+      // Очередь спрашиваем у карты на каждом обороте, а не держим ссылку на
+      // сам массив, и заодно сверяемся, что передача ещё жива.
+      //
+      // Ссылка была прямой дорогой к вечному циклу. Ушедшему участнику
+      // `peer-close` очередь удаляет — но удаление касается записи в карте, а
+      // не массива: тот оставался прежним и непустым. Отправка же на закрытом
+      // соединении отвечает отказом всегда, и раздача уходила в холостой
+      // круг по шестьдесят миллисекунд — навсегда, по одному кругу на каждую
+      // пару «файл и отвалившийся участник», удерживая за собой всю передачу.
+      let q;
+      while ((q = t.serving.get(peer))?.length && this.transfers.get(t.meta.id) === t) {
         const i = q[0];
         const body = await this._read(t, i);
         if (!body) { q.shift(); continue; }
@@ -241,6 +259,9 @@ export class Swarm extends Emitter {
         out.set(new Uint8Array(body), 5 + id.length);
 
         if (!this.mesh.sendBinary(peer, out.buffer)) {
+          // Отказ бывает по двум причинам, и ждать стоит только одной из них:
+          // забитый буфер рассосётся, а закрытый канал — нет.
+          if (!this.mesh.isOpen(peer)) break;
           await new Promise((r) => setTimeout(r, 60));   // буфер забит — ждём
           continue;
         }

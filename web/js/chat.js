@@ -3,7 +3,7 @@
 
 import { icon } from './icons.js';
 import { net, swarm } from './core.js';
-import { sane } from './swarm.js';
+import { MAX_SIZE, sane } from './swarm.js';
 import { isSelf, state } from './state.js';
 import { fmtClock, fmtSize, make, openExternal, showImage, toast, ui } from './ui.js';
 
@@ -104,7 +104,7 @@ const attachRows = new Map();   // id файла -> элементы строк�
 
 /** Отправка файла: через сервер идёт только карточка, байты — роем. */
 function sendFile(file) {
-  if (file.size > 2 * 1024 ** 3) {
+  if (file.size > MAX_SIZE) {
     return toast('Файл больше 2 ГБ — столько не удержит память браузера');
   }
   const meta = swarm.offer(file);

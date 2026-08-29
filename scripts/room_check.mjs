@@ -571,6 +571,39 @@ await a.waitForTimeout(900);
 note((await a.textContent('#chat-log')).includes('вернулся?'), 'чат идёт дальше');
 note(a.errors.length === 0, 'возвращение без ошибок', a.errors.join(' | '));
 
+// Возвращение чинит не только соединения, но и сцену.
+//
+// Пока нас не было, участник мог выйти и вернуться: id сервер выдаёт на
+// соединение, а не на человека, и вернулся он уже под другим. `peer_leave` про
+// прежний нам не пришёл — принимать его было некому, — и старый ключ остался бы
+// на сцене навсегда. Стоит он дорого: сцена показывает мёртвый поток, а
+// пришедший следом живой её уже не занимает, потому что она не пуста. Снаружи
+// это и выглядит как «после переподключения трансляции пропали».
+await b.click('#btn-camera');
+await b.waitForTimeout(2500);
+note((await a.locator('.cam-tile').count()) >= 1, 'камера соседа видна до обрыва');
+
+// Подкладываем ровно то, что осталось бы от ушедшего в наше отсутствие: ключ с
+// id, которого в комнате уже нет и о котором нам уже никто не скажет.
+await a.evaluate(async () => {
+  const { state } = await import('/js/state.js');
+  state.screens.set('ушёл-пока-нас-не-было:screen', new MediaStream());
+});
+
+await inside(a, ([{ net }]) => net.ws.close());
+await a.waitForTimeout(4000);
+
+const scene = await a.evaluate(async () => {
+  const { state } = await import('/js/state.js');
+  return {
+    orphans: [...state.screens.keys()].filter((k) => !state.peers.has(k.split(':')[0])),
+    tiles: document.querySelectorAll('.cam-tile').length,
+  };
+});
+note(scene.orphans.length === 0, 'мёртвые трансляции убраны при возвращении',
+     scene.orphans.join(', '));
+note(scene.tiles >= 1, 'а живая камера соседа осталась на месте');
+
 await browser.close();
 console.log(`\nитог: ${problems.length ? 'замечаний ' + problems.length : 'всё сошлось'}`);
 for (const p of problems) console.log('  · ' + p);
