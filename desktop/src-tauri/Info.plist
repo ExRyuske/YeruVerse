@@ -6,6 +6,6 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Микрофон нужен для голосового чата с друзьями в комнате.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Камера не используется, доступ можно не давать.</string>
+	<string>Камера нужна, если вы включите её трансляцию в комнате.</string>
 </dict>
 </plist>

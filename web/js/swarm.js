@@ -8,8 +8,43 @@ import { Emitter } from './events.js';
 
 const NS = 'swarm';
 const CHUNK = 64 * 1024;      // помещается в дефолтный лимит DataChannel
+const MIN_CHUNK = 4 * 1024;   // меньше — и число кусков перестаёт быть конечным
+const MAX_SIZE = 2 * 1024 ** 3;   // столько же не пускает `sendFile` в chat.js
 const MAX_INFLIGHT = 8;       // одновременных запросов к одному пиру
 const REQ_TIMEOUT = 15000;
+
+/**
+ * Похожа ли карточка файла на карточку файла.
+ *
+ * Карточка приходит от чужого клиента через сервер, а получатель разворачивает
+ * по ней массив кусков и битовое поле на каждый — то есть чужое число прямо
+ * решает, сколько выделить памяти. Карточка с картинкой при этом качается сама,
+ * не спрашивая (см. `addAttachment` в `chat.js`), так что одного числа
+ * достаточно, чтобы уложить вкладку любому, кто просто сидит в комнате.
+ *
+ * Поэтому число кусков не ограничивается сверху отдельным пределом, а
+ * сверяется с размером и длиной куска: они связаны, и любая пара, которая не
+ * сходится, — заведомо не то, что мог прислать наш же `offer`. Нижний предел
+ * длины куска здесь такой же важный, как верхний: без него два гигабайта
+ * кусками по байту дают два миллиарда кусков, и все пределы обходятся честной
+ * арифметикой.
+ *
+ * Ту же проверку делает сервер (`sane_file_meta` в `src/server.rs`). Дважды —
+ * потому что сервер может оказаться чужим ровно так же, как участник.
+ */
+export function sane(meta) {
+  if (!meta || typeof meta !== 'object') return false;
+  const str = (v, max) => typeof v === 'string' && !!v.length && v.length <= max;
+  const int = (v, min, max) => Number.isSafeInteger(v) && v >= min && v <= max;
+  return (
+    str(meta.id, 64) &&
+    str(meta.name, 260) &&
+    str(meta.mime, 128) &&
+    int(meta.size, 1, MAX_SIZE) &&
+    int(meta.chunkSize, MIN_CHUNK, CHUNK) &&
+    meta.chunks === Math.ceil(meta.size / meta.chunkSize)
+  );
+}
 
 const byteLen = (n) => Math.ceil(n / 8);
 const hasBit = (bits, i) => (bits[i >> 3] >> (i & 7)) & 1;
@@ -101,8 +136,12 @@ export class Swarm extends Emitter {
     return meta;
   }
 
-  /** Начать приём по описанию. Повторный вызов для того же файла безопасен. */
+  /**
+   * Начать приём по описанию. Повторный вызов для того же файла безопасен.
+   * Непроверенное описание не начинает ничего и возвращает `null`.
+   */
   start(meta) {
+    if (!sane(meta)) return null;
     let t = this.transfers.get(meta.id);
     if (!t) {
       t = new Transfer(meta, null);
@@ -262,10 +301,21 @@ export class Swarm extends Emitter {
     const view = new DataView(buf);
     const i = view.getUint32(0, true);
     const idLen = view.getUint8(4);
+    // Длина имени приехала в том же кадре, что и сам кадр, и пока она с ним не
+    // сверена — это просто чужое число: `Uint8Array` по нему не прочитает, а
+    // бросит, и кусок потеряется молча, до следующего запроса по таймауту.
+    if (5 + idLen > buf.byteLength) return;
     const id = new TextDecoder().decode(new Uint8Array(buf, 5, idLen));
 
     const t = this.transfers.get(id);
     if (!t || !t.chunks || i >= t.meta.chunks || hasBit(t.bits, i)) return;
+
+    // Кусок должен быть ровно той длины, которую обещала карточка: последний
+    // короче, остальные во всю. Иначе один пир, отдав вместо куска сколько ему
+    // вздумается, набивает чужую память мимо всех пределов, а собранный файл
+    // не имеет никакого отношения к размеру, который человек видел в чате.
+    const want = Math.min(t.meta.chunkSize, t.meta.size - i * t.meta.chunkSize);
+    if (buf.byteLength - 5 - idLen !== want) return;
 
     t.chunks[i] = buf.slice(5 + idLen);
     setBit(t.bits, i);

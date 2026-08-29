@@ -7,7 +7,9 @@ import { render } from './render.js';
 import { make, toast, ui } from './ui.js';
 import { addScreen, removeScreen } from './stage.js';
 import { deviceProblem } from './devices.js';
+import { reason } from './errors.js';
 import { refreshDevices } from './settings-panel.js';
+import { canCaptureSound, captureSound, stopSound } from './sysaudio.js';
 
 /**
  * Экран и камера отличаются только способом захвата и подписью — всё остальное
@@ -31,6 +33,8 @@ const SHARES = {
         // обработка, рассчитанная на речь, съедает басы и приглушает тихие
         // места. Значения проставлены явно — без просьбы движок включает свою
         // обработку сам.
+        // На macOS эту просьбу движок молча пропускает мимо ушей — там звук
+        // добирает оболочка, см. addSystemSound ниже.
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
         systemAudio: 'include',
         selfBrowserSurface: 'exclude',   // не предлагать транслировать сам YeruVerse
@@ -119,8 +123,39 @@ export async function toggleShare(kind) {
     if (native.caps.overlay) native.setOverlay(true).catch(() => {});
     if (kind === 'screen') watchFrames(stream);
     stream.getVideoTracks()[0].addEventListener('ended', () => stopShare(kind));
+    if (kind === 'screen') addSystemSound(stream);
   } catch (e) {
     if (e?.name !== 'NotAllowedError') toast(`${share.missing}: ${deviceProblem(e)}`);
+  }
+}
+
+/**
+ * Дозвать звук компьютера туда, где движок его не отдаёт.
+ *
+ * Это только macOS: ни WebKit, ни Chrome там не умеют отдавать системный звук
+ * в `getDisplayMedia` — просьба `systemAudio: 'include'` просто ничего не
+ * делает, и трансляция уходит немой. Снять его может оболочка, и она это
+ * делает через ScreenCaptureKit.
+ *
+ * Дорожка добавляется в тот же поток, что и картинка, — для `mesh` и для
+ * зрителей она ничем не отличается от звука игры, пришедшего с Windows.
+ *
+ * Молча ничего не делаем ровно в одном случае: когда добирать нечего. Отказ —
+ * дело другое: чаще всего это невыданная «Запись экрана», и человеку надо
+ * сказать, иначе он будет искать причину в настройках трансляции.
+ */
+async function addSystemSound(stream) {
+  if (!canCaptureSound() || stream.getAudioTracks().length) return;
+  try {
+    const track = await captureSound();
+    // Пока мы ходили за звуком, трансляцию могли уже выключить.
+    if (state.shares.get('screen') !== stream) return stopSound();
+    stream.addTrack(track);
+    // Поток уже разошёлся по соединениям, и сам он о новой дорожке никому не
+    // скажет.
+    mesh.addTrack('screen', track);
+  } catch (e) {
+    toast(`Звук компьютера не пошёл: ${reason(e)}`, 8000);
   }
 }
 
@@ -128,7 +163,10 @@ export function stopShare(kind) {
   const stream = state.shares.get(kind);
   if (!stream) return;
 
-  if (kind === 'screen') control.revokeAll().catch(() => {});
+  if (kind === 'screen') {
+    control.revokeAll().catch(() => {});
+    stopSound();
+  }
   stream.getTracks().forEach((t) => t.stop());
   state.shares.delete(kind);
   mesh.setStream(kind, null);

@@ -1,7 +1,7 @@
 # Короткие команды для типовых задач. Всё то же самое можно набрать руками —
 # см. README, здесь просто собраны рабочие сочетания флагов.
 
-.PHONY: help server app app-debug android android-all android-prepare sign-apk icons icons-ui denoiser updater-key updater-pubkey docker docker-run deploy check browser clean
+.PHONY: help server app app-debug android android-all android-prepare sign-apk mac-cert icons icons-ui denoiser updater-key updater-pubkey docker docker-run deploy check browser clean
 
 APP_DIR := desktop/src-tauri
 ANDROID_HOME ?= $(or $(ANDROID_SDK_ROOT),$(HOME)/Library/Android/sdk)
@@ -26,6 +26,7 @@ help:
 	@echo "make icons-ui    — пересобрать иконки интерфейса из Font Awesome"
 	@echo "make denoiser    — обновить модели шумодава в web/vendor"
 	@echo "make updater-key — создать ключ подписи обновлений (один раз на проект)"
+	@echo "make mac-cert    — создать сертификат подписи под macOS (один раз на проект)"
 	@echo "make docker      — собрать образ сервера"
 	@echo "make deploy      — поднять сервер + HTTPS + TURN через compose"
 	@echo "make check       — форматирование, clippy, тесты и проверка фронтенда"
@@ -35,8 +36,16 @@ server:
 	cargo run --release
 
 
+# Сертификат подписи приложения под macOS. На других системах он не нужен и не
+# создаётся: подписи там своя история, и пустой p12 в ~/.yeruverse только сбивал
+# бы с толку.
+ifeq ($(shell uname -s),Darwin)
+MAC_CERT ?= $(HOME)/.yeruverse/macos.p12
+APP_DEPS := $(MAC_CERT)
+endif
+
 # Установщик под ту систему, на которой запущено: кросс-компиляции у Tauri нет.
-app: tauri-cli $(UPDATER_KEY)
+app: tauri-cli $(UPDATER_KEY) $(APP_DEPS)
 	TAURI_SIGNING_PRIVATE_KEY="$$(cat $(UPDATER_KEY))" \
 	TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(UPDATER_KEY_PASS)" \
 	  scripts/build_app.sh
@@ -82,6 +91,17 @@ UPDATER_KEY ?= $(HOME)/.yeruverse/updater.key
 UPDATER_KEY_PASS ?= $(shell test -r "$(UPDATER_KEY).password" && tr -d '\n' < "$(UPDATER_KEY).password")
 
 updater-key: $(UPDATER_KEY)
+
+# Сертификат подписи приложения под macOS: создаётся один раз, живёт вне
+# репозитория, и терять его нельзя — за ним закреплены все выданные приложению
+# разрешения (микрофон, запись экрана, управление компьютером). Его же base64
+# кладут в секрет MAC_CERTIFICATE на GitHub; скрипт печатает готовое значение.
+mac-cert:
+	@MAC_CERT="$(MAC_CERT)" scripts/mac_cert.sh
+
+$(MAC_CERT):
+	@MAC_CERT="$@" scripts/mac_cert.sh > /dev/null
+	@echo "Сертификат подписи macOS создан: $@ — сохраните его, иначе права доступа слетят при обновлении"
 
 $(UPDATER_KEY):
 	@mkdir -p "$(dir $@)"

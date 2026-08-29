@@ -16,6 +16,12 @@ export const native = {
     hotkeyMode: 'none',
     remoteControl: false,
     updates: false,
+    // Умеет ли оболочка удержать комнату в фоне и не отдать звук системе в
+    // «разговорном» режиме. Это только Android — см. setRoom.
+    background: false,
+    // Может ли оболочка сама снять звук компьютера. Нужно только на macOS:
+    // там его не отдаёт ни один движок — см. sysaudio.js.
+    systemAudio: false,
   },
   /** Почему мост не ответил. Показывается в диагностике, а не глотается. */
   error: null,
@@ -63,6 +69,21 @@ export const native = {
 
   /** Полный экран окном приложения: в Android-вебвью только так и работает. */
   setFullscreen(on) { return this.invoke('set_fullscreen', { on }); },
+
+  /**
+   * «Мы в комнате» — единственное, чего оболочка на Android не может выяснить
+   * сама, и без чего свёрнутое приложение система вправе выгрузить вместе с
+   * разговором.
+   *
+   * Отказ глотаем здесь, а не у каждого места вызова: страница из-за него
+   * ничего делать не станет и ничего сказать человеку не может. Отказ бывает и
+   * штатный — приложение старее страницы (APK ставят руками, а страницу отдаёт
+   * сервер), и такой сборки эта команда просто не знает.
+   */
+  setRoom(active, wideband) {
+    if (!this.caps.background) return Promise.resolve();
+    return this.invoke('set_room', { active, wideband }).catch(() => {});
+  },
   /** Событие в окно оверлея: позиция курсора или щелчок. */
   cursor(payload) {
     return window.__TAURI__?.event?.emit('cursor', payload) ?? Promise.resolve();

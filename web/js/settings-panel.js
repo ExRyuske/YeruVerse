@@ -77,6 +77,14 @@ function wireSettings() {
     settings.set('outputDevice', ui('#pick-output').value);
   };
 
+  // Настройка существует только там, где есть кому её исполнять: правит режим
+  // звука сама оболочка (Android), а в браузере и на настольных системах эта
+  // строка обещала бы то, чего не будет.
+  if (native.caps.background) {
+    ui('#row-wideband').hidden = false;
+    bindCheck('#set-wideband', 'wideband');
+  }
+
   // Полоска уровня помогает понять, ловит ли микрофон голос. Считаем её только
   // когда она на виду: раз в 150 мс, и всё это ради одной строки текста.
   const micPop = ui('#pop-mic');

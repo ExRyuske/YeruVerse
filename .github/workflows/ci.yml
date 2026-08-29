@@ -253,6 +253,13 @@ jobs:
       ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # Сертификат подписи macOS. За ним закреплены все выданные приложению
+      # разрешения: подпишем другим — и микрофон, запись экрана и управление
+      # компьютером спросят заново у всех. Заводится через `make mac-cert`,
+      # он же печатает готовое значение секрета. Без секрета сборка проходит,
+      # но выходит подписанной ad-hoc — и права слетают на каждом обновлении.
+      MAC_CERTIFICATE: ${{ secrets.MAC_CERTIFICATE }}
+      MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
     steps:
       - uses: actions/checkout@v7
         with:

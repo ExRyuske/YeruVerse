@@ -1,6 +1,6 @@
 // Жизнь комнаты: вход, выход и всё, что приходит с сервера, пока мы внутри.
 
-import { control, mesh, net, serverBase, settings, swarm, voice } from './core.js';
+import { control, mesh, native, net, serverBase, settings, swarm, voice } from './core.js';
 import { isSelf, state, viewKey } from './state.js';
 import { render } from './render.js';
 import { copy, openExternal, showScreen, toast, ui } from './ui.js';
@@ -19,6 +19,23 @@ import { enableMic } from './devices.js';
  * либо выход, о котором так и не сказали.
  */
 const REJOIN_MS = 15000;
+
+/**
+ * Сказать оболочке, в комнате мы или нет.
+ *
+ * На Android от этого зависит, переживёт ли разговор сворачивание: свёрнутому
+ * приложению система глушит микрофон и вправе выгрузить процесс целиком, и
+ * единственное, что этому мешает, — служба переднего плана. Поднять её может
+ * только оболочка, а знать, что пора, — только страница.
+ *
+ * Заодно уходит просьба не сужать полосу звука: движок на Android переводит
+ * систему в «разговорный» режим, стоит открыть микрофон, и собеседники
+ * начинают звучать как из телефонной трубки. Везде, кроме приложения на
+ * Android, вызов не делает ничего.
+ */
+function tellShell() {
+  native.setRoom(state.joined, settings.get('wideband'));
+}
 
 /** Код комнаты — он же её адрес. Ничего из него не выводится. */
 export function join(code) {
@@ -40,6 +57,7 @@ export function join(code) {
 
   render('rooms');
   pollSunshine();
+  tellShell();
 }
 
 /** Полный выход: рвём сокет, гасим WebRTC, забываем комнату. */
@@ -74,9 +92,16 @@ export function leaveRoom() {
   showScreen('join');
   history.replaceState(null, '', location.pathname);
   render('rooms');
+  tellShell();
 }
 
 export function wireRoom() {
+  // Настройку полосы можно менять, не выходя из комнаты, — оболочке об этом
+  // надо сказать сразу, иначе она подействует только со следующего входа.
+  settings.on('change', ({ key }) => {
+    if (key === 'wideband' && state.joined) tellShell();
+  });
+
   // Код виден размытым: в трансляции и через плечо его не прочитать. Нажатие
   // показывает его и сразу копирует — это два действия, которые всегда нужны
   // вместе. Повторное нажатие прячет обратно.
@@ -132,8 +157,10 @@ net.on('welcome', ({ you, peers }) => {
   for (const p of peers) {
     state.peers.set(p.id, p);
     settings.trackPeer(p.id, p.name);
-    mesh.add(p.id);
   }
+  // Не `add` по одному, а сверка целиком: после обрыва наш id другой, и старые
+  // соединения надо не дополнить, а заменить — см. `Mesh.sync`.
+  mesh.sync(peers.map((p) => p.id));
   render('peers');
 
   // Переподключение — это тоже welcome, но сообщать о входе повторно незачем.

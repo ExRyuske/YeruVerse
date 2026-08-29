@@ -95,6 +95,29 @@ async function diag(page) {
 /** Значение строки диагностики по её названию. */
 const diagValue = (rows, name) => rows.find((r) => r.name === name)?.value ?? '';
 
+/**
+ * Долгоживущие объекты страницы — сокет, WebRTC-сеть, рой — первым аргументом,
+ * своё значение вторым: `inside(page, ([{ net }, x]) => …, x)`.
+ *
+ * Наружу приложение их не выставляет, и правильно делает. Но модуль у браузера
+ * один на адрес: `import()` того же файла, который страница уже загрузила,
+ * отдаёт тот же самый экземпляр, а не новый. Так проверка добирается до
+ * внутренностей, ничего не добавляя в само приложение — ни глобальной
+ * переменной, ни ветки «если это тест».
+ *
+ * Модуль передаётся ссылкой на живой объект, а не строкой с кодом: политика
+ * содержимого запрещает странице собирать функции из текста, и правильно
+ * делает — в чат приходит чужой текст.
+ */
+async function inside(page, fn, arg) {
+  const core = await page.evaluateHandle(() => import('/js/core.js'));
+  try {
+    return await page.evaluate(fn, [core, arg]);
+  } finally {
+    await core.dispose();
+  }
+}
+
 const browser = await chromium.launch({ args: ARGS });
 
 // ---------------------------------------------------------------- вход
@@ -158,6 +181,59 @@ const sysTimes = await a.evaluate(() =>
 note(sysTimes.length > 0, 'системные строки есть', sysTimes.map((r) => r.text).join(' | '));
 note(sysTimes.every((r) => /\d/.test(r.time)), 'у системных строк есть время',
      sysTimes.map((r) => r.time).join(' '));
+
+// ------------------------------------------------------------ вложения
+// Карточка файла приходит от чужого клиента, и по ней получатель сразу
+// разворачивает у себя массив кусков и битовое поле на каждый. Картинка при
+// этом качается сама, не спрашивая, — то есть одного числа в карточке хватало,
+// чтобы уложить вкладку каждому, кто просто сидит в комнате. Шлём такие
+// карточки мимо интерфейса, прямо в сокет: именно так их и пришлют.
+const BAD_CARDS = [
+  { what: 'кусков на миллиард', chunks: 1e9 },
+  { what: 'кусков отрицательно', chunks: -1 },
+  { what: 'кусков не число', chunks: 'много' },
+  { what: 'кусков нет вовсе', chunks: undefined },
+  { what: 'куски мелкие, а их много', size: 2 * 1024 ** 3, chunkSize: 1, chunks: 2 * 1024 ** 3 },
+];
+for (const bad of BAD_CARDS) {
+  await inside(b, ([{ net }, bad]) => {
+    const meta = {
+      id: `bad-${Math.random().toString(36).slice(2, 8)}`,
+      name: 'кот.png',
+      mime: 'image/png',       // картинка — значит начнёт качаться сама
+      size: 1024,
+      chunkSize: 64 * 1024,
+      chunks: 1,
+      ...bad,
+    };
+    delete meta.what;
+    net.send({ t: 'file', meta });
+  }, bad);
+}
+await a.waitForTimeout(1200);
+const attach = await inside(a, ([{ swarm }]) => ({
+  cards: document.querySelectorAll('#chat-log .attach').length,
+  transfers: swarm.transfers.size,
+  alive: !!document.querySelector('#chat-input'),
+}));
+note(attach.cards === 0, 'выдуманная карточка файла не рисуется', `карточек ${attach.cards}`);
+note(attach.transfers === 0, 'и не разворачивает передачу', `передач ${attach.transfers}`);
+note(attach.alive && a.errors.length === 0, 'комната цела после таких карточек',
+     a.errors.join(' | '));
+
+// А настоящая карточка — доходит и качается: проверка не должна была закрыть
+// вложения заодно с выдуманными.
+await inside(b, ([{ net, swarm }]) => {
+  const file = new File([new Uint8Array(3000).fill(7)], 'горы.png', { type: 'image/png' });
+  net.send({ t: 'file', meta: swarm.offer(file) });
+});
+await a.waitForTimeout(2500);
+const real = await a.evaluate(() => ({
+  cards: document.querySelectorAll('#chat-log .attach').length,
+  shot: document.querySelector('#chat-log img.shot')?.src?.startsWith('blob:') ?? false,
+}));
+note(real.cards === 1, 'настоящее вложение приходит', `карточек ${real.cards}`);
+note(real.shot, 'и картинка собирается роем целиком');
 
 // ---------------------------------------------------------------- голос
 const report = await diag(a);
@@ -459,6 +535,41 @@ note(tile && tile.camBottom <= tile.barTop, 'плитка камеры не за
      JSON.stringify(tile));
 
 note(phone.errors.length === 0, 'телефон без ошибок', phone.errors.join(' | '));
+
+// ------------------------------------------------------- переподключение
+// Сокет рвётся сам по себе: телефон уснул, Wi-Fi переключился, оператор сменил
+// адрес. Вернувшись, участник получает от сервера новый id — а от нового id
+// зависит, кто в паре предлагает соединение, а кто отвечает. Пока старые
+// соединения переживали возвращение, стороны считали роли от разных id и могли
+// разойтись обе невежливыми, взаимно проигнорировав предложения друг друга:
+// человек возвращался в комнату, но не возвращался к собеседникам.
+const wasId = await inside(a, ([{ net }]) => net.selfId);
+await inside(a, ([{ net }]) => net.ws.close());
+await a.waitForTimeout(4000);
+
+const after = await inside(a, async ([{ net, mesh }]) => {
+  return {
+    id: net.selfId,
+    online: net.connected,
+    conns: mesh.peers(),
+    states: (await mesh.diagnostics()).map((r) => `${r.state}/${r.ctl}`),
+  };
+});
+note(after.online, 'сокет вернулся');
+note(after.id !== wasId, 'сервер выдал новый id', `${wasId} -> ${after.id}`);
+note(after.conns.length === 2, 'соединения пересобраны под новый id',
+     `их ${after.conns.length}: ${after.conns.join(', ')}`);
+note(
+  after.states.every((st) => st === 'connected/open'),
+  'и снова живые, а не брошенные',
+  after.states.join(' | ')
+);
+
+await b.fill('#chat-input', 'вернулся?');
+await b.press('#chat-input', 'Enter');
+await a.waitForTimeout(900);
+note((await a.textContent('#chat-log')).includes('вернулся?'), 'чат идёт дальше');
+note(a.errors.length === 0, 'возвращение без ошибок', a.errors.join(' | '));
 
 await browser.close();
 console.log(`\nитог: ${problems.length ? 'замечаний ' + problems.length : 'всё сошлось'}`);

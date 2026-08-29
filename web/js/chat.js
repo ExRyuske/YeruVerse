@@ -3,6 +3,7 @@
 
 import { icon } from './icons.js';
 import { net, swarm } from './core.js';
+import { sane } from './swarm.js';
 import { isSelf, state } from './state.js';
 import { fmtClock, fmtSize, make, openExternal, showImage, toast, ui } from './ui.js';
 
@@ -14,6 +15,9 @@ export function initChat() {
   };
   net.on('file', ({ from, meta, srv }) => {
     if (isSelf(from)) return;   // свою карточку уже нарисовали
+    // Карточку рисуем только разобранную: дальше по ней и строка чата, и
+    // выделение памяти под куски, а приходит она от чужого клиента.
+    if (!sane(meta)) return;
     addAttachment(state.peers.get(from), meta, false, srv);
   });
 

@@ -25,6 +25,8 @@ mod codes;
 mod input;
 #[cfg(desktop)]
 mod keys;
+mod room;
+mod sysaudio;
 
 use std::time::Duration;
 
@@ -251,7 +253,13 @@ fn moonlight_binary() -> Option<std::path::PathBuf> {
 /// по своему списку уже сопряжённых адресов.
 #[tauri::command]
 fn moonlight(host: String, action: String, pin: Option<String>) -> Result<(), String> {
-    if host.is_empty() || host.chars().any(|c| !(c.is_ascii_alphanumeric() || ".:-_".contains(c))) {
+    // Дефис в адресе нужен, но не первым символом: аргумент, начинающийся с
+    // него, разбор командной строки Moonlight прочитает как свой флаг, а не как
+    // хост — и адрес превратится в переключатель, о котором мы ничего не знаем.
+    if host.is_empty()
+        || host.starts_with('-')
+        || host.chars().any(|c| !(c.is_ascii_alphanumeric() || ".:-_".contains(c)))
+    {
         return Err("странный адрес".into());
     }
     let exe =
@@ -498,6 +506,13 @@ fn capabilities(app: tauri::AppHandle) -> serde_json::Value {
         "hotkeyMode": hotkeys,
         "remoteControl": cfg!(desktop),
         "updates": cfg!(desktop),
+        // Умеет ли оболочка удержать комнату в фоне и не дать системе увести
+        // звук в «разговорный» режим (см. `room.rs`). Это Android и только он:
+        // настольным системам ни то, ни другое не нужно.
+        "background": cfg!(target_os = "android"),
+        // Может ли оболочка отдать звук самой системы. Нужно это только
+        // на macOS: там движок его не отдаёт, а больше нигде и не надо.
+        "systemAudio": cfg!(target_os = "macos"),
     })
 }
 
@@ -548,6 +563,7 @@ pub fn run() {
 
     builder
         .manage(input::Input::start())
+        .manage(sysaudio::Sound::new())
         .invoke_handler(tauri::generate_handler![
             capabilities,
             overlay,
@@ -569,6 +585,9 @@ pub fn run() {
             input::input_scroll,
             input::input_key,
             input::input_release,
+            room::set_room,
+            sysaudio::sound_start,
+            sysaudio::sound_stop,
         ])
         .setup(|app| {
             // Слежение за клавиатурой поднимаем здесь: до появления `AppHandle`

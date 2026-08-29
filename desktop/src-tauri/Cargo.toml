@@ -53,6 +53,39 @@ windows = { version = "0.61", features = [
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.25"
 core-foundation = "0.10"
+# Захват звука системы (см. `sysaudio`). Своего пути к нему у вебвью на macOS
+# нет ни одного: `systemAudio: 'include'` там не работает ни в WebKit, ни в
+# Chrome, и трансляция уходит немой.
+#
+# Фичи перечислены поимённо: у этих крейтов почти всё под своим флагом, и без
+# них компилируется пустой модуль, а ошибка выглядит как «нет такого метода».
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-core-audio-types = { version = "0.3", features = ["objc2"] }
+objc2-core-media = { version = "0.3", features = [
+  "CMSampleBuffer",
+  "CMBlockBuffer",
+  "CMFormatDescription",
+  "CMSync",
+  "objc2-core-audio-types",
+] }
+objc2-screen-capture-kit = { version = "0.3", features = [
+  "SCStream",
+  "SCShareableContent",
+  "SCError",
+  "objc2-core-media",
+  "dispatch2",
+  "block2",
+] }
+block2 = "0.6"
+dispatch2 = "0.3"
+
+# Вызов метода у активности Android: сказать оболочке, что мы в комнате.
+# Версия обязана совпадать с той, на которой собран сам Tauri, — иначе `JValue`
+# из нашего дерева и `JValue`, которого ждёт `JniHandle`, окажутся разными
+# типами, и это выяснится только при сборке под Android.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
 
 # Оболочка почти ничего не считает: вся работа идёт в вебвью и в сервере.
 # Поэтому здесь важнее время сборки, чем последний процент скорости — тонкая

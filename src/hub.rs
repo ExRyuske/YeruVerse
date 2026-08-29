@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 
 use crate::protocol::{PeerInfo, Presence};
 
@@ -13,7 +13,19 @@ pub fn now_ms() -> i64 {
 
 pub struct Peer {
     pub info: PeerInfo,
-    pub tx: UnboundedSender<String>,
+    pub tx: Sender<String>,
+}
+
+/// Отправка одному. Очередь у каждого своя и конечная (см. `OUTBOX` в
+/// `server.rs`): тот, кто перестал читать сокет, копил бы её без предела, а
+/// платил бы за это сервер — и не своей памятью, а чужой.
+///
+/// Переполнение здесь равносильно потере связи: сотня непрочитанных сообщений
+/// в протоколе, где обычный обмен — это пара строк в секунду, означает, что
+/// собеседника уже нет. Сообщение в таком случае просто теряется, и это
+/// нормальный исход: сокет вот-вот закроется сам, а следом придёт `leave`.
+fn post(peer: &Peer, text: String) {
+    let _ = peer.tx.try_send(text);
 }
 
 /// Комната — это только список участников. Ничего общего, что нужно было бы
@@ -52,9 +64,9 @@ impl Hub {
             "srv": now_ms(),
         });
 
-        let joined = json!({ "t": "peer_join", "peer": info });
+        let joined = json!({ "t": "peer_join", "peer": info }).to_string();
         for p in room.peers.values() {
-            let _ = p.tx.send(joined.to_string());
+            post(p, joined.clone());
         }
 
         room.peers.insert(info.id.clone(), Peer { info, ..peer });
@@ -71,9 +83,9 @@ impl Hub {
             return;
         }
 
-        let left = json!({ "t": "peer_leave", "id": peer_id });
+        let left = json!({ "t": "peer_leave", "id": peer_id }).to_string();
         for p in room.peers.values() {
-            let _ = p.tx.send(left.to_string());
+            post(p, left.clone());
         }
     }
 
@@ -127,7 +139,7 @@ impl Hub {
     pub fn send_to(&self, room_id: &str, peer_id: &str, msg: &Value) {
         let rooms = self.rooms.lock().unwrap();
         if let Some(p) = rooms.get(room_id).and_then(|r| r.peers.get(peer_id)) {
-            let _ = p.tx.send(msg.to_string());
+            post(p, msg.to_string());
         }
     }
 
@@ -138,7 +150,7 @@ impl Hub {
         let Some(room) = rooms.get(room_id) else { return };
         let text = msg.to_string();
         for p in room.peers.values() {
-            let _ = p.tx.send(text.clone());
+            post(p, text.clone());
         }
     }
 
@@ -154,10 +166,10 @@ impl Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::mpsc::{self, UnboundedReceiver};
+    use tokio::sync::mpsc::{self, Receiver};
 
-    fn peer(id: &str, name: &str) -> (Peer, UnboundedReceiver<String>) {
-        let (tx, rx) = mpsc::unbounded_channel();
+    fn peer(id: &str, name: &str) -> (Peer, Receiver<String>) {
+        let (tx, rx) = mpsc::channel(16);
         let info = PeerInfo {
             id: id.to_string(),
             name: name.to_string(),
