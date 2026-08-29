@@ -5386,7 +5386,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "yeruverse-desktop"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "block2",
  "core-foundation",
