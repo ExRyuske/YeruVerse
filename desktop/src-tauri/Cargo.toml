@@ -43,7 +43,7 @@ enigo = "0.6"
 # Обе библиотеки и так есть в дереве — их тянет enigo, — но зависеть на них
 # вслепую нельзя: пропадут у него, пропадут и у нас.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
