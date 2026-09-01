@@ -296,7 +296,7 @@ jobs:
         shell: bash
 
       - if: matrix.android
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
