@@ -3,7 +3,9 @@
 import { control, native, settings, voice } from './core.js';
 import { hidden, isSelf, state, viewKey } from './state.js';
 import { painter, render } from './render.js';
+import { icon } from './icons.js';
 import { make, markButton, ui, volumeSlider } from './ui.js';
+import { stacked } from './layout.js';
 import { setHidden } from './stage.js';
 import { allowButton, canMoonlight, moonlightButton } from './sunshine.js';
 
@@ -28,7 +30,7 @@ function renderPeers() {
   for (const p of state.peers.values()) {
     let li = state.peerEls.get(p.id);
     if (!li) {
-      li = newPeerRow();
+      li = newPeerRow(p.id);
       state.peerEls.set(p.id, li);
       list.appendChild(li);
     }
@@ -36,6 +38,7 @@ function renderPeers() {
   }
 
   ui('#peer-count').textContent = state.peers.size;
+  fillPeerCard();        // она показывает то же самое и отставать не должна
   render('cams');        // на плитках подписаны ники — они могли смениться
   applySpeaking();
 }
@@ -46,10 +49,16 @@ function renderPeers() {
  * (`display: contents`), поэтому ряд выглядит так же, как если бы значки лежали
  * в строке сами по себе.
  */
-function newPeerRow() {
+function newPeerRow(id) {
   return make(
     'li',
-    {},
+    {
+      // Нажатие на строку поднимает карточку — но только там, где строка не
+      // вмещает управления сама. На большом экране всё уже стоит в ней, и
+      // всплывающий лист поверх был бы вторым способом сделать то же самое.
+      // Нажатия на сами значки в строке карточку не открывают: у них своё дело.
+      onclick: (e) => stacked() && !e.target.closest('button') && openPeerCard(id),
+    },
     ...['peer-name', 'peer-marks', 'peer-acts'].map((cls) => make('span', { class: cls }))
   );
 }
@@ -141,6 +150,129 @@ function peerVolumeSlider(id) {
     get: () => settings.peerVolumeOf(id),
     set: (v) => settings.setPeerVolume(id, v),
   });
+}
+
+// ---------------------------------------------------------------- карточка
+
+/**
+ * Карточка участника: всё, что о нём можно решить, в одном месте.
+ *
+ * На телефоне в вертикали список ложится строкой поперёк экрана — вертикаль там
+ * дороже и отдана чату. В такую строку помещается только ник, и всё остальное
+ * из неё уходит: громкость прячется совсем, выключатель чужой трансляции
+ * остаётся значком в двадцать четыре точки без подписи, а замку, Moonlight и
+ * «на паузе» места нет вовсе. Настроить собеседника с телефона было нечем —
+ * старое примечание в стилях обещало громкость «в настройках», но её там нет и
+ * не было.
+ *
+ * Поэтому по нажатию на ник поднимается лист снизу — с тем же ползунком и теми
+ * же кнопками, что стоят в строке на большом экране. Собираются они теми же
+ * сборщиками, что и строка: разойтись им не на чем, а подпись каждая берёт из
+ * своей же подсказки — той, что на большом экране показывается по наведению.
+ */
+let card = null;
+
+function openPeerCard(id) {
+  closePeerCard();
+
+  const name = make('b', { class: 'sheet-name' });
+  const vol = make('div', { class: 'sheet-vol' });
+  const rows = make('div', { class: 'sheet-rows' });
+  const sheet = make(
+    'div',
+    { class: 'sheet' },
+    make(
+      'header',
+      { class: 'sheet-head' },
+      name,
+      make('button', {
+        class: 'ghost icon',
+        title: 'Закрыть',
+        html: icon('close'),
+        onclick: closePeerCard,
+      })
+    ),
+    vol,
+    rows
+  );
+  // Нажатие мимо листа закрывает его — как и у всплывающих настроек рядом.
+  const back = make('div', { class: 'sheet-back', onclick: (e) => e.target === back && closePeerCard() }, sheet);
+
+  // Escape закрывает — как и всплывающие настройки рядом. Слушатель живёт
+  // ровно столько, сколько открыта карточка: в остальное время он не при чём.
+  const onKey = (e) => e.key === 'Escape' && closePeerCard();
+  document.addEventListener('keydown', onKey);
+
+  document.body.appendChild(back);
+  card = { id, back, onKey, name, vol, rows };
+  fillPeerCard();
+}
+
+function closePeerCard() {
+  if (!card) return;
+  document.removeEventListener('keydown', card.onKey);
+  card.back.remove();
+  card = null;
+}
+
+/**
+ * Обновить открытую карточку. Зовётся с каждой перерисовкой списка: карточка
+ * показывает то же самое, и отставать ей не от чего.
+ *
+ * Ползунок при этом переживает обновление, а не создаётся заново, — по той же
+ * причине, что и в строке: пересозданный, он исчезает прямо из-под пальца.
+ */
+function fillPeerCard() {
+  if (!card) return;
+  const p = state.peers.get(card.id);
+  // Вышел или вернулся под новым id, пока карточка открыта: настраивать больше
+  // некого, а карточка без человека — это карточка ни о ком.
+  if (!p) return closePeerCard();
+
+  const mine = isSelf(p.id);
+  card.name.textContent = p.name + (mine ? ' (вы)' : '');
+  card.name.style.color = p.color || 'inherit';
+
+  // Громкость идёт подписью вперёд: ползунок занимает всю оставшуюся ширину, и
+  // подпись после него оказалась бы прижата к правому краю неизвестно к чему.
+  const heard = !mine && voice.remotes.has(p.id);
+  const slider = card.vol.querySelector('.pv-mini');
+  if (heard && !slider) {
+    card.vol.replaceChildren(
+      make(
+        'div',
+        { class: 'sheet-row sheet-vol-row' },
+        make('span', { text: 'Громкость' }),
+        peerVolumeSlider(p.id)
+      )
+    );
+  } else if (!heard && slider) {
+    card.vol.replaceChildren();
+  } else {
+    slider?.sync();
+  }
+
+  const rows = [...stateMarks(p), ...shareToggles(p, mine), ...peerActions(p, mine)].map((el) =>
+    labelled(el, el.title)
+  );
+  // Пустая карточка — тупик: человек нажал на ник и получил пустоту, из которой
+  // непонятно, сломалось что-то или так и задумано. Это обычное дело для себя
+  // самого: микрофон включён, трансляций нет — и решать про себя нечего.
+  if (!rows.length && !card.vol.childElementCount) {
+    rows.push(make('p', { class: 'muted sheet-empty', text: 'Тут пока нечего настроить' }));
+  }
+  card.rows.replaceChildren(...rows);
+}
+
+/**
+ * Значок с подписью словами.
+ *
+ * В строке на большом экране подпись живёт подсказкой по наведению — на
+ * телефоне наводить нечем, и без слов ряд одинаковых квадратиков не читается
+ * никак. Берём ту же подсказку: второго её текста заводить не за что.
+ */
+function labelled(el, text) {
+  return make('div', { class: 'sheet-row' }, el, make('span', { text: text ?? '' }));
 }
 
 export function applySpeaking() {

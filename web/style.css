@@ -603,6 +603,41 @@ button.icon.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
 }
 .palette button[aria-pressed="true"] { border-color: var(--text); transform: scale(1.12); }
 
+/* Карточка участника — лист снизу.
+   Поднимается по нажатию на ник там, где строка участника его одного и
+   вмещает: на телефоне в вертикали список ложится полосой поперёк экрана, и
+   ни громкости, ни выключателям трансляций, ни замку места в нём нет. Снизу —
+   потому что тянутся к нему большим пальцем, а он достаёт до низа экрана, а не
+   до середины. */
+.sheet-back {
+  position: fixed; inset: 0; z-index: 30;
+  background: rgba(0, 0, 0, .55);
+  display: flex; align-items: flex-end;
+}
+.sheet {
+  width: 100%; max-height: 80vh; overflow-y: auto;
+  background: var(--panel); border-top: 1px solid var(--border);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  padding: 12px 14px max(14px, env(safe-area-inset-bottom));
+}
+.sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sheet-name {
+  font-size: 17px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Строка карточки — значок и то же слово, что на большом экране приезжает
+   подсказкой по наведению. Наводить на телефоне нечем, а ряд одинаковых
+   квадратиков без слов не читается никак.
+   Сорок точек высоты — это не про красоту: меньший ряд пальцем не берётся. */
+.sheet-row { display: flex; align-items: center; gap: 10px; min-height: 40px; font-size: 14px; }
+.sheet-row > span:last-child { min-width: 0; }
+.sheet-vol-row > span { flex: none; color: var(--muted); }
+/* Ползунок в карточке — во всю ширину: тянуть его пальцем на шестидесяти двух
+   точках, отмеренных для строки в панели, невозможно. */
+.sheet-vol-row .pv-mini { flex: 1; margin: 0; }
+.sheet-vol-row .pv-mini input[type="range"] { flex: 1; width: auto; }
+.sheet-empty { margin: 10px 0 4px; font-size: 14px; }
+
 .modal {
   position: fixed; inset: 0; z-index: 30;
   background: rgba(0, 0, 0, .55);
@@ -689,7 +724,15 @@ body.fullscreen .sources {
   background: linear-gradient(transparent, rgba(0, 0, 0, .8));
   transition: opacity .25s;
 }
-body.fullscreen .src-row { flex: none; }
+/* Кнопки — всегда у правого края, есть переключатели трансляций или нет.
+   Ряд с ними стоит в разметке вторым, и место ему до сих пор оставляли сами
+   переключатели: пока они есть, их `flex: 1 1 auto` съедает всю ширину и
+   прижимает кнопки вправо, а стоит последнему транслирующему выключиться —
+   ряд уезжает к левому краю. Кнопки при этом не меняются ни числом, ни
+   порядком: они просто прыгают через весь экран туда и обратно, и тянуться к
+   ним приходится каждый раз в новое место. Собственный отступ держит их
+   справа сам, не завися от чужого присутствия. */
+body.fullscreen .src-row { flex: none; margin-left: auto; }
 body.fullscreen .views {
   flex: 1 1 auto; min-width: 0; flex-wrap: nowrap;
   overflow-x: auto; scrollbar-width: none;
@@ -821,12 +864,38 @@ body.fullscreen .pop { pointer-events: auto; }
   .peers ul { flex-direction: row; overflow-x: auto; gap: 10px; scrollbar-width: none; }
   .peers ul::-webkit-scrollbar { display: none; }
   .peers li { flex: none; margin: 0; }
-  .pv-mini { display: none; }        /* громкость крутят в настройках */
-  /* Кроме громкости трансляции: её в настройках нет — ни общей, ни отдельной.
-     Пряталась она заодно со всеми, и на телефоне звук чужого экрана оказывался
-     не убавить вовсе (в горизонтали ползунок возвращался, и выглядело это как
-     «иногда есть, иногда нет»). */
-  .views .pv-mini { display: flex; flex: none; }   /* в прокрутке не сжимаем */
+  /* Громкость трансляции в прокрутке не сжимаем: иначе от ползунка остаётся
+     полоска в пару точек. Её тут ничем не заменить — ни в настройках, ни в
+     карточке участника звука чужого экрана нет. */
+  .views .pv-mini { flex: none; }
+}
+
+/* Только вертикальный телефон: полоса участников и карточка к ней.
+ *
+ * Блок выше — по одной ширине, и горизонталь его отменяет поимённо; правила
+ * ниже отменять не пришлось бы, но и попадать туда им незачем — в горизонтали
+ * список стоит столбцом и вмещает всё сам. Условие здесь то же самое, что и у
+ * `stacked()` в `layout.js`: карточку поднимает он, а вид полосе задаёт это
+ * место, и разъехаться им нельзя. */
+@media (max-width: 860px) and (orientation: portrait) {
+  /* Громкость участника из полосы уходит: ползунок шире самого ника, и полоса
+     из неё превращается в бесконечную прокрутку. Крутят её в карточке, которая
+     поднимается по нажатию на ник, — до неё этому месту обещали «настройки», а
+     в настройках громкости участника нет и не было. */
+  .peers .pv-mini { display: none; }
+  /* Полоса участников — ряд нажимаемых плашек, а не строка текста: по нажатию
+     поднимается карточка, и выглядеть это должно как кнопка. */
+  .peers li {
+    border: 1px solid var(--border); border-radius: var(--r-sm); padding: 2px 8px;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+  }
+  .peers li:active { background: var(--panel); }
+  /* А значки внутри плашки — только метки: нажимают на всю плашку целиком.
+     Кнопка в двадцать четыре точки посреди плашки в восемьдесят — это ловушка:
+     палец метит в участника, а попадает в выключатель его трансляции. Нажимать
+     здесь по-прежнему есть что, но в карточке, где у каждой кнопки есть подпись
+     и высота под палец. */
+  .peers li .mark { pointer-events: none; }
 }
 
 /* Совсем узкие экраны: имя комнаты не должно выдавливать кнопки. */
@@ -882,5 +951,7 @@ body.fullscreen .pop { pointer-events: auto; }
   .peers h3 { display: block; }
   .peers ul { flex-direction: column; gap: 6px; overflow-x: hidden; }
   .peers li { margin: 0 -6px; }
-  .pv-mini { display: flex; }
+  /* Громкость участника отменять здесь нечем: прячет её правило вертикали, а
+     оно досюда не достаёт. Строка тут столбцом и полная, как на большом
+     экране, — и карточка, которую в вертикали поднимают нажатием, ни к чему. */
 }

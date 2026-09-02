@@ -418,6 +418,31 @@ const underBar = await b.evaluate(() => {
 note(!/sources|src-row|views/.test(underBar), 'пустое место полосы пропускает нажатие к кадру',
      underBar);
 
+// Кнопки в полном экране стоят справа — и стоят там всегда.
+//
+// Ряд с ними в разметке второй, и место ему раньше оставляли сами переключатели
+// трансляций: пока есть кому транслировать, их `flex` съедает ширину и прижимает
+// кнопки вправо, а выключился последний — ряд уезжал к левому краю. Числом и
+// порядком кнопки при этом не меняются, они просто прыгают через весь экран, и
+// тянуться к ним приходится каждый раз в новое место.
+const rowRight = () =>
+  b.evaluate(() => Math.round(document.querySelector('.src-row').getBoundingClientRect().right));
+
+const bareRow = await rowRight();
+await b.evaluate(async () => {
+  const { addScreen } = await import('/js/stage.js');
+  addScreen('появился-транслирующий:screen', new MediaStream());
+});
+await b.waitForTimeout(300);
+const busyRow = await rowRight();
+await b.evaluate(async () => {
+  const { removeScreen } = await import('/js/stage.js');
+  removeScreen('появился-транслирующий:screen');
+});
+await b.waitForTimeout(300);
+note(Math.abs(bareRow - busyRow) <= 1, 'кнопки не прыгают, когда появляется трансляция',
+     `${bareRow} против ${busyRow}`);
+
 /** Видно ли полосу: класс бездействия и её собственная прозрачность. */
 const bar = () =>
   b.evaluate(() => ({
@@ -496,14 +521,31 @@ for (const id of ['pop-mic', 'pop-sound', 'pop-cam']) {
 }
 await phone.keyboard.press('Escape');
 
+// В горизонтали телефон — маленький настольный: список стоит столбцом и
+// вмещает всё сам. Ползунок громкости здесь остаётся в строке, значки остаются
+// кнопками, а карточка не нужна и не поднимается. Блок стилей телефона задан по
+// одной ширине, и горизонталь отменяет его правила поимённо — стоит забыть одно,
+// и настроить участника здесь станет нечем, ровно как было в вертикали.
+const wide = await phone.evaluate(() => {
+  const li = [...document.querySelectorAll('#peer-list li')].find((el) => !/\(вы\)/.test(el.textContent));
+  const vol = li?.querySelector('.pv-mini');
+  return {
+    slider: vol ? getComputedStyle(vol).display : 'нет узла',
+    taps: li ? getComputedStyle(li).cursor : '—',
+  };
+});
+note(wide.slider === 'flex', 'в горизонтали громкость осталась в строке', JSON.stringify(wide));
+await phone.locator('#peer-list li').first().click();
+await phone.waitForTimeout(300);
+note((await phone.locator('.sheet').count()) === 0, 'и карточку там не поднимают');
+
 await phone.setViewportSize({ width: 390, height: 844 });
 await phone.waitForTimeout(800);
 await shot(phone, 'phone-portrait');
 
-// В вертикали ползунки громкости прячутся: в узкой строке участника им не
-// место, а крутят их в настройках. Громкости трансляции в настройках нет —
-// значит, она обязана остаться на виду, иначе звук чужого экрана на телефоне
-// не убавить вовсе.
+// В вертикали ползунок громкости уходит из полосы участников: он шире самого
+// ника. Громкость трансляции при этом обязана остаться на виду — её нет больше
+// нигде, иначе звук чужого экрана на телефоне не убавить вовсе.
 const volumes = await phone.evaluate(() => {
   const shown = (host) => {
     const probe = document.createElement('span');
@@ -516,7 +558,91 @@ const volumes = await phone.evaluate(() => {
   return { views: shown(document.querySelector('#views')), peers: shown(document.querySelector('#peer-list')) };
 });
 note(volumes.views !== 'none', 'громкость трансляции видна в вертикали', volumes.views);
-note(volumes.peers === 'none', 'громкость участника — в настройках', volumes.peers);
+note(volumes.peers === 'none', 'громкость участника из полосы ушла', volumes.peers);
+
+// А куда она ушла: по нажатию на ник поднимается карточка участника. Без неё
+// настроить собеседника с телефона было нечем — ни громкости, ни выключателя
+// чужой трансляции, ни замка: всё это живёт в строке, которой в вертикали нет.
+//
+// Камеру Ане включаем ради выключателя: он появляется только у того, кто и
+// правда что-то транслирует.
+await a.click('#btn-camera');
+await a.waitForTimeout(2500);
+await phone.waitForTimeout(1500);
+await phone.locator('#peer-list li', { hasText: 'Аня' }).click();
+await phone.waitForTimeout(400);
+const sheet = await phone.evaluate(() => {
+  const el = document.querySelector('.sheet');
+  if (!el) return null;
+  const box = el.getBoundingClientRect();
+  const slider = el.querySelector('.pv-mini input[type="range"]');
+  return {
+    name: el.querySelector('.sheet-name')?.textContent,
+    slider: Math.round(slider?.getBoundingClientRect().width ?? 0),
+    rows: [...el.querySelectorAll('.sheet-row')].map((r) => ({
+      text: r.querySelector('span:last-child')?.textContent ?? '',
+      tap: !!r.querySelector('button'),
+      h: Math.round(r.getBoundingClientRect().height),
+    })),
+    atBottom: Math.round(box.bottom) >= innerHeight - 1,
+  };
+});
+note(!!sheet && sheet.name === 'Аня', 'нажатие на ник поднимает его карточку',
+     sheet ? sheet.name : 'карточки нет');
+// Ползунок в строке отмерян на шестьдесят две точки — пальцем такой не тянут.
+note(!!sheet && sheet.slider > 150, 'громкость в карточке — во всю ширину',
+     `${sheet?.slider ?? 0} точек`);
+// Ряд одинаковых квадратиков без слов на телефоне не читается: наводить нечем.
+const toggle = sheet?.rows.find((r) => /трансляц/i.test(r.text));
+note(!!toggle?.tap, 'выключатель чужой трансляции — с подписью и нажимаемый',
+     JSON.stringify(sheet?.rows ?? []));
+note(!!toggle && toggle.h >= 40, 'и высотой под палец', `${toggle?.h ?? 0} точек`);
+note(!!sheet?.atBottom, 'карточка стоит у нижнего края — туда достаёт большой палец');
+
+// Выключатель в карточке делает то же, что и значок в строке на большом экране.
+await phone.locator('.sheet .sheet-row', { hasText: /трансляц/i }).locator('button').click();
+await phone.waitForTimeout(400);
+const off = await phone.evaluate(async () => {
+  const { hidden } = await import('/js/state.js');
+  const labels = [...document.querySelectorAll('.sheet .sheet-row')]
+    .map((r) => r.querySelector('span:last-child')?.textContent ?? '')
+    .filter(Boolean);
+  return { hidden: [...hidden].length, labels };
+});
+note(off.hidden === 1 && off.labels.some((l) => /вернуть/i.test(l)),
+     'из карточки трансляция выключается', JSON.stringify(off));
+await phone.locator('.sheet .sheet-row', { hasText: /вернуть/i }).locator('button').click();
+await phone.waitForTimeout(300);
+
+// Значки в самой полосе на телефоне — метки, а не кнопки: плашка в восемьдесят
+// точек, кнопка в двадцать четыре, и палец, метящий в участника, попадал в
+// выключатель чужой трансляции.
+const trap = await phone.evaluate(() => {
+  const li = [...document.querySelectorAll('#peer-list li')].find((el) => /Аня/.test(el.textContent));
+  const mark = li?.querySelector('.mark');
+  return mark ? getComputedStyle(mark).pointerEvents : '—';
+});
+note(trap === 'none', 'значок в полосе не перехватывает нажатие у плашки', trap);
+
+await phone.keyboard.press('Escape');
+await phone.waitForTimeout(200);
+note((await phone.locator('.sheet').count()) === 0, 'карточка закрывается по Escape');
+
+// Карточка без человека — карточка ни о ком: закрывается сама.
+await phone.locator('#peer-list li', { hasText: 'Аня' }).click();
+await phone.waitForTimeout(300);
+await a.click('#btn-camera');            // и заодно убираем камеру за собой
+await phone.evaluate(async () => {
+  const { state } = await import('/js/state.js');
+  const { render } = await import('/js/render.js');
+  // Именно тот, чья карточка открыта: в комнате не он один.
+  const gone = [...state.peers.values()].find((p) => p.name === 'Аня');
+  state.peers.delete(gone.id);
+  render('peers');
+});
+await phone.waitForTimeout(300);
+note((await phone.locator('.sheet').count()) === 0, 'ушедший участник уносит и свою карточку');
+await a.waitForTimeout(1500);
 // Плитка камеры в полном экране стоит над полосой кнопок. Полоса бывает в одну
 // строку и в две, и пока место под неё отмерялось числом, кнопки лежали поверх
 // плитки — вместе с подписью, кому это лицо принадлежит.
@@ -603,6 +729,33 @@ const scene = await a.evaluate(async () => {
 note(scene.orphans.length === 0, 'мёртвые трансляции убраны при возвращении',
      scene.orphans.join(', '));
 note(scene.tiles >= 1, 'а живая камера соседа осталась на месте');
+
+// Своя трансляция переживает свой же обрыв — и в комнате, и в своём окне.
+//
+// Присутствие ходит кругом через сервер и после обрыва отстаёт: карточка там
+// заводится заново, пустой, и первая же рассылка про нас говорит «трансляции
+// нет». Пока своё окно верило ей на слово, оно снимало собственную плитку, не
+// трогая ни `state.shares`, ни кнопку — захват идёт, собеседники смотрят,
+// кнопка горит, а из своего окна трансляция пропала, и вернуть её нечем:
+// следующая, уже правильная рассылка умеет только снимать.
+await inside(b, ([{ net }]) => net.ws.close());
+await b.waitForTimeout(5000);
+
+const mine = await b.evaluate(async () => {
+  const { state } = await import('/js/state.js');
+  return {
+    shares: [...state.shares.keys()],
+    own: [...state.screens.keys()].filter((k) => k.split(':')[0] === state.self?.id),
+    button: document.querySelector('#btn-camera').classList.contains('active'),
+  };
+});
+note(mine.shares.includes('cam') && mine.button, 'своя камера пережила обрыв');
+note(
+  mine.own.includes('cam') || mine.own.length > 0,
+  'и осталась в своём окне, а не только у соседей',
+  `свои ключи: ${mine.own.join(', ') || 'ни одного'}`
+);
+note((await a.locator('.cam-tile').count()) >= 1, 'сосед по-прежнему её видит');
 
 await browser.close();
 console.log(`\nитог: ${problems.length ? 'замечаний ' + problems.length : 'всё сошлось'}`);

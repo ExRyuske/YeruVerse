@@ -126,6 +126,38 @@ impl Dispatch {
         }
     }
 
+    /// Какое действие назначено на это нажатие.
+    ///
+    /// Модификаторы сверяются на «зажаты ли назначенные», а не «зажаты ли ровно
+    /// они и никакие больше». Разница в одном слове, а видна она ровно там, ради
+    /// чего сочетания и вешают: в игре. Боковую кнопку мыши назначают, чтобы
+    /// говорить на бегу, — а бег это зажатый Shift, приседание Ctrl, шаг Alt.
+    /// Пока сверка была точной, голая кнопка при них не совпадала ни разу:
+    /// человек жал её впустую как раз в те минуты, ради которых и назначал, и
+    /// со стороны это выглядело как «в игре не работает вовсе».
+    ///
+    /// Когда подходит не одно сочетание, выигрывает самое подробное: при
+    /// зажатом Ctrl нажатая `Mouse4` — это `Ctrl+Mouse4`, а не `Mouse4`,
+    /// назначенная на другое действие. Иначе назначать сочетания с
+    /// модификаторами стало бы бессмысленно: голое перебивало бы их всегда.
+    /// Среди одинаково подробных берём первое — назначения перебираются в том
+    /// же порядке, в каком стоят в настройках.
+    fn matching(&self, code: &str, mods: u8) -> Option<String> {
+        let combos = self.combos.read().ok()?;
+        let mut best: Option<&(String, Combo)> = None;
+        for entry in combos.iter() {
+            // `mods & c.mods == c.mods` — «все назначенные зажаты». Лишние
+            // зажатые сюда не смотрят, в этом весь смысл.
+            if entry.1.code != code || mods & entry.1.mods != entry.1.mods {
+                continue;
+            }
+            if best.is_none_or(|b| entry.1.mods.count_ones() > b.1.mods.count_ones()) {
+                best = Some(entry);
+            }
+        }
+        best.map(|(id, _)| id.clone())
+    }
+
     /// Система показала нажатие. Всё, что здесь происходит, — сравнение;
     /// событие в любом случае идёт дальше своим ходом.
     fn key(&self, code: &str, mods: u8, down: bool) {
@@ -141,12 +173,7 @@ impl Dispatch {
         if self.held.lock().map(|held| held.contains_key(code)).unwrap_or(true) {
             return;
         }
-        let Ok(combos) = self.combos.read() else { return };
-        let Some((id, _)) = combos.iter().find(|(_, c)| c.code == code && c.mods == mods) else {
-            return;
-        };
-        let id = id.clone();
-        drop(combos);
+        let Some(id) = self.matching(code, mods) else { return };
 
         if let Ok(mut held) = self.held.lock() {
             held.insert(code.to_string(), id.clone());
@@ -564,7 +591,7 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
-    /// Чужая клавиша и чужие модификаторы не срабатывают.
+    /// Чужая клавиша и недостающий модификатор не срабатывают.
     #[test]
     fn only_the_assigned_combo_fires() {
         let (tx, rx) = mpsc::channel();
@@ -573,8 +600,53 @@ mod tests {
 
         dispatch.key("KeyM", 0, true); // без модификатора
         dispatch.key("KeyN", CTRL, true); // не та клавиша
-        dispatch.key("KeyM", CTRL | SHIFT, true); // лишний модификатор
+        dispatch.key("KeyN", CTRL | SHIFT, true); // и она же с лишним
         assert!(rx.try_recv().is_err());
+    }
+
+    /// Лишний зажатый модификатор сочетанию не мешает.
+    ///
+    /// Это и есть игра: боковую кнопку жмут на бегу, а бег — это зажатый Shift.
+    /// Пока сверка требовала точного совпадения, назначенная на голую кнопку
+    /// «молчать, пока зажато» не срабатывала в игре ни разу — то есть везде,
+    /// кроме рабочего стола, где она и не нужна.
+    #[test]
+    fn a_held_modifier_does_not_get_in_the_way() {
+        let (tx, rx) = mpsc::channel();
+        let dispatch = Dispatch::new(tx);
+        dispatch.set(vec![("push-mute".into(), "Mouse3".into())]);
+
+        dispatch.key("Mouse3", SHIFT, true); // бежим и жмём кнопку
+        dispatch.key("Mouse3", SHIFT, false);
+        assert_eq!(rx.try_recv().unwrap(), ("push-mute".to_string(), true));
+        assert_eq!(rx.try_recv().unwrap(), ("push-mute".to_string(), false));
+
+        // Ctrl+Shift+бег — тоже не помеха: назначенных модификаторов нет вовсе,
+        // а значит и требовать нечего.
+        dispatch.key("Mouse3", CTRL | SHIFT | ALT, true);
+        assert_eq!(rx.try_recv().unwrap(), ("push-mute".to_string(), true));
+    }
+
+    /// Из двух подошедших сочетаний выигрывает подробное.
+    ///
+    /// Иначе назначать сочетания с модификаторами стало бы бессмысленно: голая
+    /// кнопка подходит всегда и перебивала бы их все.
+    #[test]
+    fn the_more_specific_combo_wins() {
+        let (tx, rx) = mpsc::channel();
+        let dispatch = Dispatch::new(tx);
+        dispatch
+            .set(vec![("mic".into(), "Mouse4".into()), ("deafen".into(), "Ctrl+Mouse4".into())]);
+
+        dispatch.key("Mouse4", CTRL, true);
+        assert_eq!(rx.try_recv().unwrap(), ("deafen".to_string(), true));
+
+        // Отпускание ищется по самой кнопке и приходит тому же действию.
+        dispatch.key("Mouse4", CTRL, false);
+        assert_eq!(rx.try_recv().unwrap(), ("deafen".to_string(), false));
+
+        dispatch.key("Mouse4", 0, true);
+        assert_eq!(rx.try_recv().unwrap(), ("mic".to_string(), true));
     }
 
     /// Сменили назначения, пока клавишу держали, — действие надо отпустить за
