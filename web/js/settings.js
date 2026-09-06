@@ -57,7 +57,6 @@ const DEFAULTS = {
   peerVolumeByName: {},
   streamVolumeByName: {},   // громкость трансляций, тоже по имени
   rooms: [],                // сохранённые комнаты: { code, name }
-  pairedHosts: [],         // адреса, с которыми Moonlight уже сопряжён
 };
 
 /**
@@ -73,6 +72,9 @@ function migrate(values) {
   delete values.echoCancellation;
   delete values.autoGainControl;
   delete values.version;
+  // Моста к Moonlight больше нет, а список сопряжённых с ним адресов остался бы
+  // в хранилище навсегда — вместе с адресами чужих домашних сетей.
+  delete values.pairedHosts;
   if (typeof values.denoise === 'boolean') {
     values.denoise = values.denoise ? 'rnnoise' : 'off';
   }

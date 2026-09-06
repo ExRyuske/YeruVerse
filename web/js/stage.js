@@ -6,14 +6,17 @@
 
 import { control, mesh, pointers, settings } from './core.js';
 import { hidden, isSelf, state, viewKey, viewKind, viewPeer } from './state.js';
+import { reason } from './errors.js';
 import { painter, render } from './render.js';
 import { icon } from './icons.js';
-import { make, showVideo, ui, volumeSlider } from './ui.js';
+import { closePip, onPipChange, pipActive, pipSupported, togglePip } from './pip.js';
+import { make, showVideo, toast, ui, volumeSlider } from './ui.js';
 import { StreamPlayer } from './players.js';
 
 painter('stage', renderStage);
 painter('views', renderViews);
 painter('cams', renderCams);
+painter('pip', renderPip);
 
 // Живой поток не должен оставаться на паузе, чем бы её ни вызвали.
 setInterval(() => state.player?.resume(), 2000);
@@ -23,6 +26,45 @@ setInterval(() => state.player?.resume(), 2000);
 mesh.on('message', ({ id, msg }) => {
   if (msg?.ns === 'pause') mesh.pauseFor(id, msg.kind, !!msg.on);
 });
+
+export function wireStage() {
+  ui('#btn-pip').onclick = () => openPip(state.player?.el);
+  // Окошко закрывают не только нашей кнопкой: его закрывает система, закрывает
+  // человек за его собственный крестик. Кнопка должна показывать, как есть.
+  onPipChange(() => render('pip', 'cams'));
+  render('pip');
+}
+
+/**
+ * Вынести трансляцию в отдельное окошко поверх всех программ — или убрать её
+ * оттуда обратно.
+ *
+ * Ради этого всё и заведено: своя игра занимает экран целиком, YeruVerse при
+ * этом свёрнут, а чужой экран продолжает быть виден.
+ */
+function openPip(video) {
+  if (!video) return toast('Сначала выберите трансляцию — выносить нечего');
+  if (!pipSupported(video)) {
+    return toast(
+      'Отдельное окошко здесь недоступно: этот движок его не умеет. ' +
+        'В приложении на компьютере и в обычном браузере — умеет',
+      8000
+    );
+  }
+  togglePip(video).catch((e) => toast(`Окошко не открылось: ${reason(e)}`, 7000));
+}
+
+/** Кнопка «в отдельное окошко» — про то, что сейчас на сцене. */
+function renderPip() {
+  const btn = ui('#btn-pip');
+  const on = pipActive(state.player?.el);
+  btn.classList.toggle('active', on);
+  // Не гасим её без трансляции: погашенная кнопка в ряду одинаковых читается
+  // как поломка, а нажатие и так объясняет, чего не хватает.
+  btn.title = on
+    ? 'Убрать трансляцию из отдельного окошка'
+    : 'Смотреть трансляцию в отдельном окошке поверх других программ';
+}
 
 /** Единственное место, где решается, что показано на сцене. */
 function renderStage() {
@@ -39,6 +81,8 @@ function renderStage() {
   }
   state.mounted = state.view;
   destroyPlayer();
+  // Плеер сменился — с ним сменилось и то, что кнопка окошка про себя думает.
+  render('pip');
 
   const stream = state.view && state.screens.get(state.view);
   if (!stream) {
@@ -289,6 +333,9 @@ function renderCams() {
 
   for (const [key, tile] of camTiles) {
     if (live.includes(key)) continue;
+    // Окошко переживает и плитку, и сам поток: система про них ничего не знает
+    // и оставила бы висеть последний кадр поверх всех программ.
+    closePip(tile.querySelector('video'));
     tile.remove();
     camTiles.delete(key);
   }
@@ -320,6 +367,7 @@ function renderCams() {
     tile.querySelector('span').textContent = mine
       ? 'Вы'
       : (state.peers.get(viewPeer(key))?.name ?? 'Участник');
+    tile.querySelector('.cam-pip').classList.toggle('active', pipActive(video));
   }
   host.hidden = !live.length;
 }
@@ -335,8 +383,22 @@ function newCamTile(key) {
     onclick: () => zoomCam(key, tile.classList.contains('mirror')),
   });
 
+  // Кнопка окошка нужна и здесь, а не только у сцены: смотреть в чужую игру и
+  // смотреть в лицо собеседнику — разные желания, и второе к сцене отношения не
+  // имеет. Нажатие до плитки не доходит: щелчок по ней разворачивает камеру, и
+  // делать это заодно с выносом в окошко незачем.
+  const pip = make('button', {
+    class: 'mark cam-pip',
+    title: 'Смотреть в отдельном окошке поверх других программ',
+    html: icon('pip'),
+    onclick: (e) => {
+      e.stopPropagation();
+      openPip(video);
+    },
+  });
+
   // Выключателя на самой плитке нет: тот же переключатель уже стоит возле
   // ника в списке участников, и две кнопки на одно действие только путают.
-  const tile = make('div', { class: 'cam-tile' }, video, make('span'));
+  const tile = make('div', { class: 'cam-tile' }, video, pip, make('span'));
   return tile;
 }

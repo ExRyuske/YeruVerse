@@ -1,16 +1,14 @@
 // Общее окно настроек, всплывающие настройки у кнопок и диагностика: всё, что
 // спрашивают про сам разговор, а не про то, что в нём происходит.
 
-import { hotkeys, mesh, native, net, settings, voice } from './core.js';
+import { control, hotkeys, mesh, native, net, settings, voice } from './core.js';
 import { state } from './state.js';
-import { reason } from './errors.js';
 import { icon } from './icons.js';
 import { PRESETS, HEIGHTS } from './settings.js';
 import { ACTIONS, label as hotkeyLabel } from './hotkeys.js';
 import { modelTitle } from './denoise.js';
 import { make, toast, ui } from './ui.js';
 import { hiddenLabels } from './stage.js';
-import { pollSunshine, sunshineHint } from './sunshine.js';
 import { enableMic } from './devices.js';
 
 /**
@@ -25,7 +23,6 @@ const hasHotkeys = () => native.caps.hotkeyMode !== 'none';
 
 export function initSettingsPanel() {
   wireSettings();
-  wireSunshine();
 }
 
 function wireSettings() {
@@ -173,32 +170,6 @@ function bindCheck(sel, key) {
   const el = ui(sel);
   el.checked = settings.get(key);
   el.onchange = () => settings.set(key, el.checked);
-}
-
-/**
- * Доступ к веб-панели Sunshine. Нужен ровно для одного: подтвердить PIN за
- * человека, когда зритель сопрягается через Moonlight. Пароль уходит в
- * настройки приложения, а не в localStorage — тот привязан к origin страницы,
- * то есть к чужому серверу.
- */
-function wireSunshine() {
-  // Sunshine бывает только на настольной системе — на телефоне этот раздел
-  // спрашивал бы пароль от того, чего там нет.
-  if (!native.caps.remoteControl) return;
-  ui('#sunshine-section').hidden = false;
-  ui('#sunshine-reach').textContent = sunshineHint();
-  ui('#btn-sun-save').onclick = async () => {
-    try {
-      await native.sunshineCreds(ui('#set-sun-user').value.trim(), ui('#set-sun-pass').value);
-      ui('#set-sun-pass').value = '';
-      // Спрашиваем мост сразу: зрители должны узнать о новом порядке сопряжения
-      // сейчас, а не через полминуты, когда подойдёт очередной опрос.
-      await pollSunshine();
-      toast('Сохранено: сопряжение с Moonlight теперь пройдёт без ручного PIN');
-    } catch (e) {
-      toast(`Не вышло: ${reason(e)}`);
-    }
-  };
 }
 
 /** Действия горячих клавиш — те же, что у кнопок в шапке. */
@@ -397,22 +368,29 @@ function linkRows() {
   else if (native.error) rows.push(row(BAD, 'Оболочка', `мост не отвечает: ${native.error}`));
   else rows.push(row(OK, 'Оболочка', `приложение — ${native.caps.platform}`));
 
-  // Sunshine бывает только в настольной версии; в браузере эта строка была бы
-  // про то, чего здесь нет и быть не может.
-  if (native.caps.remoteControl) rows.push(sunshineRow());
+  // Приём чужого ввода бывает только в настольной версии; в браузере эта строка
+  // была бы про то, чего здесь нет и быть не может.
+  if (native.caps.remoteControl) rows.push(controlRow());
   return rows;
 }
 
 /**
- * Состояние Sunshine. Важны два разных «не выйдет»: не запущен вовсе — и
- * запущен, но PIN придётся вводить руками. Из-за них подключение через
- * Moonlight и не получается.
+ * Кому открыт мой компьютер и кто им сейчас управляет.
+ *
+ * Это два разных ответа, и второй короче живёт: разрешение держится, пока его
+ * не забрали, а управление запирается само — стоит взявшему свернуть окно.
  */
-function sunshineRow() {
-  if (!state.sunshine) return row(WARN, 'Sunshine', 'не запущен — управлять этим компьютером нельзя');
-  const seen = state.sunshineOpen ? 'виден из интернета' : 'только в своей сети';
-  const pin = state.sunshineCanPair ? 'PIN подтвердим сами' : 'PIN вводить вручную';
-  return row(OK, 'Sunshine', `${state.sunshine} · ${seen} · ${pin}`);
+function controlRow() {
+  const open = [...control.granted].map((id) => state.peers.get(id)?.name ?? '?');
+  if (!open.length) return row(OK, 'Мой компьютер', 'замок закрыт для всех');
+
+  const now = [...control.granted].filter((id) => control.holding(id));
+  const who = now.map((id) => state.peers.get(id)?.name ?? '?').join(', ');
+  return row(
+    WARN,
+    'Мой компьютер',
+    `открыт: ${open.join(', ')} · ${who ? `управляет ${who}` : 'сейчас никто не управляет'}`
+  );
 }
 
 function soundRows() {

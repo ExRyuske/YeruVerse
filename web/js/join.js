@@ -33,9 +33,6 @@ export function wireJoin() {
   ui('#btn-get-app-join').hidden = native.available;
   ui('#btn-get-app-join').onclick = () =>
     openExternal('https://github.com/ExRyuske/YeruVerse/releases/latest');
-  ui('#btn-get-sunshine').onclick = () =>
-    openExternal('https://github.com/LizardByte/Sunshine/releases/latest');
-  ui('#btn-get-moonlight').onclick = () => openExternal('https://moonlight-stream.org/');
 
   // Обновления предлагаем на экране входа, а не посреди разговора. Кнопки
   // «позже» нет: предложение и так стоит сбоку и ничего не загораживает, а

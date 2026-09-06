@@ -7,7 +7,6 @@ import { copy, openExternal, showScreen, toast, ui } from './ui.js';
 import { addChat, clearChat, sysMsg } from './chat.js';
 import { removeScreen, resetStage, syncScreens } from './stage.js';
 import { announceShares, stopShare } from './shares.js';
-import { pollSunshine, resetSunshine } from './sunshine.js';
 import { enableMic } from './devices.js';
 
 /**
@@ -56,7 +55,6 @@ export function join(code) {
   history.replaceState(null, '', `${location.pathname}#${encodeURIComponent(state.code)}`);
 
   render('rooms');
-  pollSunshine();
   tellShell();
 }
 
@@ -81,7 +79,6 @@ export function leaveRoom() {
   state.peers.clear();
   state.peerEls.clear();
   state.recentLeaves.clear();
-  resetSunshine();
 
   ui('#peer-list').replaceChildren();
   ui('#peer-count').textContent = '0';

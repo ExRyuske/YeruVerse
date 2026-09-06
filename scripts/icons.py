@@ -208,7 +208,10 @@ ICONS = {
     'camera': 'video',
     'file': 'file',
     'pointer': 'arrow-pointer',
-    'gamepad': 'gamepad',
+    # Отдельное окошко поверх других программ. Своей иконки «картинка в
+    # картинке» в наборе нет; `window-restore` — это ровно она и есть: большое
+    # окно и маленькое поверх него.
+    'pip': 'window-restore',
     'pen': 'pen-to-square',
     'save': 'bookmark',
     'lock': 'lock',

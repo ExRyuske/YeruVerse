@@ -1,7 +1,7 @@
 // Точка входа: собирает интерфейс из модулей и связывает их между собой.
 //
 // Здесь нет ни отрисовки, ни состояния — только развеска. Каждый модуль знает
-// про свой кусок комнаты (сцена, участники, трансляции, Sunshine), а всё, что
+// про свой кусок комнаты (сцена, участники, трансляции), а всё, что
 // не принадлежит никому одному, — включение микрофона по возвращении из фона,
 // звуковые кнопки, маршрут входящих потоков — живёт здесь.
 
@@ -17,9 +17,8 @@ import { joinByCode, parseInvite, wireJoin } from './join.js';
 import { wireRoom } from './room.js';
 import { wireShares } from './shares.js';
 import { wireControl } from './control-ui.js';
-import { acceptScreen } from './stage.js';
+import { acceptScreen, wireStage } from './stage.js';
 import { applySpeaking } from './peers.js';
-import { pollSunshine } from './sunshine.js';
 import { enableMic } from './devices.js';
 import { modelTitle, modelWeight } from './denoise.js';
 
@@ -35,8 +34,6 @@ async function init() {
 
   await loadServerConfig();
   setInterval(loadServerConfig, 20 * 60 * 1000);
-  pollSunshine();
-  setInterval(pollSunshine, 30 * 1000);
 
   const code = parseInvite();
   const nameField = ui('#in-name');
@@ -64,6 +61,7 @@ async function init() {
   wireJoin();
   wireRoom();
   wireShares();
+  wireStage();
   wireControl();
   initSettingsPanel();
   wireHotkeys();

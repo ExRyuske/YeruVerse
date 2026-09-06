@@ -7,7 +7,7 @@ import { icon } from './icons.js';
 import { make, markButton, ui, volumeSlider } from './ui.js';
 import { stacked } from './layout.js';
 import { setHidden } from './stage.js';
-import { allowButton, canMoonlight, moonlightButton } from './sunshine.js';
+import { allowButton } from './control-ui.js';
 
 painter('peers', renderPeers);
 
@@ -130,12 +130,16 @@ function peerActions(p, mine) {
   if (mine) return [];
   const actions = [];
 
-  // Кому можно за мой компьютер — решаю я, поимённо. Замок нужен и без
-  // Sunshine: он же открывает простое управление по WebRTC.
+  // Кому можно за мой компьютер — решаю я, поимённо.
   if (native.caps.remoteControl) actions.push(allowButton(p.id));
-  // А к кому можно мне — те, кто уже разрешил.
-  if (canMoonlight(p.id)) actions.push(moonlightButton(p.id));
 
+  // Разрешение и управление — разные вещи, и видно должно быть обе. Открытый
+  // замок сам по себе ничего не говорит о том, водит ли кто-то сейчас мышью по
+  // этому столу: управление берут и отдают, и оно запирается само, стоит
+  // взявшему свернуть окно.
+  if (control.granted.has(p.id) && control.holding(p.id)) {
+    actions.push(make('span', { class: 'tag', text: 'управляет' }));
+  }
   if (state.paused && control.granted.has(p.id)) {
     actions.push(make('span', { class: 'tag warn', text: 'на паузе' }));
   }
@@ -160,8 +164,8 @@ function peerVolumeSlider(id) {
  * На телефоне в вертикали список ложится строкой поперёк экрана — вертикаль там
  * дороже и отдана чату. В такую строку помещается только ник, и всё остальное
  * из неё уходит: громкость прячется совсем, выключатель чужой трансляции
- * остаётся значком в двадцать четыре точки без подписи, а замку, Moonlight и
- * «на паузе» места нет вовсе. Настроить собеседника с телефона было нечем —
+ * остаётся значком в двадцать четыре точки без подписи, а замку и меткам про
+ * управление места нет вовсе. Настроить собеседника с телефона было нечем —
  * старое примечание в стилях обещало громкость «в настройках», но её там нет и
  * не было.
  *

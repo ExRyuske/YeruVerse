@@ -89,15 +89,6 @@ export const native = {
     return window.__TAURI__?.event?.emit('cursor', payload) ?? Promise.resolve();
   },
 
-  /** Sunshine: `{ running, address, canPair }`. */
-  sunshine() { return this.invoke('sunshine'); },
-  /** Доступ к веб-панели Sunshine — нужен, чтобы подтверждать PIN за человека. */
-  sunshineCreds(user, password) {
-    return this.invoke('sunshine_creds', { user, password });
-  },
-  /** Отдать PIN своему Sunshine: сопряжение проходит без ручного ввода. */
-  sunshinePin(pin) { return this.invoke('sunshine_pin', { pin }); },
-
   /** Приём чужого ввода. Возвращает размер экрана в пикселях. */
   setControl(enabled) { return this.invoke('set_control', { enabled }); },
   /** Перехватить управление у гостя: его ввод перестаёт применяться. */
@@ -111,19 +102,10 @@ export const native = {
   releaseInput() { return this.invoke('input_release'); },
 
   /**
-   * Открыть ссылку системой. Для `moonlight://` иначе никак: окно чужую схему
-   * игнорирует, и снаружи это выглядит как «Moonlight не открывается».
+   * Открыть ссылку системой: переход внутри окна увёл бы человека из комнаты, а
+   * вернуться оттуда нечем.
    */
   openUrl(url) { return this.invoke('open_url', { url }); },
-
-  /**
-   * Запустить Moonlight: `pair` — знакомство с компьютером и PIN, `stream` —
-   * сразу рабочий стол. Схемы `moonlight://` в системе не существует, поэтому
-   * зовётся сам исполняемый файл.
-   */
-  moonlight(host, action, pin) {
-    return this.invoke('moonlight', { host, action, pin: pin ?? null });
-  },
 
   /** Номер новой версии или null. */
   updateCheck() { return this.invoke('update_check'); },

@@ -8,11 +8,6 @@ use yeruverse::turn::Provider;
 use yeruverse::{start, Config};
 
 async fn serve(web_dir: Option<&str>) -> (String, tokio::task::JoinHandle<()>) {
-    let (base, _, task) = serve_at(web_dir).await;
-    (base, task)
-}
-
-async fn serve_at(web_dir: Option<&str>) -> (String, u16, tokio::task::JoinHandle<()>) {
     let handle = start(Config {
         port: 0, // порт выбирает система: тесты идут параллельно
         web_dir: web_dir.map(Into::into),
@@ -20,8 +15,7 @@ async fn serve_at(web_dir: Option<&str>) -> (String, u16, tokio::task::JoinHandl
     })
     .await
     .expect("сервер не поднялся");
-    let port = handle.addr.port();
-    (format!("http://127.0.0.1:{port}"), port, handle.task)
+    (format!("http://127.0.0.1:{}", handle.addr.port()), handle.task)
 }
 
 #[tokio::test]
@@ -108,60 +102,18 @@ async fn documents_are_never_cached_and_assets_are_revalidated() {
     task.abort();
 }
 
-/// `/reach` — единственное место, где сервер сам идёт по сети, и идёт он туда,
-/// куда скажет спрашивающий. Пока адрес брался из заголовка, а порт из запроса,
-/// открытый всем эндпоинт отвечал на вопрос «а что у тебя слушает вот здесь?» —
-/// про петлю, про соседние контейнеры, про сам хост. Возвращаться это может
-/// одной строчкой в разборе заголовков, поэтому спрашиваем ровно так, как
-/// спрашивал бы тот, кто ищет.
-///
-/// Цель у теста заведомо открытая: это сам тестовый сервер. Значит, `open:
-/// false` здесь означает именно отказ идти, а не «там никого нет».
+/// Сервер по чужой просьбе по сети никуда не ходит. Это было заведено ради
+/// одного `/reach` — проверки, виден ли снаружи Sunshine у спрашивающего, — и
+/// вместе с мостом к Sunshine ушло. Пока такой ручки нет, открытым всем
+/// сканером портов внутренней сети сервер не станет и по недосмотру.
 #[tokio::test]
-async fn reach_refuses_to_knock_where_it_is_told() {
-    let (base, port, task) = serve_at(None).await;
-    let client = reqwest::Client::new();
+async fn the_server_knocks_nowhere_on_request() {
+    let (base, task) = serve(None).await;
 
-    let ask = |headers: Vec<(&'static str, String)>, query: &str| {
-        let mut req = client.get(format!("{base}/reach{query}"));
-        for (name, value) in headers {
-            req = req.header(name, value);
-        }
-        async move { req.send().await.unwrap().json::<serde_json::Value>().await.unwrap() }
-    };
+    // Не 404 из фолбэка со статикой, а именно отсутствие ручки: без `web_dir`
+    // отдавать нечего, и любой неизвестный путь честно кончается ничем.
+    let out = reqwest::get(format!("{base}/reach")).await.unwrap();
+    assert_eq!(out.status(), reqwest::StatusCode::NOT_FOUND);
 
-    // Каждый из трёх заголовков когда-то доезжал до `TcpStream::connect` как есть.
-    for header in ["x-real-ip", "x-forwarded-for", "cf-connecting-ip"] {
-        let out = ask(vec![(header, "127.0.0.1".into())], "").await;
-        assert_eq!(out["open"], false, "{header} довёл до петли");
-        assert!(out["ip"].is_null(), "{header}: адрес не должен и называться");
-    }
-
-    // Так выглядит подделка за спиной Caddy: голову списка набирает клиент, свой
-    // адрес прокси допишет следом. Какой из элементов читается — проверяет
-    // `client_ip` в модульных тестах; здесь важно, что до петли не доходит
-    // ни один. Хвост тут нарочно из документационной сети: наружу этот тест не
-    // ходит и ходить не должен.
-    let out = ask(vec![("x-forwarded-for", "127.0.0.1, 192.0.2.1".into())], "").await;
-    assert_eq!(out["open"], false);
-    assert!(out["ip"].is_null());
-
-    // И порта в запросе больше нет вовсе: страница его туда не клала никогда —
-    // клал только тот, кто перебирал. Цель заведомо живая, это сам этот сервер.
-    let out = ask(vec![("x-real-ip", "127.0.0.1".into())], &format!("?port={port}")).await;
-    assert_eq!(out["open"], false, "порт из запроса снова выбирает цель");
-
-    task.abort();
-}
-
-/// Прямое соединение без прокси: адрес берётся у сокета. Он тут петлевой,
-/// стучаться туда некуда — но ответ должен быть честным и не падать.
-#[tokio::test]
-async fn reach_answers_plainly_without_any_proxy() {
-    let (base, _, task) = serve_at(None).await;
-    let out: serde_json::Value =
-        reqwest::get(format!("{base}/reach")).await.unwrap().json().await.unwrap();
-    assert_eq!(out["open"], false);
-    assert!(out["ip"].is_null());
     task.abort();
 }

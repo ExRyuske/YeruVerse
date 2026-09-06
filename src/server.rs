@@ -2,12 +2,12 @@
 //! порт 0: так его поднимают тесты (см. `tests/server.rs`), и так же его можно
 //! запустить внутри другого приложения, а не только отдельным демоном.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, Request, State};
+use axum::extract::{Request, State};
 use axum::http::header::{HeaderValue, CACHE_CONTROL, REFERRER_POLICY, X_CONTENT_TYPE_OPTIONS};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -70,7 +70,6 @@ pub async fn start(config: Config) -> std::io::Result<Handle> {
         .route("/ws", get(ws_handler))
         .route("/config.json", get(config_json))
         .route("/update.json", get(update_json))
-        .route("/reach", get(reach))
         .route(
             "/healthz",
             get(|State(s): State<Arc<AppState>>| async move { Json(s.hub.stats()) }),
@@ -91,9 +90,7 @@ pub async fn start(config: Config) -> std::io::Result<Handle> {
         .with_state(state);
 
     info!("YeruVerse слушает http://{addr}");
-    // Адрес соединения нужен `/reach`: это единственный источник, который
-    // спрашивающий не может подделать.
-    let app = app.into_make_service_with_connect_info::<SocketAddr>();
+    let app = app.into_make_service();
     let task = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
             tracing::error!("сервер остановлен: {e}");
@@ -123,107 +120,6 @@ async fn config_json(State(state): State<Arc<AppState>>) -> Json<serde_json::Val
 /// ходит; Android узнаёт версию отсюда и открывает ссылку на APK системой.
 async fn update_json(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(state.updates.latest().await)
-}
-
-/// Порт, на котором Sunshine держит свой HTTP, — единственная цель, ради
-/// которой эта проверка вообще существует, и единственная, которую здесь можно
-/// назвать. Раньше порт приезжал в запросе, но никто его туда не клал:
-/// страница спрашивает просто `/reach` (см. `pollSunshine` в
-/// `web/js/sunshine.js`), а вот подставить туда чужой мог кто угодно.
-const SUNSHINE_PORT: u16 = 47989;
-
-/// Виден ли снаружи порт Sunshine у того, кто спрашивает.
-///
-/// Изнутри своей сети это не проверить: у себя всё открыто всегда. Сервер же
-/// смотрит на клиента ровно так, как на него посмотрит зритель из интернета —
-/// стучится в его публичный адрес и говорит, ответил тот или нет. Дальше уже
-/// приложение решает, какой адрес раздавать: публичный или локальный.
-///
-/// Здесь сервер ходит по сети сам, а значит ни адрес, ни порт цели не могут
-/// браться со слов спрашивающего: иначе открытый всем эндпоинт превращается в
-/// сканер портов той сети, в которой стоит сервер, — а из контейнера видны и
-/// соседние сервисы, и сам хост. Поэтому порт зашит, а адрес проходит через
-/// `client_ip` и `is_public`.
-async fn reach(
-    ConnectInfo(conn): ConnectInfo<SocketAddr>,
-    headers: axum::http::HeaderMap,
-) -> Json<serde_json::Value> {
-    let ip = client_ip(&headers, conn.ip()).filter(is_public);
-    let open = match ip {
-        Some(addr) => tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            tokio::net::TcpStream::connect(SocketAddr::new(addr, SUNSHINE_PORT)),
-        )
-        .await
-        .map(|r| r.is_ok())
-        .unwrap_or(false),
-        None => false,
-    };
-    Json(json!({ "ip": ip.map(|a| a.to_string()), "open": open }))
-}
-
-/// Настоящий адрес спрашивающего.
-///
-/// Заголовок здесь — не подсказка от прокси, а вход от кого угодно: прокси его
-/// не проверяет, он его дописывает. `X-Forwarded-For` Caddy именно дописывает —
-/// присланное клиентом остаётся в голове списка, а настоящий адрес оказывается
-/// в хвосте, поэтому берём последний элемент, а не первый. `X-Real-IP` в нашей
-/// цепочке не ставит никто, так что доверять там нечему, и мы его больше не
-/// читаем вовсе. `CF-Connecting-Ip` Cloudflare перезаписывает своим значением;
-/// без Cloudflare впереди он приедет прямо от клиента — и от произвольной цели
-/// нас страхует уже `is_public`.
-///
-/// Прямое соединение — десктоп, отладка, своя сеть — заголовков не несёт вовсе,
-/// и тогда адрес берётся у самого сокета: единственный источник, который
-/// подделать нельзя.
-fn client_ip(headers: &axum::http::HeaderMap, socket: IpAddr) -> Option<IpAddr> {
-    let head = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
-    let forwarded = head("x-forwarded-for").and_then(|v| v.rsplit(',').next());
-    head("cf-connecting-ip").or(forwarded).and_then(|v| v.trim().parse().ok()).or(Some(socket))
-}
-
-/// Годится ли адрес как цель для стука наружу.
-///
-/// Наружу — значит в интернет. Всё остальное — петля, частные сети, докерная
-/// сеть с соседями по `compose.yaml`, канальные адреса — цели, до которых
-/// спрашивающему нет дела, а нам нельзя ходить туда по его просьбе.
-///
-/// `IpAddr::is_global` в стандартной библиотеке до сих пор нестабилен, поэтому
-/// перечисляем сами. Ошибаться тут безопаснее в сторону запрета: непубличный
-/// адрес означает всего лишь «снаружи не видно», а это ровно тот ответ, который
-/// и должен получить сидящий в своей сети без проброса портов.
-fn is_public(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let [a, b, ..] = v4.octets();
-            !(v4.is_private()
-                || v4.is_loopback()
-                || v4.is_link_local()
-                || v4.is_broadcast()
-                || v4.is_multicast()
-                || v4.is_unspecified()
-                || v4.is_documentation()
-                || a == 0                                  // 0.0.0.0/8
-                || a >= 240                                // 240.0.0.0/4, зарезервировано
-                || (a == 100 && (64..128).contains(&b))    // 100.64.0.0/10, общий NAT провайдера
-                || (a == 192 && b == 0)                    // 192.0.0.0/24, служебное
-                || (a == 198 && (18..20).contains(&b))) // 198.18.0.0/15, замеры
-        }
-        IpAddr::V6(v6) => {
-            // Адрес IPv4 в обёртке IPv6 — это тот же самый адрес, и проверять
-            // надо его: иначе `::ffff:127.0.0.1` прошёл бы мимо всех запретов.
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_public(&IpAddr::V4(v4));
-            }
-            let seg = v6.segments();
-            !(v6.is_loopback()
-                || v6.is_multicast()
-                || v6.is_unspecified()
-                || seg[0] & 0xfe00 == 0xfc00        // fc00::/7, локальные
-                || seg[0] & 0xffc0 == 0xfe80        // fe80::/10, канальные
-                || seg[..2] == [0x2001, 0x0db8]) // 2001:db8::/32, документация
-        }
-    }
 }
 
 /// Без явных заголовков промежуточные кэши решают сами: Cloudflare, например,
@@ -641,65 +537,6 @@ mod tests {
         assert!(tagged.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(tagged, tag("секретная-комната"));
         assert_ne!(tagged, tag("другая-комната"));
-    }
-
-    /// Адрес спрашивающего — это вход, а не подсказка. Голова
-    /// `X-Forwarded-For` набирается клиентом, хвост дописывает прокси; читать
-    /// надо хвост. `X-Real-IP` не ставит никто из нашей цепочки, поэтому его
-    /// не должно быть слышно вовсе.
-    #[test]
-    fn forwarding_headers_do_not_choose_the_target() {
-        let socket: IpAddr = "8.8.4.4".parse().unwrap();
-        let ask = |name: &'static str, value: &str| {
-            let mut h = axum::http::HeaderMap::new();
-            h.insert(name, HeaderValue::from_str(value).unwrap());
-            client_ip(&h, socket)
-        };
-
-        // Так Caddy передаёт присланное клиентом: своё он дописывает следом.
-        assert_eq!(
-            ask("x-forwarded-for", "10.0.0.5, 93.184.216.34").unwrap().to_string(),
-            "93.184.216.34"
-        );
-        // Клиент прислал заголовок сам, прокси впереди нет — берём что дали, а
-        // непубличный адрес отсеет `is_public`, не `client_ip`.
-        assert_eq!(ask("x-forwarded-for", "127.0.0.1").unwrap().to_string(), "127.0.0.1");
-        // Этого заголовка для нас больше не существует.
-        assert_eq!(ask("x-real-ip", "127.0.0.1").unwrap(), socket);
-        // Ни одного заголовка — остаётся сокет, его подделать нечем.
-        assert_eq!(client_ip(&axum::http::HeaderMap::new(), socket).unwrap(), socket);
-    }
-
-    /// Куда серверу можно стучаться по чужой просьбе, а куда нельзя. Список
-    /// длинный, и ошибка в любой строке возвращает сканер портов внутренней
-    /// сети — того самого хоста и тех самых соседних контейнеров.
-    #[test]
-    fn only_the_open_internet_is_a_valid_target() {
-        for public in ["8.8.8.8", "93.184.216.34", "2606:4700:4700::1111"] {
-            assert!(is_public(&public.parse().unwrap()), "{public}");
-        }
-        for private in [
-            "127.0.0.1",        // петля
-            "0.0.0.0",          // «этот хост»
-            "10.1.2.3",         // частная
-            "172.16.0.1",       // частная
-            "192.168.1.1",      // частная
-            "169.254.1.1",      // канальная
-            "100.64.0.1",       // общий NAT провайдера
-            "192.0.0.1",        // служебная
-            "198.18.0.1",       // замеры
-            "224.0.0.1",        // многоадресная
-            "240.0.0.1",        // зарезервировано
-            "255.255.255.255",  // широковещательная
-            "192.0.2.1",        // из тех, что заведены для примеров в документации
-            "203.0.113.1",      // и эти тоже
-            "::1",              // петля IPv6
-            "fd00::1",          // локальная IPv6
-            "fe80::1",          // канальная IPv6
-            "::ffff:127.0.0.1", // петля в обёртке IPv6 — тот же адрес
-        ] {
-            assert!(!is_public(&private.parse().unwrap()), "{private}");
-        }
     }
 
     /// Число кусков решает, сколько памяти развернёт у себя получатель, и

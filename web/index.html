@@ -45,8 +45,6 @@
       <button id="btn-update" type="button" class="primary">Обновить</button>
     </div>
     <button id="btn-get-app-join" type="button" class="ghost" data-icon="download"><span>Приложение</span></button>
-    <button id="btn-get-sunshine" type="button" class="ghost" data-icon="screen"><span>Sunshine</span></button>
-    <button id="btn-get-moonlight" type="button" class="ghost" data-icon="gamepad"><span>Moonlight</span></button>
   </aside>
 </section>
 
@@ -100,6 +98,8 @@
             <button class="caret" type="button" data-pop="pop-cam" title="Выбор камеры"></button>
           </span>
           <button id="btn-control" class="icon" data-icon="pointer" title="Взять управление чужим компьютером"></button>
+          <button id="btn-pip" class="icon" data-icon="pip"
+                  title="Смотреть трансляцию в отдельном окошке поверх других программ"></button>
           <button id="btn-full" class="icon" data-icon="expand" title="Во весь экран"></button>
         </div>
 
@@ -196,20 +196,6 @@
         <label class="field">Цвет ника
           <div id="set-palette" class="palette"></div>
         </label>
-      </section>
-
-      <section id="sunshine-section" hidden>
-        <h3>Sunshine</h3>
-        <p class="muted small">Логин и пароль веб-панели. Нужны, чтобы подтверждать
-          сопряжение с Moonlight.</p>
-        <label class="field">Логин
-          <input id="set-sun-user" type="text" autocomplete="off">
-        </label>
-        <label class="field">Пароль
-          <input id="set-sun-pass" type="password" autocomplete="off">
-        </label>
-        <button id="btn-sun-save" type="button">Сохранить</button>
-        <p class="muted small" id="sunshine-reach"></p>
       </section>
 
       <section id="hotkeys-section">

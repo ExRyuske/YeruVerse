@@ -7,13 +7,13 @@
 //!
 //! Оболочка добавляет ровно то, чего у страницы быть не может: выбор сервера
 //! комнат, системные сочетания клавиш, прозрачное окно с курсорами поверх всех
-//! приложений, мост к Sunshine и приём чужого ввода (см. `input`).
+//! приложений и приём чужого ввода (см. `input`).
 //!
-//! Путей управления чужим компьютером два, и они не конкурируют. Простой —
-//! наш собственный, через WebRTC: зритель сидит в браузере, ничего не ставит и
-//! тыкает в демонстрацию экрана. Для игр — Sunshine (или его форк Apollo) с
-//! Moonlight: они работают на уровне системы, с захватом полноэкранного режима
-//! и виртуальным геймпадом, чего браузерная связка не может в принципе.
+//! Управление чужим компьютером здесь одно — своё, через WebRTC: зритель сидит
+//! в браузере, ничего не ставит и тыкает в демонстрацию экрана. Моста к чужим
+//! программам (Sunshine, Moonlight) больше нет: игровой режим — захват
+//! полноэкранного окна, мышь без ускорения, виртуальный геймпад — предстоит
+//! написать здесь же, своими руками, а не подкладывать под него чужой клиент.
 //!
 //! Окна поверх других приложений и глобальные сочетания существуют только в
 //! настольной сборке: на Android таких прав у обычного приложения нет, и
@@ -103,102 +103,10 @@ fn set_server(app: tauri::AppHandle, window: WebviewWindow, url: String) -> Resu
     window.navigate(parsed).map_err(|e| e.to_string())
 }
 
-// ---------------------------------------------------------------- Sunshine
+// ---------------------------------------------------------------- ссылки
 
-/// Порт, на котором Sunshine и Apollo держат свой HTTP, — достаточный признак
-/// того, что хост готов принимать Moonlight.
-const SUNSHINE_PORT: u16 = 47989;
-
-/// Запущен ли на этой машине Sunshine (или Apollo), по какому адресу к нему
-/// идти и можно ли подтверждать сопряжение без человека. Фронтенд спрашивает
-/// это сам — нажимать «объявить» не нужно.
-#[tauri::command]
-fn sunshine(app: tauri::AppHandle) -> serde_json::Value {
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], SUNSHINE_PORT));
-    let running = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok();
-    serde_json::json!({
-        "running": running,
-        "address": local_ip(),
-        "canPair": creds_file(&app).map(|p| p.exists()).unwrap_or(false),
-    })
-}
-
-/// Логин и пароль веб-панели Sunshine. Лежат рядом с настройками приложения, а
-/// не в localStorage: тот привязан к origin страницы, то есть к чужому серверу,
-/// и хранить там доступ к своему компьютеру не годится.
-fn creds_file(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    let dir = app.path().app_config_dir().ok()?;
-    std::fs::create_dir_all(&dir).ok()?;
-    Some(dir.join("sunshine.txt"))
-}
-
-#[tauri::command]
-fn sunshine_creds(app: tauri::AppHandle, user: String, password: String) -> Result<(), String> {
-    let path = creds_file(&app).ok_or("некуда сохранить")?;
-    if user.is_empty() {
-        let _ = std::fs::remove_file(&path);
-        return Ok(());
-    }
-    if user.contains(':') || user.contains('\n') || password.contains('\n') {
-        return Err("двоеточие и перевод строки в логине недопустимы".into());
-    }
-    std::fs::write(&path, format!("{user}:{password}")).map_err(|e| e.to_string())
-}
-
-/// Подтвердить сопряжение: отдать PIN своему Sunshine за человека.
-///
-/// Иначе PIN пришлось бы переписывать руками из окна Moonlight в веб-панель
-/// Sunshine — единственный ручной шаг во всей цепочке, и как раз тот, на
-/// котором всё бросают. Панель говорит по HTTPS с самоподписанным сертификатом
-/// и требует Basic-авторизацию; проще всего это делает `curl`, который есть и в
-/// macOS, и в Windows 10+, и в любом Linux — ради одного запроса тянуть в
-/// приложение целый HTTP-клиент с TLS ни к чему.
-#[tauri::command]
-async fn sunshine_pin(app: tauri::AppHandle, pin: String) -> Result<(), String> {
-    if pin.len() != 4 || !pin.chars().all(|c| c.is_ascii_digit()) {
-        return Err("PIN — это четыре цифры".into());
-    }
-    let creds = creds_file(&app)
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .ok_or("не задан доступ к веб-панели Sunshine")?;
-
-    tauri::async_runtime::spawn_blocking(move || {
-        let out = std::process::Command::new("curl")
-            .args(["--silent", "--show-error", "--insecure", "--max-time", "10"])
-            .args(["--user", creds.trim()])
-            .args(["--header", "Content-Type: application/json"])
-            .args(["--data", &format!(r#"{{"pin":"{pin}","name":"YeruVerse"}}"#)])
-            .arg(format!("https://localhost:{}/api/pin", SUNSHINE_PORT + 1))
-            .output()
-            .map_err(|e| format!("не нашли curl: {e}"))?;
-
-        if !out.status.success() {
-            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-        }
-        // Sunshine отвечает 200 и на неверный PIN — смотрим на само тело.
-        // Пробелы убираем: в разных версиях статус то булев, то строкой.
-        let body = String::from_utf8_lossy(&out.stdout);
-        let flat: String = body.chars().filter(|c| !c.is_whitespace()).collect();
-        if flat.contains("\"status\":true") || flat.contains("\"status\":\"true\"") {
-            Ok(())
-        } else {
-            Err(format!("Sunshine не принял PIN: {}", body.trim()))
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// Адрес этой машины в локальной сети. Пакетов сокет не шлёт — соединение без
-/// обмена данными нужно только чтобы система выбрала исходящий интерфейс.
-fn local_ip() -> Option<String> {
-    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-    s.connect("8.8.8.8:80").ok()?;
-    Some(s.local_addr().ok()?.ip().to_string())
-}
-
-/// Открыть ссылку системой — страницы загрузки Sunshine и Moonlight, а на
-/// Android ещё и сам APK с обновлением.
+/// Открыть ссылку системой — страницу загрузки приложения, а на Android ещё и
+/// сам APK с обновлением.
 ///
 /// Раньше здесь звалась системная команда — `open`, `start`, `xdg-open`. На
 /// Android такой команды нет ни одной, и всё, что вело наружу, там молча не
@@ -213,72 +121,6 @@ fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
         return Err("недопустимая ссылка".into());
     }
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
-}
-
-/// Где искать Moonlight. Схемы `moonlight://` в системе не существует — ни на
-/// macOS, ни где-либо ещё её никто не регистрирует, поэтому единственный способ
-/// его запустить — позвать исполняемый файл напрямую.
-fn moonlight_binary() -> Option<std::path::PathBuf> {
-    let home = std::env::var("HOME").unwrap_or_default();
-
-    #[cfg(target_os = "macos")]
-    let candidates = [
-        "/Applications/Moonlight.app/Contents/MacOS/Moonlight".to_string(),
-        format!("{home}/Applications/Moonlight.app/Contents/MacOS/Moonlight"),
-        "/opt/homebrew/bin/moonlight".to_string(),
-        "/usr/local/bin/moonlight".to_string(),
-    ];
-    #[cfg(target_os = "windows")]
-    let candidates = [
-        r"C:\Program Files\Moonlight Game Streaming\Moonlight.exe".to_string(),
-        r"C:\Program Files (x86)\Moonlight Game Streaming\Moonlight.exe".to_string(),
-    ];
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let candidates = [
-        "/usr/bin/moonlight".to_string(),
-        "/usr/local/bin/moonlight".to_string(),
-        "/var/lib/flatpak/exports/bin/com.moonlight_stream.Moonlight".to_string(),
-        format!("{home}/.local/share/flatpak/exports/bin/com.moonlight_stream.Moonlight"),
-    ];
-
-    let _ = &home;
-    candidates.iter().map(std::path::PathBuf::from).find(|p| p.exists())
-}
-
-/// Запустить Moonlight на указанном адресе.
-///
-/// `action` — то же, что в его собственной командной строке: `pair` знакомит с
-/// компьютером и показывает PIN, `stream` сразу открывает рабочий стол. Первый
-/// раз нужен `pair`, дальше только `stream`; кто из них нужен, решает фронтенд
-/// по своему списку уже сопряжённых адресов.
-#[tauri::command]
-fn moonlight(host: String, action: String, pin: Option<String>) -> Result<(), String> {
-    // Дефис в адресе нужен, но не первым символом: аргумент, начинающийся с
-    // него, разбор командной строки Moonlight прочитает как свой флаг, а не как
-    // хост — и адрес превратится в переключатель, о котором мы ничего не знаем.
-    if host.is_empty()
-        || host.starts_with('-')
-        || host.chars().any(|c| !(c.is_ascii_alphanumeric() || ".:-_".contains(c)))
-    {
-        return Err("странный адрес".into());
-    }
-    let exe =
-        moonlight_binary().ok_or("Moonlight не найден — установите его с moonlight-stream.org")?;
-    let mut cmd = std::process::Command::new(exe);
-
-    if action == "pair" {
-        cmd.arg("pair").arg(&host);
-        // PIN задаём мы: тот же код уходит хозяину, и подтверждать сопряжение
-        // человеку не придётся.
-        if let Some(pin) = pin.filter(|p| p.len() == 4 && p.chars().all(|c| c.is_ascii_digit())) {
-            cmd.args(["--pin", &pin]);
-        }
-    } else {
-        // Sunshine всегда отдаёт «Desktop» — это весь экран целиком.
-        cmd.args(["stream", &host, "Desktop"]);
-    }
-
-    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------- сочетания
@@ -580,11 +422,7 @@ pub fn run() {
             set_hotkeys,
             current_server,
             set_server,
-            sunshine,
-            sunshine_creds,
-            sunshine_pin,
             open_url,
-            moonlight,
             set_fullscreen,
             update_check,
             update_install,

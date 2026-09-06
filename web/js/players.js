@@ -5,6 +5,7 @@
 // поток идёт как идёт, а всё управление свелось к громкости.
 
 import { forgetGesture, retryOnGesture, volume } from './audio.js';
+import { closePip } from './pip.js';
 import { make } from './ui.js';
 
 export class StreamPlayer {
@@ -76,6 +77,9 @@ export class StreamPlayer {
 
   destroy() {
     forgetGesture(this._unmute);
+    // Окошко поверх других программ живёт своей жизнью и про конец трансляции
+    // не узнает: без этого оно осталось бы висеть последним кадром.
+    closePip(this.el);
     this.sound.close();
     this.el.srcObject = null;
     this.el.remove();
