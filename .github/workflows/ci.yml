@@ -167,9 +167,9 @@ jobs:
 
       - if: env.IMAGE == 'true'
         run: cargo build --locked --release --target "$TARGET"
-      # Контекст сборки — готовый бинарник и статика: демону Docker не уезжает
-      # ни исходников, ни каталога target, и `.dockerignore` за этим больше
-      # следить не нужно.
+      # Контекст сборки — готовый бинарник и статика: сборщику не уезжает ни
+      # исходников, ни каталога target, и `.dockerignore` за этим больше следить
+      # не нужно.
       - if: env.IMAGE == 'true'
         run: |
           set -e
@@ -177,33 +177,67 @@ jobs:
           cp "target/$TARGET/release/yeruverse" dist/
           cp -r web dist/web
 
+      # Собирает и публикует podman — он же собирает образ и у человека
+      # (`make image`), и разница между «работает у меня» и «работает в CI»
+      # больше не проходит по движку. Здесь он стоит на раннере с завода;
+      # проверка — на случай, если однажды перестанет.
+      #
+      # Три действия docker/* ушли вместе с ним: логин — это одна строка, а
+      # генератор тегов — четыре. Кэш слоёв не нужен и здесь: слоёв три, и все —
+      # распаковка alpine да копирование готовых файлов.
       - if: env.IMAGE == 'true'
-        uses: docker/setup-buildx-action@v4
+        name: podman
+        run: |
+          set -eu
+          command -v podman >/dev/null || sudo apt-get install -y --no-install-recommends podman
+          # Не «стоит ли», а «работает ли»: rootless podman держится на записях в
+          # /etc/subuid, и без них он падает уже посреди сборки — сообщением, по
+          # которому не догадаться, что дело в раскладке пользователей раннера.
+          podman info >/dev/null
+
+      - if: env.IMAGE == 'true'
+        id: image
+        env:
+          # Реестр не принимает заглавных букв, а `github.repository` их
+          # сохраняет: раньше имя приводило к нижнему регистру docker/metadata.
+          REPO: ghcr.io/${{ github.repository }}
+          TAG: ${{ steps.bump.outputs.tag }}
+          SHA: ${{ steps.head.outputs.sha }}
+          MAIN: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          set -eu
+          repo="$(printf %s "$REPO" | tr '[:upper:]' '[:lower:]')"
+          tags="sha-$(printf %s "$SHA" | cut -c1-7)"
+          if [ "$MAIN" = true ]; then tags="$tags latest"; fi
+          if [ -n "$TAG" ]; then tags="$tags $TAG"; fi
+
+          set --
+          for t in $tags; do set -- "$@" --tag "$repo:$t"; done
+
+          # `--format docker` — ради HEALTHCHECK: у формата OCI такого поля нет,
+          # и podman выбрасывает проверку с одним предупреждением в выводе. Без
+          # неё на сервере `podman ps` не отличит поднявшийся контейнер от
+          # поднявшегося и не отвечающего.
+          podman build --format docker --file Dockerfile "$@" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=$SHA" \
+            --label "org.opencontainers.image.version=${TAG:-$(printf %s "$SHA" | cut -c1-7)}" \
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            dist
+
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
       - if: env.PUBLISH == 'true' && env.IMAGE == 'true'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - if: env.IMAGE == 'true'
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=${{ steps.bump.outputs.tag }},enable=${{ steps.bump.outputs.tag != '' }}
-            type=sha,format=short
-      # Кэш слоёв здесь не нужен и только стоил бы времени на выгрузку: слоёв
-      # три, и все — распаковка alpine да копирование готовых файлов.
-      - if: env.IMAGE == 'true'
-        uses: docker/build-push-action@v7
-        with:
-          context: dist
-          file: Dockerfile
-          push: ${{ env.PUBLISH == 'true' && env.IMAGE == 'true' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ steps.image.outputs.repo }}
+          TAGS: ${{ steps.image.outputs.tags }}
+        run: |
+          set -eu
+          printf %s "$TOKEN" | podman login ghcr.io --username "$ACTOR" --password-stdin
+          for t in $TAGS; do podman push "$REPO:$t"; done
 
   # Все три системы одной матрицей: у них общие полдюжины шагов — Rust, кэш,
   # CLI Tauri, выгрузка артефактов, — и держать их врозь значило чинить каждую
@@ -237,6 +271,18 @@ jobs:
             artifacts: |
               desktop/src-tauri/target/**/release/bundle/**/*.exe
               desktop/src-tauri/target/**/release/bundle/**/*.msi
+              desktop/src-tauri/target/**/release/bundle/**/*.sig
+          # Не `ubuntu-latest`: AppImage работает там, где glibc не старее той,
+          # на которой он собран, и собирать его надо на самой старой системе,
+          # которую мы согласны поддерживать. С `latest` пакет молча переставал
+          # бы запускаться на всём, что старше очередного раннера.
+          - name: Linux
+            os: ubuntu-22.04
+            linux: true
+            artifacts: |
+              desktop/src-tauri/target/**/release/bundle/**/*.AppImage
+              desktop/src-tauri/target/**/release/bundle/**/*.deb
+              desktop/src-tauri/target/**/release/bundle/**/*.rpm
               desktop/src-tauri/target/**/release/bundle/**/*.sig
           - name: Android
             os: ubuntu-latest
@@ -294,6 +340,14 @@ jobs:
       - uses: cargo-bins/cargo-binstall@main
       - run: cargo binstall -y tauri-cli@^2
         shell: bash
+
+      # Системные библиотеки Linux — тем же скриптом, каким их ставит человек
+      # у себя. Разойдись эти два пути, и сборка «работает у меня» падала бы на
+      # сервере по причине, которой в workflow не видно; ровно поэтому и
+      # `build_app.sh` один на обоих.
+      - if: matrix.linux
+        name: system libraries
+        run: scripts/linux_deps.sh
 
       - if: matrix.android
         uses: actions/setup-java@v6
@@ -396,7 +450,8 @@ jobs:
           test "$got" = "$TAG"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Cargo.toml Cargo.lock desktop/src-tauri/Cargo.toml desktop/src-tauri/Cargo.lock
+          git add Cargo.toml Cargo.lock desktop/src-tauri/Cargo.toml desktop/src-tauri/Cargo.lock \
+            packaging/arch/PKGBUILD
           git commit -m "chore(release): $TAG"
           git tag --annotate "$TAG" --message "Release $TAG"
           git push origin HEAD:main "$TAG"
@@ -425,3 +480,6 @@ jobs:
             dist/**/*.msi
             dist/**/*.apk
             dist/**/*.tar.gz
+            dist/**/*.AppImage
+            dist/**/*.deb
+            dist/**/*.rpm

@@ -1,8 +1,16 @@
-{$DOMAIN} {
+# Пример для нативного Caddy на хосте (пакет из репозитория, не контейнер).
+# Настоящий файл живёт в /etc/caddy/Caddyfile — этот только для примера:
+# впишите блок туда рядом с остальными сайтами и сделайте
+# `systemctl reload caddy`.
+#
+# 127.0.0.1:8081, а не имя контейнера: Caddy тут не в сети podman, достучаться
+# до сервера комнат можно только через опубликованный на хост порт
+# (quadlet/yeruverse.container: PublishPort=127.0.0.1:8081:8081).
+verse.example {
 	encode zstd gzip
 
 	# WebSocket проходит через reverse_proxy как есть, отдельных правил не нужно.
-	reverse_proxy yeruverse:8080
+	reverse_proxy 127.0.0.1:8081
 
 	header {
 		-Server

@@ -1,0 +1,79 @@
+# Пакет для Arch и всего, что из него растёт, — CachyOS в том числе.
+#
+# Зачем он, когда есть AppImage. AppImage запускается и на Arch, но живёт
+# сам по себе: его не видит меню приложений, его не обновляет pacman и его
+# нечем удалить, кроме `rm`. Здесь же обычный пакет — ставится, обновляется и
+# удаляется как всё остальное в системе.
+#
+# Собирается из того дерева, в котором лежит: `make arch` из корня репозитория.
+# Отсюда и отсутствие `source=()` — качать нечего, всё уже под рукой.
+#
+# Каталог сборки берём из репозитория, а не из `$srcdir`: дерево зависимостей
+# Tauri компилируется минут десять, и заставлять человека платить их заново на
+# каждую пересборку незачем. На чистоту пакета это не влияет — в `$pkgdir`
+# уезжает только то, что перечислено в `package()`.
+
+pkgname=yeruverse
+pkgver=0.1.22
+pkgrel=1
+pkgdesc='Экран, голос и клавиатура — напрямую между людьми'
+# Обе живые архитектуры: Arch собирается и на ARM (Asahi, одноплатники),
+# а ничего платформенного в нашем коде нет.
+arch=('x86_64' 'aarch64')
+url='https://github.com/ExRyuske/YeruVerse'
+license=('GPL-3.0-or-later')
+
+# Вебвью, оболочка окна и значки — системные: Tauri не везёт с собой ничего.
+# libpulse — захват звука компьютера (см. `sysaudio.rs`); на CachyOS его даёт
+# PipeWire через `pipewire-pulse`, и он стоит по умолчанию. wayland и
+# libxkbcommon — ввод (enigo). X11 здесь нет: приложение работает только под
+# Wayland, а если что-то из X11 и приедет, то прицепом к gtk3 и не нашей волей.
+depends=(
+  'webkit2gtk-4.1'
+  'gtk3'
+  'libappindicator-gtk3'
+  'librsvg'
+  'libpulse'
+  'wayland'
+  'libxkbcommon'
+  'hicolor-icon-theme'
+)
+makedepends=('rust' 'pkgconf')
+optdepends=(
+  'pipewire-pulse: звук компьютера в трансляции'
+  'xdg-desktop-portal-kde: демонстрация экрана и управление в Plasma'
+)
+
+# LTO задана в Cargo.toml (`lto = "thin"`), и своя от makepkg с ней спорит.
+options=('!lto')
+
+_bin=yeruverse-desktop
+
+build() {
+  local repo="$(cd "$startdir/../.." && pwd)"
+  cd "$repo/desktop/src-tauri"
+  cargo build --release --locked --bin "$_bin"
+}
+
+package() {
+  local repo="$(cd "$startdir/../.." && pwd)"
+  local app="$repo/desktop/src-tauri"
+
+  install -Dm755 "$app/target/release/$_bin" "$pkgdir/usr/bin/$pkgname"
+  install -Dm644 "$startdir/$pkgname.desktop" \
+    "$pkgdir/usr/share/applications/$pkgname.desktop"
+  install -Dm644 "$repo/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+  # Значки тех размеров, что лежат в репозитории. `icon.png` — исходный,
+  # у него размер полный, и он идёт в 512.
+  install -Dm644 "$app/icons/32x32.png" \
+    "$pkgdir/usr/share/icons/hicolor/32x32/apps/$pkgname.png"
+  install -Dm644 "$app/icons/64x64.png" \
+    "$pkgdir/usr/share/icons/hicolor/64x64/apps/$pkgname.png"
+  install -Dm644 "$app/icons/128x128.png" \
+    "$pkgdir/usr/share/icons/hicolor/128x128/apps/$pkgname.png"
+  install -Dm644 "$app/icons/128x128@2x.png" \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/$pkgname.png"
+  install -Dm644 "$app/icons/icon.png" \
+    "$pkgdir/usr/share/icons/hicolor/512x512/apps/$pkgname.png"
+}

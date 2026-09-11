@@ -30,13 +30,27 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # кроме Android, — а там как раз и открывается ссылка на APK с обновлением.
 tauri-plugin-opener = "2"
 
-# Системные сочетания существуют только на настольных системах: на Android
-# этого плагина просто нет, и сборка падала на его импорте.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-global-shortcut = "2"
 # Обновление на месте: на Android его нет, там APK ставят руками.
 tauri-plugin-updater = "2"
-# Инжект ввода: простое управление чужим рабочим столом из браузера.
+
+# Системные сочетания существуют не везде. На Android этого плагина просто нет,
+# и сборка падала на его импорте. На Linux он есть, но держится на X11: внутри
+# у него `global-hotkey`, а тот зовёт XGrabKey через x11rb. Под Wayland забрать
+# клавишу у всей системы нельзя в принципе — это решает композитор, и просят
+# его об этом порталом (`org.freedesktop.portal.GlobalShortcuts`), которого
+# плагин не знает. Оставить плагин значило бы тянуть X11 в дерево ради кода,
+# который на Wayland молча ничего не делает; после этой строки x11rb из дерева
+# уходит совсем.
+[target.'cfg(not(any(target_os = "android", target_os = "ios", target_os = "linux")))'.dependencies]
+tauri-plugin-global-shortcut = "2"
+
+# Инжект ввода: простое управление чужим рабочим столом из браузера. Там, где
+# он устроен системой, а не протоколом, — набор по умолчанию; Linux объявлен
+# отдельно ниже. Одной строкой на все системы нельзя: фичи из разных секций
+# Cargo складывает, и выключенный на Linux `x11rb` вернулся бы через заднюю
+# дверь, сколько его оттуда ни выключай.
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 enigo = "0.6"
 
 # Слежение за клавиатурой вместо захвата клавиш у системы (см. `keys.rs`).
@@ -48,6 +62,45 @@ windows = { version = "0.61", features = [
   "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
   "Win32_UI_Input_KeyboardAndMouse",
+] }
+
+# Захват звука системы (см. `sysaudio`). Вебвью на Linux — это WebKitGTK, и
+# системный звук в `getDisplayMedia` он не отдаёт: просьба `systemAudio` там
+# не делает ничего, ровно как на macOS.
+#
+# Берём его через клиентскую часть PulseAudio, а не через родной API PipeWire.
+# Причина одна и практическая: у «простого» API Pulse вся работа — соединиться
+# и читать, тогда как pw_stream требует своего цикла событий и согласования
+# формата через SPA-поды. На CachyOS (и на любой живой системе с PipeWire)
+# слой совместимости `pipewire-pulse` стоит по умолчанию и отдаёт мониторы
+# как свои, так что этим же кодом снимается звук и там, и на старом
+# PulseAudio.
+#
+# Ввод — под Wayland и только под Wayland. `default-features = false` выключает
+# единственную включённую по умолчанию возможность enigo — `x11rb`, то есть
+# весь путь через X11. Вместо неё две дороги, и обе нужны, потому что ни одна
+# не покрывает все композиторы:
+#
+#   `libei_tokio` — через портал рабочего стола (RemoteDesktop -> ConnectToEIS).
+#     Санкционированный путь: композитор спрашивает разрешение у человека, как
+#     на демонстрацию экрана. Так устроены GNOME 46+ и Plasma 6.1+. tokio,
+#     а не smol: асинхронный исполнитель у нас уже есть — его приносит сам
+#     Tauri, — и второй в одном процессе не нужен никому.
+#
+#   `wayland` — напрямую протоколами wlroots (virtual_pointer, virtual_keyboard).
+#     Портала не требуют, но реализуют их только композиторы на wlroots: Sway,
+#     Hyprland и родня. KWin и Mutter — нет.
+#
+# Порядок выбора внутри enigo 0.6 — сперва libei, потом wayland: сначала
+# спрашиваем портал, а на wlroots-композиторах без портала падаем на прямые
+# протоколы. Обе дороги у enigo помечены experimental, и это не оговорка для
+# красоты — см. README проекта.
+[target.'cfg(target_os = "linux")'.dependencies]
+libpulse-binding = "2"
+libpulse-simple-binding = "2"
+enigo = { version = "0.6", default-features = false, features = [
+  "libei_tokio",
+  "wayland",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

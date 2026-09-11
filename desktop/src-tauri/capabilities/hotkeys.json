@@ -1,0 +1,24 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "hotkeys",
+  "description": "Системные сочетания. Отдельно от прочих настольных прав, потому что список платформ у них разный: плагин держится на X11, а с Linux X11 убран целиком — там этого плагина в дереве нет вовсе, и право на него не разобралось бы (см. Cargo.toml).",
+  "platforms": [
+    "macOS",
+    "windows"
+  ],
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "remote": {
+    "urls": [
+      "https://verse.yeru.cc",
+      "https://*.yeru.cc",
+      "http://localhost:*",
+      "http://127.0.0.1:*"
+    ]
+  },
+  "permissions": [
+    "global-shortcut:default"
+  ]
+}

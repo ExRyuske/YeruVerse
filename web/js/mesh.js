@@ -235,7 +235,11 @@ class Conn {
     const track = paused ? null : (stream?.getVideoTracks()[0] ?? null);
     for (const sender of senders) {
       if (sender.track?.kind === 'audio') continue;    // голос глушат иначе
-      try { await sender.replaceTrack(track); } catch {}
+      // Отказ виден: сюда приходят по живому каналу — зритель выключил наш
+      // поток у себя, — и молча уйти значило бы продолжать слать ему байты,
+      // от которых он отказался.
+      try { await sender.replaceTrack(track); }
+      catch (e) { console.warn('pauseStream', e); }
     }
   }
 

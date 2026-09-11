@@ -1,0 +1,26 @@
+# Сервер комнат. Наружу не смотрит: слушает только петлю, а HTTPS к нему
+# приносит Caddy, который стоит на самом хосте пакетом системы, — один на все
+# сайты сервера (см. Caddyfile). Будь Caddy ещё и контейнером здесь, он спорил
+# бы за порты 80 и 443 с тем, что уже стоит на хосте.
+#
+# Своей сети нет: контейнер один, звать по имени некого, а Caddy на хосте всё
+# равно не в сети podman — к серверу он ходит через опубликованный порт.
+[Unit]
+Description=YeruVerse: сервер комнат
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/exryuske/yeruverse:latest
+AutoUpdate=registry
+ContainerName=yeruverse
+EnvironmentFile=/etc/yeruverse/env
+Environment=PORT=8081
+Environment=RUST_LOG=yeruverse=info
+PublishPort=127.0.0.1:8081:8081
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

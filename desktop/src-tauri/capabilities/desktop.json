@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "desktop",
-  "description": "Системные сочетания и обновление на месте. Плагинов, которые их дают, на мобильных платформах не существует, поэтому права вынесены отдельно.",
+  "description": "Обновление на месте. Плагина, который его даёт, на мобильных платформах не существует, поэтому право вынесено отдельно.",
   "platforms": [
     "linux",
     "macOS",
@@ -20,7 +20,6 @@
     ]
   },
   "permissions": [
-    "global-shortcut:default",
     "updater:default"
   ]
 }

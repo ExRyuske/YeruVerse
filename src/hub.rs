@@ -7,8 +7,18 @@ use tokio::sync::mpsc::Sender;
 
 use crate::protocol::{PeerInfo, Presence};
 
+/// Время сервера в миллисекундах эпохи.
+///
+/// Часы, отведённые раньше эпохи, — не повод падать. Этим числом помечаются
+/// только сообщения чата и карточки файлов (`srv`), и сдвинутая метка не
+/// стоит оборванного разговора у всех, кто в этот момент был в комнате.
+/// Отказ `duration_since` несёт в себе ту же разницу, только со знаком минус,
+/// — берём её, и порядок сообщений остаётся верным даже с такими часами.
 pub fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_millis() as i64,
+        Err(before) => -(before.duration().as_millis() as i64),
+    }
 }
 
 pub struct Peer {

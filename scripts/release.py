@@ -34,6 +34,11 @@ PACKAGES = (
     (ROOT / 'Cargo.toml', ROOT / 'Cargo.lock', 'yeruverse'),
     (APP / 'Cargo.toml', APP / 'Cargo.lock', 'yeruverse-desktop'),
 )
+# Версия живёт ещё и в пакете для Arch — своим синтаксисом, поэтому отдельно.
+# Разойдись она с остальными, pacman показывал бы одно, а приложение о себе
+# сообщало другое; ловится такое не раньше, чем кто-нибудь заметит.
+PKGBUILD = ROOT / 'packaging/arch/PKGBUILD'
+PKGVER = re.compile(r'(?m)^(pkgver=)(.+)$')
 VERSION = re.compile(r'^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$')
 
 
@@ -92,6 +97,20 @@ def replace_lock_version(path: pathlib.Path, name: str, old: str, new: str) -> N
     write(path, text)
 
 
+def pkgbuild_version() -> str:
+    match = PKGVER.search(read(PKGBUILD))
+    if not match:
+        raise ValueError(f'не нашли pkgver в {PKGBUILD.relative_to(ROOT)}')
+    return match.group(2)
+
+
+def replace_pkgbuild_version(new: str) -> None:
+    text, count = PKGVER.subn(rf'\g<1>{new}', read(PKGBUILD))
+    if count != 1:
+        raise ValueError(f'не смогли однозначно обновить {PKGBUILD.relative_to(ROOT)}')
+    write(PKGBUILD, text)
+
+
 # Какой пакет для какой системы. macOS собирается только под Apple Silicon,
 # поэтому Intel в манифест не попадает: обновлятель иначе скачал бы им
 # приложение, которое не запустится.
@@ -101,15 +120,21 @@ def replace_lock_version(path: pathlib.Path, name: str, old: str, new: str) -> N
 # `.nsis.zip`/`.msi.zip` остались в Tauri 1; пока мы искали их, в манифест не
 # попадало ни одной записи для Windows — и обновление там молчало, хотя macOS
 # обновлялся.
+# На Linux обновляется только AppImage, и это не наш выбор, а единственное,
+# что умеет плагин обновления: .deb и .rpm ставит менеджер пакетов, и лезть
+# в его хозяйство мимо него нельзя. Подпись Tauri кладёт рядом с самим
+# пакетом (`.AppImage.sig`), как и под Windows.
 TARGETS = [
     ('.app.tar.gz', ['darwin-aarch64']),
     ('-setup.exe', ['windows-x86_64']),
     ('.msi', ['windows-x86_64']),
+    ('.AppImage', ['linux-x86_64']),
 ]
 
 
 def cmd_bump(args: argparse.Namespace) -> None:
     versions = [package_version(manifest, name) for manifest, _, name in PACKAGES]
+    versions.append(pkgbuild_version())
     if len(set(versions)) != 1:
         raise SystemExit(f'версии пакетов разошлись: {", ".join(versions)}')
     old = versions[0]
@@ -119,6 +144,7 @@ def cmd_bump(args: argparse.Namespace) -> None:
         for manifest, lockfile, name in PACKAGES:
             replace_package_version(manifest, name, old, new)
             replace_lock_version(lockfile, name, old, new)
+        replace_pkgbuild_version(new)
     print(f'v{old} -> v{new}')
 
 
