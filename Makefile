@@ -1,7 +1,7 @@
 # Короткие команды для типовых задач. Всё то же самое можно набрать руками —
 # см. README, здесь просто собраны рабочие сочетания флагов.
 
-.PHONY: help server app app-debug arch linux-deps linux-check android android-all android-prepare sign-apk mac-cert icons icons-ui denoiser updater-key updater-pubkey image image-run deploy check browser clean
+.PHONY: help server app app-debug arch linux-deps linux-check android android-all android-prepare sign-apk mac-cert icons icons-ui denoiser updater-key updater-pubkey docker docker-run deploy check browser clean
 
 APP_DIR := desktop/src-tauri
 ANDROID_HOME ?= $(or $(ANDROID_SDK_ROOT),$(HOME)/Library/Android/sdk)
@@ -30,9 +30,8 @@ help:
 	@echo "make denoiser    — обновить модели шумодава в web/vendor"
 	@echo "make updater-key — создать ключ подписи обновлений (один раз на проект)"
 	@echo "make mac-cert    — создать сертификат подписи под macOS (один раз на проект)"
-	@echo "make image       — собрать образ сервера (podman)"
-	@echo "make image-run   — собрать и запустить его на :8080"
-	@echo "make deploy      — поднять сервер комнат (quadlet, нужен root; HTTPS — Caddy на хосте)"
+	@echo "make docker      — собрать образ сервера"
+	@echo "make deploy      — поднять сервер + HTTPS + TURN через compose"
 	@echo "make check       — форматирование, clippy, тесты и проверка фронтенда"
 	@echo "make browser     — прогон комнаты в настоящем браузере (нужен playwright)"
 
@@ -166,60 +165,22 @@ tauri-cli:
 # попасть под кэш cargo (почему так, написано в Dockerfile). Бинарник нужен под
 # linux/musl, а собирать его умеет не всякая машина, поэтому компилирует
 # контейнер с Rust: ставить кросс-компилятор ради одной команды незачем, а один
-# путь на все системы лучше двух расходящихся. Кэш живёт в target/podman и
+# путь на все системы лучше двух расходящихся. Кэш живёт в target/docker и
 # переживает пересборки.
-#
-# Имена образов полные, с реестром: podman не угадывает, откуда тянуть, а
-# короткое имя разрешает по списку реестров из registries.conf — и на разных
-# машинах это разные списки.
-image:
+docker:
 	rm -rf $(DIST)
 	mkdir -p $(DIST)
-	podman run --rm -v "$(CURDIR)":/src -w /src docker.io/library/rust:1-alpine sh -c \
-	  'apk add --no-cache musl-dev >/dev/null && cargo build --locked --release --target-dir target/podman'
-	cp target/podman/release/yeruverse $(DIST)/
+	docker run --rm -v "$(CURDIR)":/src -w /src rust:1-alpine sh -c \
+	  'apk add --no-cache musl-dev >/dev/null && cargo build --locked --release --target-dir target/docker'
+	cp target/docker/release/yeruverse $(DIST)/
 	cp -r web $(DIST)/web
-	podman build --format docker --file Dockerfile -t yeruverse $(DIST)
+	docker build -f Dockerfile -t yeruverse $(DIST)
 
-image-run: image
-	podman run --rm -p 8080:8080 yeruverse
+docker-run: docker
+	docker run --rm -p 8080:8080 yeruverse
 
-# Развёртывание на VPS: юнит из `quadlet/` — в systemd.
-#
-# quadlet — генератор systemd: из `.container` в /etc/containers/systemd он при
-# `daemon-reload` собирает обычную службу. Демона нет, перезапуск, журнал и
-# подъём при загрузке — у systemd, как у любой другой службы. `systemctl enable`
-# ей не нужен и не сработает: служба сгенерирована, и за подъём при загрузке
-# отвечает `WantedBy=` в самом юните.
-#
-# HTTPS — дело Caddy на хосте, одного на все сайты сервера. Его конфиг здесь не
-# трогаем: в нём живут и чужие сайты. Кусок для него — в Caddyfile.
-#
-# Секреты — в /etc/yeruverse: юнит ссылается на абсолютный путь, а каталог с
-# исходниками на сервере может и не лежать вовсе.
-#
-# Образ раз в сутки обновляет `podman-auto-update.timer`, для этого у
-# контейнера стоит `AutoUpdate=registry`. Здесь свежее тянется сразу: «разверни»
-# должно разворачивать сейчас, а не завтра, — а сам перезапуск по умолчанию
-# берёт уже скачанный `latest`, каким бы старым он ни был.
-QUADLET := /etc/containers/systemd
 deploy:
-	@test "$$(id -u)" = 0 || { echo "нужен root: юнит ставится в $(QUADLET) — sudo make deploy"; exit 1; }
-	@test -x /usr/lib/systemd/system-generators/podman-system-generator \
-	  || { echo "нет quadlet — нужен podman 4.4 или новее"; exit 1; }
-	@test -f .env || { echo "нет .env — скопируйте .env.example и впишите ключи TURN"; exit 1; }
-	install -d -m 700 /etc/yeruverse
-	install -m 600 .env /etc/yeruverse/env
-	install -d $(QUADLET)
-	install -m 644 quadlet/yeruverse.container $(QUADLET)/
-	systemctl daemon-reload
-	podman pull ghcr.io/exryuske/yeruverse:latest
-	systemctl enable podman-auto-update.timer
-	systemctl restart yeruverse.service
-	@command -v caddy >/dev/null \
-	  || echo "Caddy на хосте не найден — поставьте его пакетом системы, без него HTTPS не будет"
-	@echo "Готово. Сервер слушает 127.0.0.1:8081; блок для /etc/caddy/Caddyfile — в Caddyfile."
-	@echo "Журнал: journalctl -u yeruverse -f"
+	docker compose up -d
 
 check:
 	cargo fmt --check

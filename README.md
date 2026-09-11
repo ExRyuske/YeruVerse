@@ -41,37 +41,14 @@ cargo run --release
 
 ## Развёртывание на своём сервере
 
-Нужны podman 4.4 или новее — в нём есть quadlet — и Caddy на самом хосте,
-пакетом системы: он один на все сайты сервера и сам получает и продлевает
-HTTPS-сертификат (Let's Encrypt). Сервер комнат — один юнит в `quadlet/`, и
-поднимает его systemd, как любую другую службу.
-
 ```bash
-cp .env.example .env && $EDITOR .env   # ключи TURN (Cloudflare)
-sudo make deploy
+cp .env.example .env && $EDITOR .env   # домен и ключи TURN (Cloudflare)
+docker compose up -d
 ```
 
-`make deploy` кладёт юнит в `/etc/containers/systemd`, секреты — в
-`/etc/yeruverse`, тянет свежий образ и перезапускает службу. Сервер слушает
-только `127.0.0.1:8081`, наружу его выводит Caddy: впишите блок из `Caddyfile`
-в `/etc/caddy/Caddyfile` со своим доменом и сделайте
-`sudo systemctl reload caddy`. WebSocket проходит через него без
-дополнительной настройки.
-
-Дальше это обычная служба systemd:
-
-```bash
-systemctl status yeruverse
-journalctl -u yeruverse -f
-sudo systemctl restart yeruverse
-```
-
-После перезагрузки машины служба поднимается сама. Образ раз в сутки обновляет
-`podman-auto-update.timer`; обновиться сразу — тот же `sudo make deploy`.
-
-Если на сервере раньше жил вариант с compose, сначала погасите его
-(`docker compose down` или `podman compose down`): его Caddy держит порты 80 и
-443, и Caddy на хосте их не получит, а имя контейнера `yeruverse` занято.
+Compose поднимает сам сервер комнат и Caddy, который сам получает и продлевает
+HTTPS-сертификат (Let's Encrypt) и проксирует WebSocket без дополнительной
+настройки.
 
 TURN берётся у Cloudflare:
 сервер сам выпускает короткоживущие учётки, постоянный ключ в браузер не
@@ -205,7 +182,7 @@ make mac-cert     # MAC_CERTIFICATE и MAC_CERTIFICATE_PASSWORD
 
 ```bash
 make help    # список всех команд с описанием
-make image   # собрать образ сервера (podman)
+make docker  # собрать образ сервера
 make check   # форматирование, clippy, тесты, проверка фронтенда
 make browser # прогон комнаты в настоящем браузере (нужен playwright)
 ```
