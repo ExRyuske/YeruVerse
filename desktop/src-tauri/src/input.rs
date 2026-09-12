@@ -16,7 +16,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tauri::State;
+use tauri::{State, WebviewWindow};
 
 #[cfg(desktop)]
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
@@ -79,11 +79,21 @@ impl Input {
 
 /// Разрешить или запретить приём. При включении возвращает размер экрана —
 /// фронтенд переводит по нему доли кадра в пиксели.
+///
+/// Включение проверяет происхождение окна вручную, а не через `Trusted`
+/// (см. `lib.rs`): выключение обязано пройти всегда, от кого угодно — это тот
+/// же принцип, что у `input_release` ниже, откат чужого ввода не должен
+/// зависеть от того, кто именно его просит.
 #[tauri::command]
 pub async fn set_control(
+    trusted: tauri::State<'_, crate::TrustedServer>,
+    window: WebviewWindow,
     state: State<'_, Input>,
     enabled: bool,
 ) -> Result<Option<(i32, i32)>, String> {
+    if enabled && !crate::is_trusted(&trusted, window.url()) {
+        return Err("приём ввода можно включать только со своего сервера".into());
+    }
     if !enabled {
         // Сначала отпускаем зажатое, потом закрываем дверь: иначе клавиша,
         // которую держал зритель, останется нажатой навсегда.
@@ -106,8 +116,16 @@ pub async fn set_control(
 /// игры, где курсор двигает сама игра, и лезла в системный API не из главного
 /// потока — на macOS это роняло приложение целиком. Сочетание регистрируется
 /// системно, поэтому работает и из полноэкранной игры.
+///
+/// Здесь и ниже: `_trusted: Trusted` в параметрах — не декорация. Пока IPC не
+/// соберёт этот параметр (`Trusted::from_command` в `lib.rs`), тело команды
+/// вообще не запускается — окну с чужим origin просто нечем это заполнить.
 #[tauri::command]
-pub fn input_pause(state: State<'_, Input>, paused: bool) -> Result<(), String> {
+pub fn input_pause(
+    _trusted: crate::Trusted,
+    state: State<'_, Input>,
+    paused: bool,
+) -> Result<(), String> {
     state.paused.store(paused, Ordering::SeqCst);
     if paused {
         // Гость мог замереть с зажатой клавишей — снимаем её за него.
@@ -117,22 +135,38 @@ pub fn input_pause(state: State<'_, Input>, paused: bool) -> Result<(), String> 
 }
 
 #[tauri::command]
-pub fn input_move(state: State<'_, Input>, x: i32, y: i32) -> Result<(), String> {
+pub fn input_move(
+    _trusted: crate::Trusted,
+    state: State<'_, Input>,
+    x: i32,
+    y: i32,
+) -> Result<(), String> {
     state.send(Cmd::Move(x, y))
 }
 
 #[tauri::command]
-pub fn input_button(state: State<'_, Input>, button: String, down: bool) -> Result<(), String> {
+pub fn input_button(
+    _trusted: crate::Trusted,
+    state: State<'_, Input>,
+    button: String,
+    down: bool,
+) -> Result<(), String> {
     state.send(Cmd::Button(button, down))
 }
 
 #[tauri::command]
-pub fn input_scroll(state: State<'_, Input>, dx: i32, dy: i32) -> Result<(), String> {
+pub fn input_scroll(
+    _trusted: crate::Trusted,
+    state: State<'_, Input>,
+    dx: i32,
+    dy: i32,
+) -> Result<(), String> {
     state.send(Cmd::Scroll(dx, dy))
 }
 
 #[tauri::command]
 pub fn input_key(
+    _trusted: crate::Trusted,
     state: State<'_, Input>,
     code: Option<String>,
     text: Option<String>,

@@ -131,6 +131,10 @@ class Conn {
     // соединение навсегда, и участник пропадал до перезахода в комнату.
     pc.onconnectionstatechange = () => {
       const st = pc.connectionState;
+      // Список участников красит строку тем же состоянием — см. `link-state`
+      // в `peers.js`. Эмитим на каждую смену, а не только на «плохие»: строке
+      // так же важно узнать, что связь вернулась, как и что она пропала.
+      mesh.emit('link-state', { id, state: st });
       if (st === 'connected') {
         this.retries = 0;
         clearTimeout(this._timer);
@@ -660,6 +664,16 @@ export class Mesh extends Emitter {
       }
       c.addStream(kind, stream);   // запасной путь — через пересогласование
     }
+  }
+
+  /**
+   * `connectionState` соединения с пиром без похода в асинхронный `getStats()`
+   * — списку участников (`peers.js`) на каждую перерисовку нужен только он, а
+   * не путь и не RTT, которые есть в `diagnostics()` ниже. Соединения ещё нет —
+   * например, только что вошли, — и это не беда: список ничего не покажет.
+   */
+  linkState(id) {
+    return this.conns.get(id)?.pc.connectionState;
   }
 
   /**

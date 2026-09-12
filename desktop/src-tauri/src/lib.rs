@@ -85,9 +85,14 @@ fn current_server(app: tauri::AppHandle) -> String {
     saved_server(&app)
 }
 
-/// Сменить сервер: сохраняем и уводим окно на новый адрес.
+/// Сменить сервер: сохраняем, обновляем `TrustedServer` и уводим окно на новый адрес.
 #[tauri::command]
-fn set_server(app: tauri::AppHandle, window: WebviewWindow, url: String) -> Result<(), String> {
+fn set_server(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    trusted: tauri::State<'_, TrustedServer>,
+    url: String,
+) -> Result<(), String> {
     let url = url.trim().trim_end_matches('/').to_string();
 
     // Пустое поле — не ошибка, а «вернуться к серверу по умолчанию». Заодно это
@@ -105,7 +110,68 @@ fn set_server(app: tauri::AppHandle, window: WebviewWindow, url: String) -> Resu
             let _ = std::fs::write(path, &url);
         }
     }
+    trusted.set(url);
     window.navigate(parsed).map_err(|e| e.to_string())
+}
+
+/// Единственный адрес, которому доверены команды из `Trusted` ниже — то, что
+/// сам человек сохранил через `set_server` (или адрес по умолчанию, пока он
+/// им не пользовался). Кэш вокруг `saved_server`: без него каждое движение
+/// мыши во время чужого управления читало бы `server.txt` с диска заново —
+/// `input_move` идёт кадр за кадром, а не раз в разговор.
+struct TrustedServer(std::sync::Mutex<String>);
+
+impl TrustedServer {
+    fn new(url: String) -> Self {
+        Self(std::sync::Mutex::new(url))
+    }
+    fn set(&self, url: String) {
+        *self.0.lock().unwrap() = url;
+    }
+    fn get(&self) -> String {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+/// Смотрит ли `current` (обычно `window.url()`) туда же, куда указывает
+/// `TrustedServer`.
+///
+/// ACL в `capabilities/*.json` разрешает `localhost`/`127.0.0.1` на любом
+/// порту — это нужно ради самостоятельного хостинга сервера комнат, а не ради
+/// того, чтобы приём ввода доставался первому процессу на компьютере, который
+/// поднял HTTP хоть на каком-то порту. Статическая маска такого не различает:
+/// она смотрит на схему и порт, а не на то, тот ли это адрес, который человек
+/// сам сохранил. Общая для `Trusted` ниже и для ручной проверки в
+/// `input::set_control`, у которой отказ нужен не всегда, а только при
+/// включении приёма — `Trusted` в параметрах команды на это не годится, она
+/// либо есть, либо отказ ещё до тела.
+pub(crate) fn is_trusted(trusted: &TrustedServer, current: tauri::Result<tauri::Url>) -> bool {
+    let Ok(current) = current else { return false };
+    let Ok(trusted) = trusted.get().parse::<tauri::Url>() else { return false };
+    current.origin() == trusted.origin()
+}
+
+/// Параметр команды, который можно получить, только пройдя `is_trusted` — не
+/// ручная проверка в начале тела, а часть самой подписи. Опасная команда,
+/// забывшая этот параметр в списке, не получает отказа во время выполнения —
+/// она получает отказ на этапе вызова: тело просто не запускается, пока IPC не
+/// соберёт все параметры, а этот не собирается ни для кого чужого.
+pub(crate) struct Trusted;
+
+impl<'de, R: tauri::Runtime> tauri::ipc::CommandArg<'de, R> for Trusted {
+    fn from_command(
+        command: tauri::ipc::CommandItem<'de, R>,
+    ) -> Result<Self, tauri::ipc::InvokeError> {
+        let webview = command.message.webview();
+        let trusted = webview.state::<TrustedServer>();
+        if is_trusted(&trusted, webview.url()) {
+            Ok(Trusted)
+        } else {
+            Err(tauri::ipc::InvokeError::from(
+                "действие разрешено только со своего сервера".to_string(),
+            ))
+        }
+    }
 }
 
 // ---------------------------------------------------------------- ссылки
@@ -239,7 +305,7 @@ async fn update_check(app: tauri::AppHandle) -> Result<Option<String>, String> {
 /// Скачать, поставить и перезапуститься.
 #[cfg(desktop)]
 #[tauri::command]
-async fn update_install(app: tauri::AppHandle) -> Result<(), String> {
+async fn update_install(_trusted: Trusted, app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
     let update = app
         .updater()
@@ -542,6 +608,9 @@ pub fn run() {
             // кнопки — худший из возможных исходов. Поле «Сервер комнат» тогда
             // на виду, и адрес можно поправить или стереть.
             let url = saved_server(app.handle());
+            // До первого `set_server` доверенный адрес — этот же: окно либо уже
+            // на нём (адрес по умолчанию), либо вот-вот попробует на него уйти.
+            app.manage(TrustedServer::new(url.clone()));
             if url == DEFAULT_SERVER {
                 return Ok(());
             }

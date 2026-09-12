@@ -115,6 +115,36 @@ function sendFile(file) {
 /** Картинки показываем прямо в чате, всё остальное — карточкой с кнопкой. */
 const isImage = (meta) => (meta.mime ?? '').startsWith('image/');
 
+/**
+ * Сколько чужих картинок от одного участника можно скачать без спроса за
+ * последние `AUTO_DL_WINDOW`. Автозакачка удобна ради одного случайного
+ * скриншота, а не ради того, чтобы карточка отдавала право решать, что
+ * скачивать прямо сейчас, чужому клиенту: разослав вместо одной картинки
+ * сотню карточек с mime `image/*`, участник заставил бы каждого зрителя
+ * заводить у себя ту же сотню передач автоматически — см. `MAX_TRANSFERS`
+ * в `swarm.js`, это тот же предел, только на подступах к нему.
+ *
+ * Порог не постоянный, а скользящий: как только человек перестаёт слать
+ * картинки, старые метки времени вываливаются из окна сами, и следующая его
+ * картинка снова качается без спроса — бан никому выдавать не нужно.
+ */
+const AUTO_DL_LIMIT = 3;
+const AUTO_DL_WINDOW = 8000;
+const autoDownloads = new Map();   // id участника -> метки времени недавних автозакачек
+
+function canAutoDownload(id) {
+  const now = Date.now();
+  const hits = (autoDownloads.get(id) ?? []).filter((t) => now - t < AUTO_DL_WINDOW);
+  const allowed = hits.length < AUTO_DL_LIMIT;
+  if (allowed) hits.push(now);
+  // Пустую запись не оставляем: участник с fresh-id заводится на каждый вход
+  // в комнату, а долгая вкладка, сменившая много комнат, иначе копила бы одну
+  // запись на каждого, кого вообще видела, — бессмысленно и навсегда.
+  if (hits.length) autoDownloads.set(id, hits);
+  else autoDownloads.delete(id);
+  return allowed;
+}
+
 function addAttachment(peer, meta, mine, at) {
   const sub = make('span', { class: 'sub', text: fmtSize(meta.size) });
 
@@ -162,9 +192,11 @@ function addAttachment(peer, meta, mine, at) {
     if (own) {
       img.src = own;
       action.remove();
-    } else {
+    } else if (mine || canAutoDownload(peer.id)) {
       action.click();       // качаем, не дожидаясь нажатия
     }
+    // Иначе оставляем обычную кнопку «Скачать»: спрос сейчас превысил порог
+    // для этого участника, и решать дальше — самому человеку, а не карточке.
   }
 
   attachRows.set(meta.id, { action, sub, img });
@@ -183,6 +215,29 @@ function renderAttachProgress(id, pct) {
   const row = attachRows.get(id);
   if (row && row.action.isConnected) row.action.textContent = `${pct}%`;
 }
+
+/**
+ * Возвращает кнопку в исходное состояние — не остаётся висеть на середине
+ * процента (`expired`) или на «0%», так и не начавшись (`refused`) навсегда.
+ * `onclick` у кнопки тот же, что при первом нажатии, и заново зовёт
+ * `swarm.start` с той же карточкой — второй попытке ничего не мешает.
+ */
+function resetAttachButton(id, text) {
+  const row = attachRows.get(id);
+  if (row && row.action.isConnected) {
+    row.action.disabled = false;
+    row.action.textContent = text;
+  }
+}
+
+// Передача не собралась за отведённое время (`TRANSFER_TTL` в `swarm.js`) и
+// забыта роем.
+swarm.on('expired', ({ id }) => resetAttachButton(id, 'Скачать'));
+// Передач в рое уже `MAX_TRANSFERS` — самая частая причина отказа: спам
+// картинками от одного участника (см. комментарий в `swarm.js`). Отдельный
+// текст, а не молчаливое «Скачать»: без него непонятно, почему закачка не
+// сдвинулась дальше нуля.
+swarm.on('refused', ({ id }) => resetAttachButton(id, 'Занято — повторить'));
 
 /**
  * Файл собран: кнопка превращается в ссылку «Сохранить».

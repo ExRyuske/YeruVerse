@@ -13,7 +13,6 @@
   "remote": {
     "urls": [
       "https://verse.yeru.cc",
-      "https://*.yeru.cc",
       "http://localhost:*",
       "http://127.0.0.1:*"
     ]

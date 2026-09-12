@@ -378,6 +378,7 @@ button.mark:hover:not(:disabled) {
 }
 .mark.off { color: #ff6b6b; }
 .mark.on { color: var(--accent-soft); }
+.mark.warn { color: var(--warn); }
 
 /* Значки внутри строки участника стоят вплотную, а группы отделены общим
    отступом ряда. Пока они были прямыми участниками ряда, между каждыми двумя

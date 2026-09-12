@@ -1,6 +1,6 @@
 // Список участников: кто в комнате, что у него включено и что ему разрешено.
 
-import { control, native, settings, voice } from './core.js';
+import { control, mesh, native, settings, voice } from './core.js';
 import { hidden, isSelf, state, viewKey } from './state.js';
 import { painter, render } from './render.js';
 import { icon } from './icons.js';
@@ -8,8 +8,15 @@ import { make, markButton, ui, volumeSlider } from './ui.js';
 import { stacked } from './layout.js';
 import { setHidden } from './stage.js';
 import { allowButton } from './control-ui.js';
+import { LINKS, BAD } from './link-status.js';
 
 painter('peers', renderPeers);
+
+// P2P-соединение с каждым участником и так следит за собой само — ICE
+// перезапускается, статистика идёт в диагностику (`settings-panel.js`). Тут
+// переиспользуем ровно тот же сигнал: список красит строку тем же словарём
+// состояний, ничего не спрашивая у сервера отдельно (см. `mesh.linkState`).
+mesh.on('link-state', () => render('peers'));
 
 /**
  * Строки переживают перерисовку, а не создаются заново. Раньше список стирался
@@ -92,12 +99,29 @@ function updatePeerRow(li, p) {
  * «все, кроме меня», — и заодно видно, каким тебя видят остальные.
  */
 function stateMarks(p) {
-  return [
+  const marks = [
     [!p.voice || p.muted, 'mic-off', p.voice ? 'Микрофон заглушён' : 'Микрофон выключен'],
     [p.deaf, 'speaker-off', 'Звук выключен — участников не слышно'],
   ]
     .filter(([show]) => show)
     .map(([, glyph, title]) => markButton({ glyph, title, off: true }));
+
+  const link = !isSelf(p.id) && linkMark(p.id);
+  if (link) marks.push(link);
+  return marks;
+}
+
+/**
+ * Потеряно ли соединение с участником — тем же словарём и по тому же
+ * `connectionState`, что и диагностика (`settings-panel.js`), без похода на
+ * сервер отдельным сообщением: P2P-соединение и так следит за собой само.
+ * Пока оно `connected` или ещё не поднялось (только что вошли), сказать
+ * нечего — значок появляется, только когда есть что показать.
+ */
+function linkMark(id) {
+  const [status, note] = LINKS[mesh.linkState(id)] ?? [];
+  if (!note) return null;
+  return markButton({ glyph: 'link', title: note, off: status === BAD, warn: status !== BAD });
 }
 
 /**

@@ -23,6 +23,24 @@ const MAX_INFLIGHT = 8;       // одновременных запросов к 
 const REQ_TIMEOUT = 15000;
 
 /**
+ * Предел на число передач сразу, вместе взятых. Размер одной уже ограничен
+ * (`MAX_SIZE`/`sane`), а вот их количество — нет: карточка размером в
+ * несколько сотен байт стоит рою памяти под битовое поле и (для картинок,
+ * скачивающихся без спроса — см. `addAttachment` в `chat.js`) под массив
+ * кусков размером с сам файл. Рассылая много таких карточек, один участник
+ * может заставить всех в комнате завести десятки гигабайт ожидающих приёмов —
+ * без единого лишнего байта поверх предела на один файл.
+ */
+const MAX_TRANSFERS = 24;
+/**
+ * Сколько ждать передачу, которая не может завершиться, прежде чем её
+ * забыть. Обычная причина — источник ушёл, не отдав всё, или вовсе никогда не
+ * присылал куски. Держать её вечно смысла нет: это тот же неограниченный рост
+ * памяти, что и предел выше, только растянутый во времени.
+ */
+const TRANSFER_TTL = 10 * 60 * 1000;
+
+/**
  * Похожа ли карточка файла на карточку файла.
  *
  * Карточка приходит от чужого клиента через сервер, а получатель разворачивает
@@ -84,6 +102,7 @@ class Transfer {
     this.inflight = new Map();                      // индекс -> { id, ts }
     this.serving = new Map();                       // id пира -> очередь индексов
     this.blobUrl = null;
+    this.touchedAt = Date.now();
 
     if (file) {
       this.bits.fill(0xff);
@@ -94,6 +113,11 @@ class Transfer {
 
   get done() { return this.have >= this.meta.chunks; }
   get progress() { return this.have / this.meta.chunks; }
+  // Раздающий файл и уже собранный приём не протухают никогда — TTL против
+  // того, что не может закончиться, а не против того, чем просто не пользуются.
+  // Без `!this.done` собранная картинка исчезала бы из чата сама собой ровно
+  // через TRANSFER_TTL после того, как последний кусок и так её завершил.
+  get stale() { return !this.done && Date.now() - this.touchedAt > TRANSFER_TTL; }
 
   destroy() {
     if (this.blobUrl) URL.revokeObjectURL(this.blobUrl);
@@ -121,10 +145,17 @@ export class Swarm extends Emitter {
       this._pumpAll();
     });
 
-    // Подбираем куски, чьи запросы протухли или чьи владельцы только появились.
-    // Когда передач нет — а это обычное состояние комнаты — таймер ничего не
-    // делает и не будит вкладку.
-    setInterval(() => this.transfers.size && this._pumpAll(), 3000);
+    // Подбираем куски, чьи запросы протухли или чьи владельцы только появились,
+    // и заодно забываем передачи, которые не завершились за TRANSFER_TTL. Когда
+    // передач нет — а это обычное состояние комнаты — таймер ничего не делает
+    // и не будит вкладку.
+    setInterval(() => {
+      if (!this.transfers.size) return;
+      for (const [id, t] of this.transfers) {
+        if (t.stale) { this.drop(id); this.emit('expired', { id }); }
+      }
+      this._pumpAll();
+    }, 3000);
   }
 
   get(id) { return this.transfers.get(id) ?? null; }
@@ -148,11 +179,23 @@ export class Swarm extends Emitter {
   /**
    * Начать приём по описанию. Повторный вызов для того же файла безопасен.
    * Непроверенное описание не начинает ничего и возвращает `null`.
+   *
+   * Сверх предела на число передач (`MAX_TRANSFERS`) новую не заводим — уже
+   * идущие это не касается: обрывать чужую закачку на середине хуже, чем не
+   * начать ещё одну. Первым в очередь на отказ попадает автозакачка картинок
+   * (`chat.js`), а не тот файл, что человек попросил сам, нажав «Скачать».
    */
   start(meta) {
     if (!sane(meta)) return null;
     let t = this.transfers.get(meta.id);
     if (!t) {
+      if (this.transfers.size >= MAX_TRANSFERS) {
+        // Отказ — не молчаливый: кнопка в чате (`chat.js`) уже показала «0%»
+        // до этого вызова и без события так и осталась бы висеть на нём
+        // навсегда, не будучи ни начатой, ни ошибочной.
+        this.emit('refused', { id: meta.id });
+        return null;
+      }
       t = new Transfer(meta, null);
       this.transfers.set(meta.id, t);
       this._announce(null, meta.id);
@@ -342,6 +385,7 @@ export class Swarm extends Emitter {
     setBit(t.bits, i);
     t.have++;
     t.inflight.delete(i);
+    t.touchedAt = Date.now();   // жива, пока в неё что-то прилетает
 
     this.mesh.broadcast({ ns: NS, type: 'have', fileId: id, i });
     this.emit('progress', { id, have: t.have, total: t.meta.chunks, sources: t.peerBits.size });

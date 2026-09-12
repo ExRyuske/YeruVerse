@@ -131,6 +131,11 @@ TARGETS = [
     ('.AppImage', ['linux-x86_64']),
 ]
 
+# Tauri подписывает и .deb/.rpm, хотя обновлятель их не устанавливает (см.
+# комментарий выше) — их ставит apt/dnf. Эти подписи ожидаемо не входят в
+# TARGETS, и их не нужно считать потерянными.
+IGNORED_SUFFIXES = ['.deb', '.rpm']
+
 
 def cmd_bump(args: argparse.Namespace) -> None:
     versions = [package_version(manifest, name) for manifest, _, name in PACKAGES]
@@ -189,7 +194,10 @@ def cmd_manifest(args: argparse.Namespace) -> None:
     # пакет собран и подписан, а в манифесте его нет, и там, где стоит эта
     # сборка, кнопки «Обновить» просто не появится. Молча так уже случилось
     # однажды, когда Tauri переименовал пакеты Windows, поэтому теперь кричим.
-    if lost := sorted(set(root.rglob('*.sig')) - taken):
+    ignored = {
+        sig for suffix in IGNORED_SUFFIXES for sig in root.rglob(f'*{suffix}.sig')
+    }
+    if lost := sorted(set(root.rglob('*.sig')) - taken - ignored):
         raise SystemExit(
             'подписанные пакеты, которых нет в TARGETS: '
             + ', '.join(sig.name for sig in lost)

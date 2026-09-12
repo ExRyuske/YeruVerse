@@ -54,11 +54,13 @@ pub fn http_client() -> reqwest::Client {
 pub struct Cache {
     ttl: Duration,
     slot: Mutex<Option<(Instant, Value)>>,
+    /// Пропускает наружу не более одного похода разом — см. `get`.
+    fetch_gate: tokio::sync::Mutex<()>,
 }
 
 impl Cache {
     pub fn new(ttl: Duration) -> Self {
-        Cache { ttl, slot: Mutex::new(None) }
+        Cache { ttl, slot: Mutex::new(None), fetch_gate: tokio::sync::Mutex::new(()) }
     }
 
     /// Что лежит в кэше, если оно ещё не протухло.
@@ -72,6 +74,14 @@ impl Cache {
     ///
     /// `what` попадает в лог при отказе и отвечает на вопрос «что не удалось
     /// получить»; `empty` отдаётся только когда не вышло и показать нечего.
+    ///
+    /// За воротами `fetch_gate` наружу ходит только первый, кто их застал
+    /// пустыми. Без этого протухание TTL в комнате на десяток человек — это не
+    /// один запрос к Cloudflare или GitHub, а десяток одновременных: каждый
+    /// сокет увидел `fresh() == None` раньше, чем кто-либо успел положить ответ
+    /// обратно. У GitHub на такой случай всего шестьдесят запросов в час без
+    /// токена (см. `updates.rs`), и всплеск в этом месте способен сжечь их за
+    /// одну перегрузку страницы кем-то с плохой сетью и десятком открытых вкладок.
     pub async fn get<F>(&self, what: &str, empty: Value, fetch: impl FnOnce() -> F) -> Value
     where
         F: Future<Output = Result<Value, String>>,
@@ -79,6 +89,13 @@ impl Cache {
         if let Some(fresh) = self.fresh() {
             return fresh;
         }
+
+        let _permit = self.fetch_gate.lock().await;
+        // Пока ждали своей очереди, кто-то мог уже сходить за нас.
+        if let Some(fresh) = self.fresh() {
+            return fresh;
+        }
+
         match fetch().await {
             Ok(found) => {
                 *self.slot.lock().unwrap() = Some((Instant::now(), found.clone()));
@@ -165,5 +182,41 @@ mod tests {
             cache.get("что-нибудь", json!(null), || async { Ok(json!({ "ok": true })) }).await;
         assert_eq!(answer, json!({ "ok": true }));
         assert_eq!(cache.fresh(), Some(json!({ "ok": true })));
+    }
+
+    /// Промах с толпой одновременных читателей ходит наружу один раз, а не по
+    /// разу на каждого: остальные дожидаются `fetch_gate` и забирают готовое.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_misses_fetch_only_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let cache = Arc::new(Cache::new(TTL));
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let cache = cache.clone();
+            let calls = calls.clone();
+            set.spawn(async move {
+                cache
+                    .get("что-нибудь", json!(null), || {
+                        let calls = calls.clone();
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            // Даём остальным восьмерым время встать в очередь
+                            // за воротами, прежде чем эта попытка их откроет.
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            Ok(json!({ "ok": true }))
+                        }
+                    })
+                    .await
+            });
+        }
+
+        while let Some(res) = set.join_next().await {
+            assert_eq!(res.unwrap(), json!({ "ok": true }));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

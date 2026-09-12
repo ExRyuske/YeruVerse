@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "desktop",
-  "description": "Обновление на месте. Плагина, который его даёт, на мобильных платформах не существует, поэтому право вынесено отдельно.",
+  "description": "Обновление на месте. Плагина, который его даёт, на мобильных платформах не существует, поэтому право вынесено отдельно. Страница обновление не просит у плагина напрямую — только через свои команды `update_check`/`update_install` (`native.toml`), которые дёргают `app.updater()` из Rust в обход IPC. Поэтому у `updater:default` нет причин быть доступным веб-контенту вовсе — ни своему, ни тем более чужому.",
   "platforms": [
     "linux",
     "macOS",
@@ -10,15 +10,7 @@
   "windows": [
     "main"
   ],
-  "local": true,
-  "remote": {
-    "urls": [
-      "https://verse.yeru.cc",
-      "https://*.yeru.cc",
-      "http://localhost:*",
-      "http://127.0.0.1:*"
-    ]
-  },
+  "local": false,
   "permissions": [
     "updater:default"
   ]

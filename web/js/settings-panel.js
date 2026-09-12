@@ -10,6 +10,7 @@ import { modelTitle } from './denoise.js';
 import { make, toast, ui } from './ui.js';
 import { hiddenLabels } from './stage.js';
 import { enableMic } from './devices.js';
+import { OK, WARN, BAD, LINKS } from './link-status.js';
 
 /**
  * Есть ли кому ловить сочетания.
@@ -300,10 +301,6 @@ function hotkeyRow(action) {
  * кричать было единственным способом отметить беду. Теперь у строки есть цвет,
  * и крик только мешает читать.
  */
-const OK = 'ok';
-const WARN = 'warn';
-const BAD = 'bad';
-
 const row = (status, name, value) => ({ status, name, value });
 
 /** Тип кандидата — словами. Человеку важно одно: напрямую или через сервер. */
@@ -312,16 +309,6 @@ const PATHS = {
   srflx: 'напрямую',
   prflx: 'напрямую',
   relay: 'через TURN',
-};
-
-/** Состояние соединения — тоже словами, и сразу с оценкой. */
-const LINKS = {
-  new: [WARN, 'соединяемся'],
-  connecting: [WARN, 'соединяемся'],
-  connected: [OK, ''],
-  disconnected: [WARN, 'связь пропала, восстанавливаем'],
-  failed: [BAD, 'связи нет'],
-  closed: [BAD, 'соединение закрыто'],
 };
 
 let painted = '';

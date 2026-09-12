@@ -116,8 +116,8 @@ export function setIcon(el, name, title = null) {
  * Без обработчика получается не кнопка, а просто метка: у выключенного
  * микрофона собеседника нажимать нечего.
  */
-export function markButton({ glyph, title, on = false, off = false, onclick = null }) {
-  const cls = `mark${on ? ' on' : ''}${off ? ' off' : ''}`;
+export function markButton({ glyph, title, on = false, off = false, warn = false, onclick = null }) {
+  const cls = `mark${on ? ' on' : ''}${off ? ' off' : ''}${warn ? ' warn' : ''}`;
   return make(onclick ? 'button' : 'span', { class: cls, title, html: icon(glyph), onclick });
 }
 

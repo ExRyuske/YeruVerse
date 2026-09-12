@@ -5,10 +5,12 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Request, State};
 use axum::http::header::{HeaderValue, CACHE_CONTROL, REFERRER_POLICY, X_CONTENT_TYPE_OPTIONS};
+use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -16,7 +18,7 @@ use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify, Semaphore};
 use tokio::task::JoinHandle;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::info;
@@ -54,7 +56,35 @@ struct AppState {
     hub: Hub,
     turn: Turn,
     updates: Updates,
+    /// Билет на открытый сокет. Не про честность к отдельному участнику —
+    /// про то, что сервер должен пережить любое их число: без потолка каждое
+    /// новое соединение — это ещё один `tokio::spawn` и ещё один буфер,
+    /// заведённые раньше, чем стало известно, во что это соединение выльется.
+    ///
+    /// Отдельный `Arc`, а не поле как есть: `try_acquire_owned` забирает билет
+    /// без времени жизни, привязанного к заимствованию `state` — иначе его было
+    /// бы не унести в замыкание `on_upgrade`, которое переживает саму
+    /// `ws_handler`.
+    conns: Arc<Semaphore>,
 }
+
+/// Сколько открытых WebSocket-сокетов держим разом, вместе взятых, — не на
+/// комнату и не на человека, а на весь сервер. Число щедрое для одного
+/// процесса на одной машине и тесное для того, кто пробует открыть их сколько
+/// влезет: сверх него `ws_handler` отвечает обычным HTTP-отказом, ещё не
+/// заведя ни `tokio::spawn`, ни один буфер.
+const MAX_CONNECTIONS: usize = 4096;
+
+/// Сколько ждём `join` после апгрейда до WebSocket, прежде чем счесть сокет
+/// пустым любопытством. Открытый, но так и не назвавший комнату сокет держит
+/// место в `MAX_CONNECTIONS` ни для чего — а на настоящий вход клиенту хватает
+/// одного кадра сразу за открытием соединения.
+const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Как часто `Hub::sweep` проверяет, не замолчал ли кто-то дольше
+/// `DROP_AFTER_MS`. Пинг у клиента идёт раз в пять секунд — с тем же шагом
+/// сервер и хватится тишины, не растягивая её обнаружение на лишний круг.
+const SWEEP_EVERY: Duration = Duration::from_secs(5);
 
 /// Поднимает сервер и сразу возвращает управление.
 pub async fn start(config: Config) -> std::io::Result<Handle> {
@@ -64,7 +94,26 @@ pub async fn start(config: Config) -> std::io::Result<Handle> {
     let web_dir = config.web_dir.clone();
     let turn = Turn::new(config.turn.clone());
     info!("TURN: {}", turn.describe());
-    let state = Arc::new(AppState { hub: Hub::new(), turn, updates: Updates::new() });
+    let state = Arc::new(AppState {
+        hub: Hub::new(),
+        turn,
+        updates: Updates::new(),
+        conns: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+    });
+
+    // Развёртка живёт своей задачей, а не тиком внутри чего-то ещё: комнат
+    // может не быть неделями, и она в это время не делает вообще ничего,
+    // кроме как раз в пять секунд взять и тут же отпустить один `Mutex`.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(SWEEP_EVERY);
+            loop {
+                tick.tick().await;
+                state.hub.sweep();
+            }
+        });
+    }
 
     let mut app = Router::new()
         .route("/ws", get(ws_handler))
@@ -222,13 +271,25 @@ const OUTBOX: usize = 128;
 const RATE: f64 = 40.0;
 const BURST: f64 = 200.0;
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
+    // Билет берём до апгрейда: отказ тут — обычный HTTP-ответ, который клиент
+    // умеет понять. Отказать уже после апгрейда значило бы сперва сказать
+    // «соединились», а через мгновение молча захлопнуть только что открытый
+    // сокет — тот же результат, но выглядит как обрыв, а не как «занято».
+    let Ok(permit) = state.conns.clone().try_acquire_owned() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "сервер занят, попробуйте позже").into_response();
+    };
     ws.max_message_size(MAX_FRAME)
         .max_frame_size(MAX_FRAME)
-        .on_upgrade(move |socket| client_loop(socket, state))
+        .on_upgrade(move |socket| client_loop(socket, state, permit))
+        .into_response()
 }
 
-async fn client_loop(socket: WebSocket, state: Arc<AppState>) {
+async fn client_loop(
+    socket: WebSocket,
+    state: Arc<AppState>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<String>(OUTBOX);
 
@@ -245,8 +306,29 @@ async fn client_loop(socket: WebSocket, state: Arc<AppState>) {
     let peer_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
     let mut room_id: Option<String> = None;
     let mut budget = Budget::new();
+    // Будит цикл ниже, когда `Hub::sweep` решает, что молчание затянулось —
+    // см. `Peer::kill` в `hub.rs`. До входа в комнату будить некого: пира там
+    // ещё нет, и роль этого случая играет `JOIN_TIMEOUT` отдельно.
+    let kill = Arc::new(Notify::new());
 
-    while let Some(Ok(raw)) = stream.next().await {
+    loop {
+        // До входа сокет обязан назвать комнату за `JOIN_TIMEOUT`, иначе он
+        // просто держит место в `MAX_CONNECTIONS`, ничего не делая. После
+        // входа этот путь больше не нужен — тишину дольше `DROP_AFTER_MS`
+        // замечает `sweep`, а будит этот же цикл через `kill`.
+        let next = if room_id.is_none() {
+            match tokio::time::timeout(JOIN_TIMEOUT, stream.next()).await {
+                Ok(item) => item,
+                Err(_) => break, // не представился вовремя
+            }
+        } else {
+            tokio::select! {
+                item = stream.next() => item,
+                _ = kill.notified() => break,
+            }
+        };
+        let Some(Ok(raw)) = next else { break };
+
         let text = match raw {
             Message::Text(t) => t.to_string(),
             Message::Close(_) => break,
@@ -267,6 +349,12 @@ async fn client_loop(socket: WebSocket, state: Arc<AppState>) {
             }
         };
 
+        // Любое сообщение, дошедшее до этой строки, — знак жизни: не только
+        // `ping`, но и обычный обмен держит участника вне подозрений у `sweep`.
+        if let Some(room) = room_id.as_deref() {
+            state.hub.touch(room, &peer_id);
+        }
+
         // Пока комната не названа, разговаривать не о чем: единственное, что
         // принимается до входа, — это сам вход и замер задержки.
         match msg {
@@ -275,8 +363,8 @@ async fn client_loop(socket: WebSocket, state: Arc<AppState>) {
                     continue; // повторный join в том же сокете игнорируем
                 }
                 let room = sanitize_room(&room);
-                let peer = Peer {
-                    info: PeerInfo {
+                let peer = Peer::new(
+                    PeerInfo {
                         id: peer_id.clone(),
                         name: display_name(name, &peer_id),
                         color: sanitize_color(color.as_deref()),
@@ -286,11 +374,24 @@ async fn client_loop(socket: WebSocket, state: Arc<AppState>) {
                         camera: false,
                         deaf: false,
                     },
-                    tx: tx.clone(),
-                };
-                let _ = tx.try_send(state.hub.join(&room, peer).to_string());
-                info!(room = %tag(&room), %peer_id, "join");
-                room_id = Some(room);
+                    tx.clone(),
+                    kill.clone(),
+                );
+                match state.hub.join(&room, peer) {
+                    Ok(welcome) => {
+                        let _ = tx.try_send(welcome.to_string());
+                        info!(room = %tag(&room), %peer_id, "join");
+                        room_id = Some(room);
+                    }
+                    Err(reason) => {
+                        // Комната или сервер переполнены — сокету больше
+                        // нечего тут делать: держать его открытым только ради
+                        // повторной попытки войти незачем, а закрыть за собой
+                        // он и сам умеет по получении ошибки.
+                        let _ = tx.try_send(json!({ "t": "error", "message": reason }).to_string());
+                        break;
+                    }
+                }
             }
 
             ClientMsg::Ping { at } => {

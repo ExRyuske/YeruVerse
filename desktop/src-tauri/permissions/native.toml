@@ -1,10 +1,22 @@
 # Команды приложения доступны с локальной страницы по умолчанию, но окно
 # грузится с сервера по https — а для удалённого адреса каждую команду нужно
 # разрешить явно, иначе IPC отвечает «not allowed by ACL».
+#
+# Набор разбит на два: обычные команды и те, что дают власть над самим
+# компьютером (ввод, установка обновления). ACL здесь смотрит только на схему
+# и порт — `localhost`/`127.0.0.1` разрешены на любом порту ради
+# самостоятельного хостинга сервера комнат, и маска не отличит настоящий
+# сервер человека от чужого процесса на другом порту той же машины. Поэтому
+# второй набор — не единственная защита: команды в нём сами перепроверяют
+# происхождение вызова во время выполнения (`is_trusted_origin` в `lib.rs`) —
+# сверяют его не с маской, а с тем единственным адресом, который человек сам
+# сохранил через `set_server`. Разделение на два `[[permission]]` не заменяет
+# эту проверку, а называет вещи — так в capabilities видно, где просто команда,
+# а где рычаг, которому мало пройти ACL.
 
 [[permission]]
 identifier = "allow-native-api"
-description = "Нативные команды YeruVerse: выбор сервера, приём чужого ввода, жизнь комнаты в фоне и звук системы."
+description = "Нативные команды YeruVerse без доступа к самому компьютеру: выбор сервера, жизнь комнаты в фоне, звук системы."
 
 [permission.commands]
 allow = [
@@ -13,6 +25,22 @@ allow = [
   "set_hotkeys",
   "current_server",
   "set_server",
+  "open_url",
+  "set_fullscreen",
+  "update_check",
+  "set_room",
+  "sound_start",
+  "sound_stop",
+  "sound_stats",
+]
+deny = []
+
+[[permission]]
+identifier = "allow-native-api-control"
+description = "Приём чужого ввода и установка обновления — команды, которые сами перепроверяют происхождение вызова поверх ACL (см. `is_trusted_origin`)."
+
+[permission.commands]
+allow = [
   "set_control",
   "input_pause",
   "input_move",
@@ -20,13 +48,6 @@ allow = [
   "input_scroll",
   "input_key",
   "input_release",
-  "open_url",
-  "set_fullscreen",
-  "update_check",
   "update_install",
-  "set_room",
-  "sound_start",
-  "sound_stop",
-  "sound_stats",
 ]
 deny = []
