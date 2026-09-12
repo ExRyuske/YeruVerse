@@ -298,8 +298,13 @@ def commands():
         if part.strip()
     }
 
-    allowed_block = ALLOW_RE.search(acl.read_text())
-    allowed = set(re.findall(r"['\"]([\w]+)['\"]", allowed_block.group("body"))) if allowed_block else set()
+    # ACL разносит команды по нескольким `[[permission]]` — например, отдельно
+    # держит те, что дают власть над компьютером (см. комментарий в самом
+    # native.toml). `.search()` нашёл бы только первый блок `allow = [...]` и
+    # молча потерял остальные, поэтому здесь собираем их все.
+    allowed = set()
+    for allowed_block in ALLOW_RE.finditer(acl.read_text()):
+        allowed.update(re.findall(r"['\"]([\w]+)['\"]", allowed_block.group("body")))
 
     called = {}
     for path in sorted(JS.glob("*.js")):
