@@ -343,6 +343,12 @@ jobs:
           restore-keys: gradle-
       - if: matrix.android
         uses: android-actions/setup-android@v4
+        with:
+          # По умолчанию действие ставит ещё и `tools` — устаревший пакет,
+          # который Google убрал из репозитория SDK; `sdkmanager` падает на
+          # нём с «Failed to find package 'tools'» ещё до сборки APK. NDK сюда
+          # не входит и ставится отдельно, командой ниже.
+          packages: platform-tools
 
       # `gen/android` в репозиторий не входит: он генерируется и тут же
       # правится скриптом — права, Java 17, отступ под системные панели.
