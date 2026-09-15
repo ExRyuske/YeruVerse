@@ -55,10 +55,14 @@ impl Input {
         let allowed = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
         let (a, p) = (Arc::clone(&allowed), Arc::clone(&paused));
-        std::thread::Builder::new()
-            .name("input".into())
-            .spawn(move || worker(rx, a, p))
-            .expect("поток ввода");
+        // Не удалось поднять поток — не валим всё приложение: `send()` ниже и
+        // так отвечает понятной ошибкой, как только у канала не останется
+        // получателя (см. `keys.rs`, где то же самое решается точно так же).
+        if let Err(e) =
+            std::thread::Builder::new().name("input".into()).spawn(move || worker(rx, a, p))
+        {
+            eprintln!("не удалось поднять поток ввода: {e}");
+        }
         Self { allowed, paused, tx: Mutex::new(tx) }
     }
 

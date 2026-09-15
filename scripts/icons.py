@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import pathlib
 import re
 import struct
 import urllib.request
@@ -189,7 +188,6 @@ def app_icons(size: int | None = None, out: str | None = None) -> None:
 VERSION = '6.7.2'
 CDN = f'https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@{VERSION}/svgs/solid'
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUT = ROOT / 'web/js/icons.js'
 NOTICE = ROOT / 'web/vendor/fontawesome/NOTICE.md'
 

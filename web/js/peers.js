@@ -32,6 +32,7 @@ function renderPeers() {
     if (state.peers.has(id)) continue;
     li.remove();
     state.peerEls.delete(id);
+    settings.untrackPeer(id);
   }
 
   for (const p of state.peers.values()) {
@@ -121,7 +122,11 @@ function stateMarks(p) {
 function linkMark(id) {
   const [status, note] = LINKS[mesh.linkState(id)] ?? [];
   if (!note) return null;
-  return markButton({ glyph: 'link', title: note, off: status === BAD, warn: status !== BAD });
+  // «Соединяемся» — это ещё цепочка, которая вот-вот сойдётся, и ей хватает
+  // значка с подсказкой. «Связи нет» — это её потеря, и об этом говорим прямо
+  // словами, а не значком, который придётся сперва навести и прочитать.
+  if (status === BAD) return make('span', { class: 'tag warn', title: note, text: note });
+  return markButton({ glyph: 'link', title: note, warn: true });
 }
 
 /**
@@ -236,7 +241,7 @@ function openPeerCard(id) {
   fillPeerCard();
 }
 
-function closePeerCard() {
+export function closePeerCard() {
   if (!card) return;
   document.removeEventListener('keydown', card.onKey);
   card.back.remove();

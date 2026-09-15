@@ -35,8 +35,26 @@ cd "$root/desktop/src-tauri"
 # сообщением про неоднозначный сертификат.
 keychain=''
 keychains_saved=''
+
+# `$keychains_saved` — список путей к связкам, по одному на строке. Путь может
+# содержать пробел (например, домашний каталог), а разбиение по словам его
+# порвёт, поэтому раскладываем по строкам через позиционные параметры, отключив
+# на время подстановку путей по маске. Аргументы вызова — то, что добавляется к
+# сохранённому списку: новая связка при открытии, ничего при уборке.
+set_keychain_search_list() {
+  ifs_saved="$IFS"
+  IFS='
+'
+  set -f
+  # shellcheck disable=SC2086
+  set -- $keychains_saved "$@"
+  set +f
+  IFS="$ifs_saved"
+  security list-keychains -d user -s "$@"
+}
+
 cleanup() {
-  [ -n "$keychains_saved" ] && security list-keychains -d user -s $keychains_saved
+  [ -n "$keychains_saved" ] && set_keychain_search_list
   [ -n "$keychain" ] && security delete-keychain "$keychain" 2>/dev/null
   return 0
 }
@@ -99,7 +117,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
     # Tauri зовёт `codesign` без `--keychain`, поэтому связка должна стоять в
     # списке поиска — иначе ключа он не найдёт.
     keychains_saved="$(security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//')"
-    security list-keychains -d user -s $keychains_saved "$keychain"
+    set_keychain_search_list "$keychain"
 
     # Имя сертификата и есть identity: по нему `codesign` выбирает ключ.
     # Проверять его через `find-identity` бессмысленно — самоподписанному он

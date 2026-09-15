@@ -636,3 +636,37 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("не удалось запустить приложение");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ok(url: &str) -> tauri::Result<tauri::Url> {
+        Ok(url.parse().unwrap())
+    }
+
+    /// Один источник и путь у адреса могут отличаться — важен только источник.
+    #[test]
+    fn is_trusted_same_origin_ignores_path() {
+        let trusted = TrustedServer::new("http://localhost:5173".into());
+        assert!(is_trusted(&trusted, ok("http://localhost:5173/room/abc?x=1")));
+    }
+
+    #[test]
+    fn is_trusted_rejects_different_port() {
+        let trusted = TrustedServer::new("http://localhost:5173".into());
+        assert!(!is_trusted(&trusted, ok("http://localhost:5174")));
+    }
+
+    #[test]
+    fn is_trusted_rejects_different_scheme() {
+        let trusted = TrustedServer::new("http://localhost:5173".into());
+        assert!(!is_trusted(&trusted, ok("https://localhost:5173")));
+    }
+
+    #[test]
+    fn is_trusted_rejects_unparsable_trusted_state() {
+        let trusted = TrustedServer::new("not a url".into());
+        assert!(!is_trusted(&trusted, ok("http://localhost:5173")));
+    }
+}

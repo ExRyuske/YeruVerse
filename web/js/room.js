@@ -8,6 +8,7 @@ import { addChat, clearChat, sysMsg } from './chat.js';
 import { removeScreen, resetStage, syncScreens } from './stage.js';
 import { announceShares, stopShare } from './shares.js';
 import { enableMic } from './devices.js';
+import { closePeerCard } from './peers.js';
 
 /**
  * Сколько ждём возвращения после обрыва.
@@ -60,6 +61,10 @@ export function join(code) {
 
 /** Полный выход: рвём сокет, гасим WebRTC, забываем комнату. */
 export function leaveRoom() {
+  // Открытая карточка участника переживала бы выход из комнаты: список ниже
+  // стирается вручную, а не перерисовкой, и самой карточке узнать об уходе
+  // неоткуда.
+  closePeerCard();
   for (const kind of [...state.shares.keys()]) stopShare(kind);
   control.revokeAll().catch(() => {});
   // Взятое управление не должно переживать выход: иначе в следующей комнате

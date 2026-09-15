@@ -66,9 +66,16 @@ struct Live {
 }
 
 /// Идущий захват. Пустое поле — не захватываем.
+///
+/// Слот хранит захват вместе с его порядковым номером: `sound_stop` дожидается
+/// остановки асинхронно, и пока оно ждёт, `sound_start` может успеть поставить
+/// на слот уже следующий захват. Без номера финальный `take()` в `sound_stop`
+/// снёс бы этот новый захват вместо того, что оно на самом деле остановило, —
+/// и тот остался бы висеть в памяти без способа его когда-либо остановить.
 #[derive(Default)]
 pub struct Sound {
-    live: Mutex<Option<Live>>,
+    live: Mutex<Option<(u64, Live)>>,
+    next_id: AtomicU64,
     /// Сколько байт мы отправили странице с начала захвата.
     ///
     /// Нужно ровно затем, чтобы разделить две беды, которые снаружи выглядят
@@ -113,7 +120,7 @@ pub async fn sound_start(
     // секунды: команда идёт на асинхронном исполнителе, и без этого
     // блокирующее ожидание держало бы там же рабочий поток — тот самый, на
     // котором крутятся и другие команды, включая `fetch` для этого же канала.
-    let previous = state.live.lock().unwrap().take().map(|live| (live.stop, live.finished));
+    let previous = state.live.lock().unwrap().take().map(|(_, live)| (live.stop, live.finished));
     let sent = Arc::clone(&state.sent);
 
     let live = tauri::async_runtime::spawn_blocking(move || {
@@ -136,7 +143,8 @@ pub async fn sound_start(
     .await
     .map_err(|e| e.to_string())??;
 
-    *state.live.lock().unwrap() = Some(live);
+    let id = state.next_id.fetch_add(1, Ordering::Relaxed);
+    *state.live.lock().unwrap() = Some((id, live));
     Ok(())
 }
 
@@ -156,8 +164,12 @@ const WAIT_STOP: std::time::Duration = std::time::Duration::from_secs(6);
 pub async fn sound_stop(state: tauri::State<'_, Sound>) -> Result<(), String> {
     // Ручку берём копией, а не забираем: пока идёт остановка, о ней должен
     // узнать и тот, кто спросит следом.
-    let Some((stop, finished)) =
-        state.live.lock().unwrap().as_ref().map(|l| (l.stop.clone(), Arc::clone(&l.finished)))
+    let Some((id, stop, finished)) = state
+        .live
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|(id, l)| (*id, l.stop.clone(), Arc::clone(&l.finished)))
     else {
         return Ok(());
     };
@@ -165,7 +177,13 @@ pub async fn sound_stop(state: tauri::State<'_, Sound>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || await_finish(&finished))
         .await
         .map_err(|e| e.to_string())?;
-    state.live.lock().unwrap().take();
+
+    // Снимаем со слота только то, что сами остановили: за время ожидания
+    // `sound_start` мог успеть поставить туда уже следующий захват.
+    let mut guard = state.live.lock().unwrap();
+    if matches!(&*guard, Some((cur, _)) if *cur == id) {
+        guard.take();
+    }
     Ok(())
 }
 
@@ -187,7 +205,7 @@ fn await_finish(finished: &(Mutex<bool>, std::sync::Condvar)) {
 /// Здесь не ждём: это главный поток, и задерживать на нём загрузку страницы
 /// ради подтверждения нельзя.
 pub fn stop(state: &Sound) {
-    if let Some(live) = state.live.lock().unwrap().take() {
+    if let Some((_, live)) = state.live.lock().unwrap().take() {
         let _ = live.stop.send(());
     }
 }

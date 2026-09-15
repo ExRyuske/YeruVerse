@@ -337,8 +337,13 @@ export class Swarm extends Emitter {
       if (now - f.ts > REQ_TIMEOUT) t.inflight.delete(i);
     }
 
+    // Загрузку пира считаем по всем передачам разом, а не только по этой:
+    // иначе при нескольких одновременных передачах один и тот же пир получал
+    // бы до MAX_INFLIGHT запросов от каждой, а не MAX_INFLIGHT суммарно.
     const load = new Map();
-    for (const f of t.inflight.values()) load.set(f.id, (load.get(f.id) ?? 0) + 1);
+    for (const other of this.transfers.values()) {
+      for (const f of other.inflight.values()) load.set(f.id, (load.get(f.id) ?? 0) + 1);
+    }
 
     for (let i = 0; i < t.meta.chunks; i++) {
       if (hasBit(t.bits, i) || t.inflight.has(i)) continue;

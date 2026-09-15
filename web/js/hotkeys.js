@@ -193,8 +193,9 @@ export class Hotkeys {
       const onMouse = (e) => {
         const combo = fromMouse(e);
         // Голый щелчок мимо: он не назначение, а обычный щелчок — им человек
-        // и отменяет запись, ткнув в сторону.
-        if (!usable(combo)) return;
+        // и отменяет запись, ткнув в сторону. Не перехватываем его — пусть
+        // дойдёт, куда шёл (например, закроет настройки щелчком по фону).
+        if (!usable(combo)) return void finish(null);
         e.preventDefault();
         e.stopPropagation();
         finish(combo);

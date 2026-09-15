@@ -183,7 +183,12 @@ impl Hub {
     pub fn leave(&self, room_id: &str, peer_id: &str) {
         let mut rooms = self.rooms.lock().unwrap();
         let Some(room) = rooms.get_mut(room_id) else { return };
-        room.peers.remove(peer_id);
+        // `sweep()` может уже убрать молчащего участника и разбудить его сокет —
+        // тогда `client_loop` на выходе зовёт `leave()` второй раз. Без этой
+        // проверки в комнату уйдёт дублирующий `peer_leave` для уже ушедшего id.
+        if room.peers.remove(peer_id).is_none() {
+            return;
+        }
 
         if room.peers.is_empty() {
             rooms.remove(room_id);

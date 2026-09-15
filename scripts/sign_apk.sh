@@ -25,6 +25,11 @@ if [ -z "$raw" ]; then
   exit 1
 fi
 
+if [ ! -f "${KEYSTORE:-}" ]; then
+  echo "не нашли файл ключа — задайте KEYSTORE" >&2
+  exit 1
+fi
+
 "$tools/zipalign" -f -p 4 "$raw" "$out"
 "$tools/apksigner" sign --ks "$KEYSTORE" --ks-pass "pass:${KEYSTORE_PASS:-}" "$out"
 echo "APK: $out"
