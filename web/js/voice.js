@@ -3,7 +3,7 @@
 // кто сейчас говорит.
 
 import { Emitter } from './events.js';
-import { playback, meter, canChooseOutput, setOutput } from './audio.js';
+import { playback, meter, gate, canChooseOutput, setOutput } from './audio.js';
 import { Denoiser, SILENT_OUT, isModel, modelTitle, modelWeight } from './denoise.js';
 
 /** Модели, которые в этой вкладке уже поднимались: про них молчим. */
@@ -11,13 +11,26 @@ const loaded = new Set();
 
 const HOLD_MS = 400;       // сколько держим индикатор после конца фразы
 
-// Пороги «говорит / молчит» по среднеквадратичному уровню. Настраивать их
-// руками было нечем: RNNoise и так отдаёт в паузах почти тишину, а ползунок
-// лишь сбивал с толку.
-// Пороги низкие намеренно: индикатор должен загораться на любом звуке, а не
-// только на уверенной речи. Ниже — уже цифровая тишина и шум самого тракта.
-const SPEAK_ON = 0.012;
-const SPEAK_OFF = 0.006;
+// Пороги «говорит / молчит» по среднеквадратичному уровню — они только для
+// индикатора. Настраивать их руками было нечем: RNNoise и так отдаёт в паузах
+// почти тишину, а ползунок лишь сбивал с толку.
+// Пороги стоят у самой границы цифровой тишины намеренно: точка должна
+// загораться на любом звуке, а не только на уверенной речи — тише уже некуда,
+// там только шум самого тракта.
+const SPEAK_ON = 0.0012;
+const SPEAK_OFF = 0.0006;
+
+// Порог «на входе действительно что-то есть» для присмотра за шумодавом
+// (`_watchDenoiser` ниже) — свой, и не тот же, что у индикатора.
+//
+// Один порог на оба дела держался, пока оба стояли на уверенной речи, но это
+// было совпадением, не замыслом: у индикатора он с тех пор опущен почти до
+// цифровой тишины, чтобы мигать на любой звук, — а присмотру за шумодавом
+// нужен ровно обратный порог, повыше. Клавиатура и вентилятор — это то, что
+// модель обязана давить до тишины на выходе, и именно такой звук должен
+// проходить порог здесь: опусти его вслед за индикатором, и присмотр начинал
+// бы засчитывать саму работу шумодава за его поломку — что и происходило.
+const DENOISE_INPUT = 0.012;
 
 export class Voice extends Emitter {
   constructor(mesh, settings) {
@@ -39,7 +52,7 @@ export class Voice extends Emitter {
       if (key === 'voiceVolume' || key === 'peerVolume') this.applyVolumes();
       if (key === 'outputDevice') this.applySink();
       if (key === 'monitor') this._applyMonitor();
-      if (['micDevice', 'denoise'].includes(key)) this._micChanged();
+      if (['micDevice', 'denoise', 'gate'].includes(key)) this._micChanged();
     });
 
     // Выбранное устройство вывода должно действовать с первой секунды, а не
@@ -202,6 +215,10 @@ export class Voice extends Emitter {
    * Пропускает микрофон через выбранную модель. Если она не поднялась — нет
    * AudioWorklet, движок не дал собрать WebAssembly, не отдался файл, — отдаём
    * сырой поток: лучше шумный голос, чем никакого.
+   *
+   * Последний шаг — gate, и он общий для обоих путей: закрывать эфир, пока
+   * человек молчит, дело не модели шумодава, а того, что уходит наружу, а туда
+   * уходит что с моделью, что без неё.
    */
   async _process(raw) {
     this._rawMeter?.close();
@@ -212,34 +229,81 @@ export class Voice extends Emitter {
       // понять, слышит ли микрофон хоть что-то.
       this._rawMeter = meter(raw);
       this.chain = null;
-      return raw;
+      // Gate снаружи получит узел этого же замера, а не сырой поток заново:
+      // второй `createMediaStreamSource` на одном локальном потоке — то, что
+      // уже подводило на WebKit (см. `gate()` в audio.js). Замер не поднялся —
+      // отдаём поток как есть, gate заведёт свой узел сам.
+      return this._rawMeter?.node ?? raw;
     };
 
     const kind = this.settings.get('denoise');
+    let out;
     if (!isModel(kind)) {
       this.denoising = kind;
-      return bare();
+      out = bare();
+    } else {
+      try {
+        // Тяжёлую модель качают один раз, но этот раз занимает секунды: пока
+        // она едет, микрофон в эфир не уходит, и молчание надо объяснить.
+        if (modelWeight(kind) && !loaded.has(kind)) this.emit('denoise-loading', { kind });
+        this.chain = await Denoiser.create(kind, raw);
+        loaded.add(kind);
+        this.denoising = kind;
+        out = this.chain.stream;
+      } catch (e) {
+        // Модель не поднялась — голос идёт как есть. Запасным вариантом тут
+        // стоял шумодав движка, но просьба к движку никогда не остаётся при
+        // микрофоне: телефон на неё переводит в разговорный режим весь звук
+        // разом, вместе с воспроизведением. Платить чужим голосом за свой шум
+        // не стоит — молчать об этом тем более нельзя, поэтому человеку скажут.
+        console.warn(`${modelTitle(kind)} недоступен — подавления шума не будет:`, e);
+        this.denoising = 'off';
+        this.emit('denoise-fallback', { from: kind, to: this.denoising });
+        out = bare();
+      }
     }
+    return this._gated(out);
+  }
 
-    try {
-      // Тяжёлую модель качают один раз, но этот раз занимает секунды: пока она
-      // едет, микрофон в эфир не уходит, и молчание надо объяснить.
-      if (modelWeight(kind) && !loaded.has(kind)) this.emit('denoise-loading', { kind });
-      this.chain = await Denoiser.create(kind, raw);
-      loaded.add(kind);
-      this.denoising = kind;
-      return this.chain.stream;
-    } catch (e) {
-      // Модель не поднялась — голос идёт как есть. Запасным вариантом тут стоял
-      // шумодав движка, но просьба к движку никогда не остаётся при микрофоне:
-      // телефон на неё переводит в разговорный режим весь звук разом, вместе с
-      // воспроизведением. Платить чужим голосом за свой шум не стоит — молчать
-      // об этом тем более нельзя, поэтому человеку скажут.
-      console.warn(`${modelTitle(kind)} недоступен — подавления шума не будет:`, e);
-      this.denoising = 'off';
-      this.emit('denoise-fallback', { from: kind, to: this.denoising });
-      return bare();
+  /**
+   * Заворачивает готовый тракт в gate — общий последний шаг для всех путей.
+   * Выключен в настройках — оборачивать нечем и незачем: отдаём тракт как
+   * есть, не заводя лишний узел Web Audio ради никем не спрошенного шага.
+   *
+   * `input` — поток или, от `bare()`, уже готовый узел её же замера уровня
+   * (см. там, почему). Если gate выключен, узел без него не нужен вовсе — но
+   * отдать наружу саму дорожку, а не узел графа, всё равно надо: `mesh` ждёт
+   * `MediaStream`, а не `AudioNode`. Тогда берём `this.raw` напрямую — это тот
+   * же поток, с которого узел и снят.
+   *
+   * Заодно заводит замер уже на выходе — на том самом потоке, что уходит
+   * собеседникам. Он и держит индикатор «говорит» у себя (см. `_sample`):
+   * меряя вход, индикатор светился бы от одной комнатной тишины пополам с
+   * шумом самого микрофона, а собеседники в это время слышали бы настоящую
+   * тишину — ровно то, что уже случалось до этой правки.
+   */
+  _gated(input) {
+    this._gate?.close();
+    // Может уже указывать на `_rawMeter` (см. ветку без gate ниже) — тот к
+    // этому моменту либо пересоздан заново, либо уже закрыт сам, и повторное
+    // закрытие здесь безопасно: и `meter`, и `tap` глотают исключение отвала
+    // от уже отсоединённого узла.
+    this._sentMeter?.close();
+    this._gate = this.settings.get('gate') ? gate(input) : null;
+
+    if (this._gate) {
+      this._sentMeter = meter(this._gate.stream);
+      return this._gate.stream;
     }
+    if (input instanceof MediaStream) {
+      this._sentMeter = meter(input);
+      return input;
+    }
+    // Gate выключен, а на входе узел от `bare()` — то же самое, что уже
+    // меряет `_rawMeter`. Второй узел на том же потоке не заводим: делимся
+    // готовым замером, а не тянем ещё один `createMediaStreamSource`.
+    this._sentMeter = this._rawMeter;
+    return this.raw;
   }
 
   /**
@@ -274,7 +338,7 @@ export class Voice extends Emitter {
     if (this.chain.outLevel() > SILENT_OUT) return void (this._deaf = 0);
     // Молчат оба: это просто тишина. Она ни о чём не говорит и понемногу
     // списывает накопленное — иначе редкие шумы сложились бы в приговор.
-    if (this.chain.level() < SPEAK_ON) {
+    if (this.chain.level() < DENOISE_INPUT) {
       this._deaf = Math.max(0, (this._deaf ?? 0) - 1);
       return;
     }
@@ -294,7 +358,7 @@ export class Voice extends Emitter {
 
     this.chain = null;
     this._rawMeter = meter(this.raw);
-    this.stream = this.raw;
+    this.stream = this._gated(this.raw);
     this.denoising = 'off';
     await this.mesh.replaceStream('mic', this.stream);
     this._applyMonitor();
@@ -333,6 +397,10 @@ export class Voice extends Emitter {
     this.chain = null;
     this._rawMeter?.close();
     this._rawMeter = null;
+    this._gate?.close();
+    this._gate = null;
+    this._sentMeter?.close();
+    this._sentMeter = null;
     this.raw = null;
     this.stream = null;
     this.enabled = false;
@@ -452,11 +520,19 @@ export class Voice extends Emitter {
 
     this._watchDenoiser();
 
-    // Свой уровень берём до подавления — иначе индикатор молчал бы вместе
-    // с RNNoise, и было бы не понять, слышит ли микрофон вообще что-нибудь.
+    // Полоска уровня в настройках — до подавления: иначе она молчала бы
+    // вместе с RNNoise, и было бы не понять, слышит ли микрофон вообще
+    // что-нибудь. У этой цифры одна работа — диагностика микрофона.
     const own = this.chain ?? this._rawMeter;
     this.level = own && this.enabled && !this.muted ? own.level() : 0;
-    if (own) mark('self', this.level);
+
+    // А вот метка «говорит» — на том, что действительно уходит собеседникам:
+    // после подавления и после gate, тем же путём, каким меряются и они сами
+    // (`r.meter` ниже). Смерь она вход, как полоска уровня, метка тлела бы не
+    // переставая от шума комнаты — у собеседников-то в это время тишина.
+    if (this._sentMeter) {
+      mark('self', this.enabled && !this.muted ? this._sentMeter.level() : 0);
+    }
 
     // Заглушённых участников не слышим мы, а не они молчат: индикатор гаснет.
     for (const [id, r] of this.remotes) {

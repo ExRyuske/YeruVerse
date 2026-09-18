@@ -64,6 +64,7 @@ function wireSettings() {
   const denoise = ui('#set-denoise');
   denoise.value = settings.get('denoise');
   denoise.onchange = () => settings.set('denoise', denoise.value);
+  bindCheck('#set-gate', 'gate');
 
   ui('#pick-mic').onchange = () => settings.set('micDevice', ui('#pick-mic').value);
   ui('#pick-cam').onchange = () => settings.set('camDevice', ui('#pick-cam').value);
@@ -121,6 +122,14 @@ function wireStream() {
     ui('#set-bitrate').value = settings.get('streamBitrate');
     ui('#out-fps').textContent = `${settings.get('streamFps')} к/с`;
     ui('#out-bitrate').textContent = `${settings.get('streamBitrate')} Мбит/с`;
+
+    // Разрешение, кадры и битрейт — это и есть заготовка: у неё уже есть
+    // видимое имя в самом пресете, а числами он расписывается только на
+    // «Своё», где имени взять неоткуда.
+    const isCustom = preset.value === 'custom';
+    ui('#row-height').hidden = !isCustom;
+    ui('#row-fps').hidden = !isCustom;
+    ui('#row-bitrate').hidden = !isCustom;
   };
 
   preset.onchange = () => {
@@ -209,8 +218,8 @@ export function wireHotkeys() {
  * Одиночная клавиша там, где сочетания забираются у системы.
  *
  * Обычно приложение за клавиатурой просто смотрит, и назначенная клавиша
- * продолжает работать везде. Но где смотреть нечем — на Linux, и на macOS, пока
- * не выдан мониторинг ввода, — сочетание приходится регистрировать у системы, а
+ * продолжает работать везде. Но где смотреть нечем — на macOS, пока не выдан
+ * мониторинг ввода, — сочетание приходится регистрировать у системы, а
  * она отдаёт клавишу владельцу целиком: в игре и в любой другой программе та
  * перестаёт работать вовсе. С модификатором это незаметно (уходит сочетание, а
  * не клавиша), поэтому говорим только про одиночные — и говорим сразу, а не
@@ -308,7 +317,7 @@ const PATHS = {
   host: 'напрямую',
   srflx: 'напрямую',
   prflx: 'напрямую',
-  relay: 'через TURN',
+  relay: 'через сервер-посредник',
 };
 
 let painted = '';
@@ -339,21 +348,21 @@ function linkRows() {
 
   rows.push(
     state.config.turn
-      ? row(OK, 'TURN', 'есть — соединятся все')
-      : row(WARN, 'TURN', 'нет — за строгим NAT участник не соединится')
+      ? row(OK, 'Обходной путь', 'есть — если напрямую не выйдет, звонок всё равно соединится')
+      : row(WARN, 'Обходной путь', 'нет — в мобильных сетях и офисных сетях соединение может не установиться')
   );
 
   // «Защищённый контекст» — это термин браузера, и в строке диагностики он
   // спрашивает больше, чем отвечает. Пишем то, ради чего строка здесь стоит.
   rows.push(
     window.isSecureContext
-      ? row(OK, 'Устройства', 'доступны — страница по https')
-      : row(BAD, 'Устройства', 'без https браузер не даёт ни микрофон, ни камеру')
+      ? row(OK, 'Устройства', 'доступны — соединение защищено')
+      : row(BAD, 'Устройства', 'соединение не защищено — браузер не даёт ни микрофон, ни камеру')
   );
 
-  if (!native.available) rows.push(row(OK, 'Оболочка', 'обычный браузер'));
-  else if (native.error) rows.push(row(BAD, 'Оболочка', `мост не отвечает: ${native.error}`));
-  else rows.push(row(OK, 'Оболочка', `приложение — ${native.caps.platform}`));
+  if (!native.available) rows.push(row(OK, 'Программа', 'обычный браузер'));
+  else if (native.error) rows.push(row(BAD, 'Программа', `не отвечает: ${native.error}`));
+  else rows.push(row(OK, 'Программа', `приложение — ${native.caps.platform}`));
 
   // Приём чужого ввода бывает только в настольной версии; в браузере эта строка
   // была бы про то, чего здесь нет и быть не может.

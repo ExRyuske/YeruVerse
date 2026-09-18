@@ -181,7 +181,13 @@ function renderViews() {
     );
     host.insertBefore(button, vol);
   }
-  if (!state.view) vol?.remove();
+
+  // Регулятор — только там, где есть что регулировать. Не частный случай про
+  // собственную трансляцию: правило общее — нет звуковой дорожки, нечего и
+  // крутить, — и оно же само собой прячет ползунок у своего экрана, раз
+  // показ себе идёт без звука (см. `ownDisplay` в `shares.js`).
+  const audible = !!state.view && (state.screens.get(state.view)?.getAudioTracks().length ?? 0) > 0;
+  if (!audible) vol?.remove();
   else if (vol) vol.sync();
   else host.appendChild(streamVolumeSlider());
 }
@@ -211,6 +217,9 @@ export function acceptScreen(id, stream, kind) {
   if (hidden.has(key)) mesh.send(id, { ns: 'pause', kind, on: true });
 }
 
+/** Потоки, за составом дорожек которых уже следим — см. ниже про `addtrack`. */
+const tracked = new WeakSet();
+
 export function addScreen(key, stream) {
   // Тот же поток мог уже лечь под другим ключом: подпись отправителя приходит
   // отдельно от дорожек, и до неё вид приходится угадывать. Старую запись
@@ -221,6 +230,19 @@ export function addScreen(key, stream) {
   }
 
   state.screens.set(key, stream);
+
+  // Состав дорожек меняется и после того, как поток уже показан, — например,
+  // звук собеседника на macOS добирается оболочкой отдельным запросом и
+  // приезжает позже картинки. Без своей подписки на это заметил бы только
+  // случайный повод перерисовать ряд по другой причине — например, регулятор
+  // громкости (`renderViews`, он смотрит на живые дорожки) молчал бы до тех
+  // пор. Подписываемся раз на поток, не на ключ: один и тот же поток может
+  // сменить ключ (см. цикл выше) или прийти сюда повторно после обрыва связи.
+  if (!tracked.has(stream)) {
+    tracked.add(stream);
+    stream.addEventListener('addtrack', () => render('views'));
+    stream.addEventListener('removetrack', () => render('views'));
+  }
 
   // Поток может смениться (перезапустили демонстрацию) — обновим плеер на месте.
   if (state.view === key && state.player instanceof StreamPlayer) {

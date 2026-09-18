@@ -388,49 +388,7 @@ fn key_of(code: &str) -> Option<Key> {
 /// напечатать, решит раскладка того компьютера — как и должно быть. Таблица
 /// номеров общая со слежением за клавиатурой (`codes.rs`): разъехавшись, они
 /// дали бы сочетание, которое срабатывает не на ту клавишу, что назначили.
-#[cfg(all(desktop, any(target_os = "windows", target_os = "macos")))]
+#[cfg(desktop)]
 fn main_block(code: &str) -> Option<Key> {
     crate::codes::number_of(code).map(Key::Other)
-}
-
-/// Там, где номера клавиш зависят от драйвера и сервера окон, остаётся прежний
-/// путь — символ латинской раскладки. Нажатие и отпускание он различает, и
-/// двойных букв здесь не бывало.
-#[cfg(all(desktop, not(any(target_os = "windows", target_os = "macos"))))]
-fn main_block(code: &str) -> Option<Key> {
-    if let Some(c) = ascii_of(code) {
-        return Some(Key::Unicode(c));
-    }
-    let c = match code {
-        "Minus" => '-',
-        "Equal" => '=',
-        "BracketLeft" => '[',
-        "BracketRight" => ']',
-        "Backslash" => '\\',
-        "Semicolon" => ';',
-        "Quote" => '\'',
-        "Backquote" => '`',
-        "Comma" => ',',
-        "Period" => '.',
-        "Slash" => '/',
-        _ => return None,
-    };
-    Some(Key::Unicode(c))
-}
-
-/// Буква или цифра, нарисованная на клавише в латинской раскладке.
-#[cfg(all(desktop, not(any(target_os = "windows", target_os = "macos"))))]
-fn ascii_of(code: &str) -> Option<char> {
-    let one = |s: &str| {
-        let mut it = s.chars();
-        let c = it.next()?;
-        it.next().is_none().then_some(c)
-    };
-    if let Some(letter) = code.strip_prefix("Key") {
-        return one(letter).filter(char::is_ascii_alphabetic).map(|c| c.to_ascii_lowercase());
-    }
-    if let Some(digit) = code.strip_prefix("Digit") {
-        return one(digit).filter(char::is_ascii_digit);
-    }
-    None
 }

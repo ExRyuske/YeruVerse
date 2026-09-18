@@ -114,6 +114,9 @@
               <option value="off">Без подавления</option>
             </select>
           </label>
+          <label class="check">
+            <input id="set-gate" type="checkbox"> Приглушать, пока молчите
+          </label>
           <label class="check"><input id="set-monitor" type="checkbox"> Слышать себя</label>
           <p class="muted small">Уровень: <span id="mic-level" class="mono">—</span></p>
         </div>
@@ -135,13 +138,13 @@
           <label class="field">Профиль качества
             <select id="set-quality"></select>
           </label>
-          <label class="field">Разрешение
+          <label class="field" id="row-height">Разрешение
             <select id="set-height"></select>
           </label>
-          <label class="field">Кадров в секунду <output id="out-fps"></output>
+          <label class="field" id="row-fps">Кадров в секунду <output id="out-fps"></output>
             <input id="set-fps" type="range" min="10" max="120" step="5">
           </label>
-          <label class="field">Битрейт <output id="out-bitrate"></output>
+          <label class="field" id="row-bitrate">Битрейт <output id="out-bitrate"></output>
             <input id="set-bitrate" type="range" min="1" max="25" step="0.5">
           </label>
           <label class="field">Приоритет

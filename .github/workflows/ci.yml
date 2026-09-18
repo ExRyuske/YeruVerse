@@ -238,18 +238,6 @@ jobs:
               desktop/src-tauri/target/**/release/bundle/**/*.exe
               desktop/src-tauri/target/**/release/bundle/**/*.msi
               desktop/src-tauri/target/**/release/bundle/**/*.sig
-          # Не `ubuntu-latest`: AppImage работает там, где glibc не старее той,
-          # на которой он собран, и собирать его надо на самой старой системе,
-          # которую мы согласны поддерживать. С `latest` пакет молча переставал
-          # бы запускаться на всём, что старше очередного раннера.
-          - name: Linux
-            os: ubuntu-22.04
-            linux: true
-            artifacts: |
-              desktop/src-tauri/target/**/release/bundle/**/*.AppImage
-              desktop/src-tauri/target/**/release/bundle/**/*.deb
-              desktop/src-tauri/target/**/release/bundle/**/*.rpm
-              desktop/src-tauri/target/**/release/bundle/**/*.sig
           - name: Android
             os: ubuntu-latest
             android: true
@@ -294,17 +282,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
-          # Своя полка на каждую запись матрицы, а не одна на всю задачу.
-          #
-          # По умолчанию ключ кэша — имя задачи и хост rustc, а у Linux и
-          # Android совпадает и то и другое: задача одна, `app`, хост один,
-          # x86_64-linux. Build-скрипты при этом собираются под хост даже в
-          # сборке под Android и лежат в том же `target/release/build`. Linux
-          # собирается на 22.04 ради старой glibc (см. матрицу), Android — на
-          # `latest`, и Linux поднимал кэш Android и запускал оттуда готовые
-          # build-скрипты, слинкованные с glibc 2.39, — чтобы упасть на первом
-          # же крейте с «GLIBC_2.39 not found». Система в ключе — затем, чтобы
-          # беда не вернулась, когда запись переедет на другой раннер.
+          # Своя полка на каждую запись матрицы, а не одна на всю задачу: по
+          # умолчанию ключ кэша — имя задачи и хост rustc, а у нескольких
+          # систем в одной задаче `app` это разошлось бы неверно.
           key: ${{ matrix.name }}-${{ matrix.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
           # Сохранять кэш и тогда, когда сборка не дошла до конца. По
@@ -318,14 +298,6 @@ jobs:
       - uses: cargo-bins/cargo-binstall@main
       - run: cargo binstall -y tauri-cli@^2
         shell: bash
-
-      # Системные библиотеки Linux — тем же скриптом, каким их ставит человек
-      # у себя. Разойдись эти два пути, и сборка «работает у меня» падала бы на
-      # сервере по причине, которой в workflow не видно; ровно поэтому и
-      # `build_app.sh` один на обоих.
-      - if: matrix.linux
-        name: system libraries
-        run: scripts/linux_deps.sh
 
       - if: matrix.android
         uses: actions/setup-java@v6
@@ -434,8 +406,7 @@ jobs:
           test "$got" = "$TAG"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Cargo.toml Cargo.lock desktop/src-tauri/Cargo.toml desktop/src-tauri/Cargo.lock \
-            packaging/arch/PKGBUILD
+          git add Cargo.toml Cargo.lock desktop/src-tauri/Cargo.toml desktop/src-tauri/Cargo.lock
           git commit -m "chore(release): $TAG"
           git tag --annotate "$TAG" --message "Release $TAG"
           git push origin HEAD:main "$TAG"
@@ -464,6 +435,3 @@ jobs:
             dist/**/*.msi
             dist/**/*.apk
             dist/**/*.tar.gz
-            dist/**/*.AppImage
-            dist/**/*.deb
-            dist/**/*.rpm

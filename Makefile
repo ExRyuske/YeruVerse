@@ -1,7 +1,7 @@
 # Короткие команды для типовых задач. Всё то же самое можно набрать руками —
 # см. README, здесь просто собраны рабочие сочетания флагов.
 
-.PHONY: help server app app-debug arch linux-deps linux-check android android-all android-prepare sign-apk mac-cert icons icons-ui denoiser updater-key updater-pubkey docker docker-run deploy check browser clean
+.PHONY: help server app app-debug android android-all android-prepare sign-apk mac-cert icons icons-ui denoiser updater-key updater-pubkey docker docker-run deploy check browser clean
 
 APP_DIR := desktop/src-tauri
 ANDROID_HOME ?= $(or $(ANDROID_SDK_ROOT),$(HOME)/Library/Android/sdk)
@@ -18,11 +18,8 @@ DIST := dist
 
 help:
 	@echo "make server      — собрать и запустить сервер (веб-версия на :8080)"
-	@echo "make app         — собрать установщик под текущую систему (.dmg/.msi/.AppImage)"
+	@echo "make app         — собрать установщик под текущую систему (.dmg/.msi)"
 	@echo "make app-debug   — запустить приложение без упаковки"
-	@echo "make linux-deps  — поставить системные библиотеки для сборки на Linux"
-	@echo "make linux-check — сказать, чего для сборки на Linux не хватает"
-	@echo "make arch        — собрать и поставить пакет на Arch/CachyOS (pacman)"
 	@echo "make android     — собрать и подписать APK под arm64 (нужны ANDROID_HOME и NDK_HOME)"
 	@echo "make android-all — то же, но под все архитектуры (дольше в четыре раза)"
 	@echo "make icons       — перерисовать иконки приложения"
@@ -56,31 +53,6 @@ app: tauri-cli $(UPDATER_KEY) $(APP_DEPS)
 
 app-debug:
 	cd $(APP_DIR) && cargo run
-
-# Пакет для Arch и всего, что из него растёт, — CachyOS в том числе.
-#
-# AppImage от `make app` на Arch тоже запускается, но живёт сам по себе: его не
-# видит меню приложений и не удаляет pacman. Здесь обычный пакет — со значком,
-# строкой в меню и нормальным удалением.
-#
-# `-si` вместо `-s`: собрать и тут же поставить. Собирать пакет, чтобы потом
-# искать его руками в подкаталоге, никто не хочет.
-arch:
-	@command -v makepkg >/dev/null || { echo "makepkg есть только на Arch и его потомках"; exit 1; }
-	cd packaging/arch && makepkg -si
-
-# Системные библиотеки для сборки под Linux — на любом дистрибутиве.
-#
-# Логика в скрипте, а не здесь: она длиннее десятка строк и должна быть
-# одинаковой у человека и у CI, как у `build_app.sh`. Истина там — модули
-# pkg-config, а не имена пакетов: имён у одной библиотеки столько же, сколько
-# дистрибутивов, а модуль называется везде одинаково.
-linux-deps:
-	scripts/linux_deps.sh
-
-# То же самое, но ничего не ставя: сказать, чего не хватает, и уйти.
-linux-check:
-	scripts/linux_deps.sh --check
 
 # Только arm64: все живые телефоны на нём, а Rust собирается под каждую
 # архитектуру заново — на остальных трёх уходит вчетверо больше времени.
