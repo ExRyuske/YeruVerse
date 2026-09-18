@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=YeruVerse
-Comment=Экран, голос и клавиатура — напрямую между людьми
-Exec=yeruverse
-Icon=yeruverse
-Categories=Network;AudioVideo;
-StartupWMClass=YeruVerse
-Terminal=false
