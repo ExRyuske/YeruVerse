@@ -29,8 +29,12 @@
 * **Полоса звука.** Стоит вебвью открыть микрофон, как система уводит весь звук
   разом в «разговорный» режим — полоса режется до телефонной, и собеседники
   начинают звучать как из трубки. Служба возвращает режим обратно.
-* **Правило для R8.** В релизной сборке минификация включена, а метод моста
-  зовётся только по имени из JNI — без правила он бы просто исчез, и мост
+* **Полный экран.** Страница растягивает сцену сама, но системные панели —
+  часы сверху и «назад — домой — недавние» снизу — ей не убрать: в
+  Android-вебвью нет Fullscreen API для элементов. Их прячет активность по
+  просьбе оболочки (`set_fullscreen` в `src/lib.rs`).
+* **Правило для R8.** В релизной сборке минификация включена, а методы моста
+  зовутся только по имени из JNI — без правила он бы просто исчез, и мост
   отвалился бы молча и только в релизе.
 """
 
@@ -79,12 +83,14 @@ PROGUARD = """# Файл создаёт scripts/android_patch.py — правк�
 # следующей генерации проекта. Подхватывается сам: релизная сборка Tauri
 # складывает в proguardFiles все *.pro из каталога app.
 #
-# `setRoomActive` не зовут ниоткуда из Java — его зовёт оболочка из Rust через
-# JNI, по имени (см. desktop/src-tauri/src/room.rs). Без этой строчки R8 метод
-# переименует или выбросит, и комната перестанет переживать сворачивание —
-# молча и только в релизной сборке.
+# `setRoomActive` и `setFullscreen` не зовут ниоткуда из Java — их зовёт
+# оболочка из Rust через JNI, по имени (см. desktop/src-tauri/src/room.rs и
+# lib.rs). Без этих строчек R8 методы переименует или выбросит, и комната
+# перестанет переживать сворачивание, а полный экран — прятать панели. Молча и
+# только в релизной сборке.
 -keepclassmembers class **.MainActivity {
     public void setRoomActive(boolean, boolean);
+    public void setFullscreen(boolean);
 }
 """
 
@@ -175,6 +181,9 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 // Правку накатывает scripts/android_patch.py — руками она переживёт ровно до
 // следующей генерации проекта.
@@ -194,6 +203,8 @@ import android.util.Log
 class MainActivity : TauriActivity() {{
   /** Говорила ли с нами страница. Пока нет — работает старая догадка. */
   private var bridged = false
+  /** Прятать ли системные панели — помним сами, см. onWindowFocusChanged. */
+  private var fullscreen = false
 
   override fun onCreate(savedInstanceState: Bundle?) {{
     super.onCreate(savedInstanceState)
@@ -243,6 +254,37 @@ class MainActivity : TauriActivity() {{
     }} catch (e: Throwable) {{
       Log.w("YeruVerse", "служба комнаты не поднялась", e)
     }}
+  }}
+
+  /**
+   * Полный экран: спрятать системные панели или вернуть их. Приходит из
+   * оболочки (`set_fullscreen` в desktop/src-tauri/src/lib.rs), уже на потоке
+   * Android.
+   *
+   * Панели выходят по свайпу от края и через пару секунд уходят сами — иначе
+   * из приложения в полном экране было бы не выйти жестом «назад» или «домой».
+   */
+  fun setFullscreen(on: Boolean) {{
+    fullscreen = on
+    applyBars()
+  }}
+
+  private fun applyBars() {{
+    val bars = WindowCompat.getInsetsController(window, window.decorView)
+    if (fullscreen) {{
+      bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+      bars.hide(WindowInsetsCompat.Type.systemBars())
+    }} else {{
+      bars.show(WindowInsetsCompat.Type.systemBars())
+    }}
+  }}
+
+  // Вернувшись из шторки, из недавних или после диалога, система показывает
+  // панели снова. Страница об этом не узнаёт и считает, что полный экран ещё
+  // идёт, — поэтому прячем их заново сами.
+  override fun onWindowFocusChanged(hasFocus: Boolean) {{
+    super.onWindowFocusChanged(hasFocus)
+    if (hasFocus && fullscreen) applyBars()
   }}
 
   override fun onPause() {{

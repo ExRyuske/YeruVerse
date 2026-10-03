@@ -325,9 +325,34 @@ fn set_fullscreen(window: WebviewWindow, on: bool) -> Result<(), String> {
     window.set_fullscreen(on).map_err(|e| e.to_string())
 }
 
-/// На мобильных окном управляет система: размера окна там нет как понятия, и
-/// метода тоже. Страница узнаёт об отказе и разворачивает сцену сама.
-#[cfg(not(desktop))]
+/// На Android окно и так занимает весь экран — мешают только системные панели
+/// (часы сверху, «назад — домой — недавние» снизу). Прячет их сама активность
+/// (`setFullscreen` в `scripts/android_patch.py`), сцену страница растягивает
+/// своим классом.
+///
+/// Отказ глотаем, как и в `room.rs`: единственный его источник — активность
+/// оказалась не нашей, и тогда остаётся то же, что было без моста.
+#[cfg(target_os = "android")]
+#[tauri::command]
+fn set_fullscreen(window: WebviewWindow, on: bool) -> Result<(), String> {
+    window
+        .with_webview(move |webview| {
+            webview.jni_handle().exec(move |env, activity, _webview| {
+                use jni::objects::JValue;
+                if env
+                    .call_method(activity, "setFullscreen", "(Z)V", &[JValue::Bool(on as u8)])
+                    .is_err()
+                {
+                    let _ = env.exception_clear();
+                }
+            });
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// На iOS окном управляет система, и метода для него нет. Страница узнаёт об
+/// отказе и разворачивает сцену сама.
+#[cfg(target_os = "ios")]
 #[tauri::command]
 fn set_fullscreen(_on: bool) -> Result<(), String> {
     Err("окном на этой платформе управляет система".into())
