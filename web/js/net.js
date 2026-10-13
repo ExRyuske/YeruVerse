@@ -15,6 +15,9 @@ export class Net extends Emitter {
     this._queue = [];
     this._closedByUs = false;
     this._retry = 0;
+    // Прежний id и ключ к нему из `welcome`: с ними после обрыва сервер
+    // возвращает нас тем же участником, и звонки с комнатой не рвутся.
+    this._ticket = null;
   }
 
   get connected() {
@@ -40,7 +43,7 @@ export class Net extends Emitter {
     ws.onopen = () => {
       if (!alive()) return ws.close();
       this._retry = 0;
-      this.send({ t: 'join', ...this._creds });
+      this.send({ t: 'join', ...this._creds, ...this._ticket });
       this._pingTimer = setInterval(() => this._ping(), 5000);
       this._ping();
       // В очереди лежит только то, что обрыв пережить обязано, — см. `HOLD`.
@@ -52,7 +55,10 @@ export class Net extends Emitter {
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.t === 'pong') return this._onPong(msg);
-      if (msg.t === 'welcome') this.selfId = msg.you.id;
+      if (msg.t === 'welcome') {
+        this.selfId = msg.you.id;
+        this._ticket = { id: msg.you.id, key: msg.key };
+      }
       this.emit(msg.t, msg);
     };
 
@@ -62,8 +68,10 @@ export class Net extends Emitter {
       clearInterval(this._pingTimer);
       this.emit('status', { online: false });
       if (this._closedByUs) return;
-      // Экспоненциальный бэкофф: мобильные сети любят рвать сокеты.
-      const wait = Math.min(1000 * 2 ** this._retry++, 15000);
+      // Экспоненциальный бэкофф: мобильные сети любят рвать сокеты. Потолок
+      // невысокий: место в комнате сервер держит за нами полминуты (`GRACE_MS`
+      // в `hub.rs`), и попыток вернуться в этот срок должно быть несколько.
+      const wait = Math.min(1000 * 2 ** this._retry++, 5000);
       this._retryTimer = setTimeout(() => this._open(), wait);
     };
 
@@ -114,11 +122,12 @@ export class Net extends Emitter {
    * Строку чата, карточку файла, новое имя — придержать: человек сделал это,
    * ничего не зная про обрыв, и терять его работу не за что.
    *
-   * Остальное привязано к сессии, а после обрыва она другая — сервер выдаёт id
-   * на соединение, а не на человека. Замер задержки мерить нечем; кандидаты ICE
-   * адресованы участникам, которых в комнате уже нет, а соединения к ним всё
-   * равно пересобираются с нуля (`Mesh.sync`); присутствие комната объявляет
-   * заново сама, обработчиком `welcome`.
+   * Остальное привязано к сессии и копить его незачем. Замер задержки мерить
+   * нечем; присутствие комната объявляет заново сама, обработчиком `welcome`.
+   * Сигналинг WebRTC восстанавливается без очереди: предложение без ответа
+   * повторяется, пока на него не ответят (`Conn._chase`), и несёт в себе уже
+   * собранных кандидатов. А если вернуться тем же участником не вышло, он и
+   * вовсе адресован соединениям, которые пересобираются с нуля (`Mesh.sync`).
    *
    * Копить их не просто незачем, а вредно. Очередь уходит одним всплеском сразу
    * за `join` — то есть до `welcome`, до `announceShares` и до всего, что мы про
@@ -144,6 +153,9 @@ export class Net extends Emitter {
     clearInterval(this._pingTimer);
     clearTimeout(this._retryTimer);
     this._queue.length = 0;
+    // Уходим сами — говорим об этом прямо. Молча закрытый сокет сервер
+    // считает обрывом и держит место, ожидая возвращения.
+    this.send({ t: 'leave' });
     const ws = this.ws;
     this.ws = null;          // с этого момента его события уже никого не волнуют
     if (ws) {
@@ -158,5 +170,6 @@ export class Net extends Emitter {
     this._closedByUs = false;
     this._retry = 0;
     this.selfId = null;
+    this._ticket = null;
   }
 }

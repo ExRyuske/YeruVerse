@@ -12,7 +12,16 @@ pub enum ClientMsg {
         name: Option<String>,
         #[serde(default)]
         color: Option<String>,
+        /// Возвращение после обрыва: прежний id и ключ к нему из `welcome`.
+        /// Совпали — участник остаётся тем же, см. `Hub::resume`.
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
+        key: Option<String>,
     },
+    /// Уход по своей воле. Обрыв сокета без него — не уход, а повод подождать
+    /// возвращения (см. `Hub::end`).
+    Leave,
     /// Смена ника или его цвета.
     Profile {
         #[serde(default)]

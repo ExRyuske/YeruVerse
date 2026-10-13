@@ -12,9 +12,6 @@
 
 import { MODEL_RATE, context, meter, resume, running, tap } from './audio.js';
 
-/** Ниже этого уровня выход тракта считается тишиной. */
-export const SILENT_OUT = 0.0004;
-
 export const MODELS = {
   /**
    * RNNoise — та же модель, что в Mumble и Jitsi. Крошечная (150 КБ) и
@@ -28,13 +25,16 @@ export const MODELS = {
         import(new URL('index.js', base).href),
         ctx.audioWorklet.addModule(new URL('workletProcessor.js', base).href),
       ]);
-      const wasmBinary = await loadRnnoise({
-        url: new URL('rnnoise.wasm', base).href,
-        simdUrl: new URL('rnnoise_simd.wasm', base).href,
+      const wasmBinary = await once('rnnoise', async () => {
+        const binary = await loadRnnoise({
+          url: new URL('rnnoise.wasm', base).href,
+          simdUrl: new URL('rnnoise_simd.wasm', base).href,
+        });
+        // Ворклет собирает модуль внутри себя, и там отказ уже никому не виден:
+        // узел в графе есть, а звука из него нет. Поэтому пробуем собрать здесь.
+        await WebAssembly.compile(binary);
+        return binary;
       });
-      // Ворклет собирает модуль внутри себя, и там отказ уже никому не виден:
-      // узел в графе есть, а звука из него нет. Поэтому пробуем собрать здесь.
-      await WebAssembly.compile(wasmBinary);
       return new RnnoiseWorkletNode(ctx, { maxChannels: 1, wasmBinary });
     },
     stop(node) {
@@ -55,7 +55,7 @@ export const MODELS = {
     async node(ctx) {
       const base = new URL('../vendor/deepfilternet/', import.meta.url);
       const [wasmModule] = await Promise.all([
-        compile(new URL('deepfilter.wasm', base)),
+        once('deepfilter', () => compile(new URL('deepfilter.wasm', base))),
         ctx.audioWorklet.addModule(new URL('worklet.js', base).href),
       ]);
       return new AudioWorkletNode(ctx, 'voice-clarity-processor', {
@@ -77,6 +77,30 @@ export const isModel = (kind) => kind in MODELS;
 export const modelTitle = (kind) => MODELS[kind]?.title ?? kind;
 /** Насколько долго ждать первого запуска — или пусто, если ждать нечего. */
 export const modelWeight = (kind) => MODELS[kind]?.heavy ?? '';
+
+/** Модели, уже скачанные в этой вкладке: вид -> обещание самой модели. */
+const fetched = new Map();
+
+/**
+ * Скачать модель один раз на вкладку, а не на каждую пересборку микрофона.
+ *
+ * Пересобирается он чаще, чем кажется: на телефоне — при каждом возвращении
+ * из фона, везде — при смене устройства. И каждый раз модель шла заново через
+ * сеть: кэш браузера у нас обязан сверяться с сервером (см. `cache_headers` в
+ * `server.rs`), и без сети сверка — это отказ. Стоило мобильному интернету
+ * моргнуть в эту секунду, и шумодав пропадал до конца разговора.
+ *
+ * Неудачу не запоминаем: следующая пересборка попробует снова.
+ */
+function once(kind, load) {
+  if (!fetched.has(kind)) {
+    fetched.set(kind, load().catch((e) => {
+      fetched.delete(kind);
+      throw e;
+    }));
+  }
+  return fetched.get(kind);
+}
 
 /**
  * Сборка модуля на главном потоке.

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{close_code, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Request, State};
 use axum::http::header::{HeaderValue, CACHE_CONTROL, REFERRER_POLICY, X_CONTENT_TYPE_OPTIONS};
 use axum::http::StatusCode;
@@ -303,8 +303,11 @@ async fn client_loop(
         let _ = sink.close().await;
     });
 
-    let peer_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+    // Свой id у сокета — до тех пор, пока он не вернёт прежний (`Hub::resume`).
+    let mut peer_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
     let mut room_id: Option<String> = None;
+    // Ушёл сам, а не оборвался: место освобождается сразу (см. `Hub::end`).
+    let mut gone = false;
     let mut budget = Budget::new();
     // Будит цикл ниже, когда `Hub::sweep` решает, что молчание затянулось —
     // см. `Peer::kill` в `hub.rs`. До входа в комнату будить некого: пира там
@@ -331,7 +334,12 @@ async fn client_loop(
 
         let text = match raw {
             Message::Text(t) => t.to_string(),
-            Message::Close(_) => break,
+            // Страницу закрыли или ушли с неё — это уход, а не обрыв: ждать
+            // возвращения некого.
+            Message::Close(frame) => {
+                gone = frame.is_some_and(|f| f.code == close_code::AWAY);
+                break;
+            }
             _ => continue,
         };
 
@@ -358,11 +366,22 @@ async fn client_loop(
         // Пока комната не названа, разговаривать не о чем: единственное, что
         // принимается до входа, — это сам вход и замер задержки.
         match msg {
-            ClientMsg::Join { room, name, color } => {
+            ClientMsg::Join { room, name, color, id, key } => {
                 if room_id.is_some() {
                     continue; // повторный join в том же сокете игнорируем
                 }
                 let room = sanitize_room(&room);
+                if let (Some(id), Some(key)) = (id, key) {
+                    if let Some(welcome) =
+                        state.hub.resume(&room, &id, &key, tx.clone(), kill.clone())
+                    {
+                        let _ = tx.try_send(welcome.to_string());
+                        info!(room = %tag(&room), peer_id = %id, "resume");
+                        peer_id = id;
+                        room_id = Some(room);
+                        continue;
+                    }
+                }
                 let peer = Peer::new(
                     PeerInfo {
                         id: peer_id.clone(),
@@ -398,6 +417,11 @@ async fn client_loop(
                 let _ = tx.try_send(json!({ "t": "pong", "at": at }).to_string());
             }
 
+            ClientMsg::Leave => {
+                gone = true;
+                break;
+            }
+
             in_room => {
                 let Some(room) = room_id.as_deref() else { continue };
                 handle_in_room(&state, room, &peer_id, in_room);
@@ -406,8 +430,8 @@ async fn client_loop(
     }
 
     if let Some(room) = room_id.as_deref() {
-        state.hub.leave(room, &peer_id);
-        info!(room = %tag(room), %peer_id, "leave");
+        state.hub.end(room, &peer_id, &kill, gone);
+        info!(room = %tag(room), %peer_id, gone, "leave");
     }
     drop(tx);
     let _ = writer.await;
@@ -480,8 +504,8 @@ fn handle_in_room(state: &AppState, room: &str, peer_id: &str, msg: ClientMsg) {
             }
         }
 
-        // Вход и замер задержки разобраны до комнаты.
-        ClientMsg::Join { .. } | ClientMsg::Ping { .. } => {}
+        // Вход, уход и замер задержки разобраны до комнаты.
+        ClientMsg::Join { .. } | ClientMsg::Ping { .. } | ClientMsg::Leave => {}
     }
 }
 

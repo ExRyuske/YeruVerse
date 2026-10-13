@@ -10,6 +10,10 @@
 // фальшивые микрофон и камеру, поэтому голос и картинка идут по-настоящему, но
 // без единого устройства на машине.
 
+import { unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 let chromium;
 try {
   ({ chromium } = await import('playwright'));
@@ -38,6 +42,33 @@ const note = (ok, what, extra = '') => {
 };
 
 const shot = (page, name) => (SHOTS ? page.screenshot({ path: `${SHOTS}/${name}.png` }) : null);
+
+/** Ровный шум без пауз, как от улицы или вентилятора: моно, 48 кГц, 16 бит. */
+function noiseWav(seconds) {
+  const rate = 48000;
+  const n = rate * seconds;
+  const wav = Buffer.alloc(44 + n * 2);
+  wav.write('RIFF', 0);
+  wav.writeUInt32LE(36 + n * 2, 4);
+  wav.write('WAVEfmt ', 8);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);          // PCM
+  wav.writeUInt16LE(1, 22);          // моно
+  wav.writeUInt32LE(rate, 24);
+  wav.writeUInt32LE(rate * 2, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write('data', 36);
+  wav.writeUInt32LE(n * 2, 40);
+  // Сглаженный белый шум — гул, а не шипение. Уровень около −30 дБ: заметно
+  // громче порога, с которого присмотр за шумодавом вообще что-то считает.
+  let v = 0;
+  for (let i = 0; i < n; i++) {
+    v = 0.97 * v + 0.03 * (Math.random() * 2 - 1);
+    wav.writeInt16LE(Math.round(v * 13800), 44 + i * 2);
+  }
+  return wav;
+}
 
 async function open(browser, viewport = { width: 1280, height: 800 }, extra = {}) {
   const ctx = await browser.newContext({
@@ -68,6 +99,23 @@ async function open(browser, viewport = { width: 1280, height: 800 }, extra = {}
       const node = createGain.apply(this, args);
       window.__gains.push(node);
       return node;
+    };
+    // И каждый захват микрофона: он должен быть один, сколько бы мест ни
+    // просили его включить.
+    window.__mics = [];
+    const getUserMedia = MediaDevices.prototype.getUserMedia;
+    MediaDevices.prototype.getUserMedia = async function (constraints) {
+      const stream = await getUserMedia.call(this, constraints);
+      if (constraints?.audio) window.__mics.push(stream);
+      return stream;
+    };
+    // И каждый поток, заведённый в граф: по нему видно, какой поток слушает
+    // усилитель, — живой или уже мёртвый.
+    window.__sources = [];
+    const createSource = AudioContext.prototype.createMediaStreamSource;
+    AudioContext.prototype.createMediaStreamSource = function (stream) {
+      window.__sources.push(stream);
+      return createSource.call(this, stream);
     };
   });
   const page = await ctx.newPage();
@@ -242,6 +290,13 @@ for (const r of report) console.log(`  ${r.status.padEnd(4)} ${r.name.padEnd(12)
 console.log('');
 
 note(diagValue(report, 'Микрофон') === 'в эфире', 'микрофон в эфире');
+// Включают его при входе и ещё раз по `welcome`, и оба раза успевали до того,
+// как вернётся первый захват: два шумодава, два gate, и первые не закрывал
+// никто до конца разговора.
+const mics = await a.evaluate(
+  () => window.__mics.filter((s) => s.getAudioTracks()[0]?.readyState === 'live').length
+);
+note(mics === 1, 'микрофон захвачен один раз', `живых захватов ${mics}`);
 // Модель обязана подняться: без неё собеседников слышно, но шумодава нет, а
 // молча подменённая обработка звучит иначе — это и надо ловить.
 note(/нейросетью/.test(diagValue(report, 'Шумодав')), 'шумодав поднялся');
@@ -664,12 +719,17 @@ note(phone.errors.length === 0, 'телефон без ошибок', phone.erro
 
 // ------------------------------------------------------- переподключение
 // Сокет рвётся сам по себе: телефон уснул, Wi-Fi переключился, оператор сменил
-// адрес. Вернувшись, участник получает от сервера новый id — а от нового id
-// зависит, кто в паре предлагает соединение, а кто отвечает. Пока старые
-// соединения переживали возвращение, стороны считали роли от разных id и могли
-// разойтись обе невежливыми, взаимно проигнорировав предложения друг друга:
-// человек возвращался в комнату, но не возвращался к собеседникам.
+// адрес. Звонок между участниками — другая дорога, и обрыв сокета он обычно
+// переживает. Поэтому вернувшийся остаётся тем же участником: тот же id, те же
+// соединения, и комната его ухода не замечает. Пока сервер выдавал новый id на
+// каждый сокет, звонки с вернувшимся рвались и собирались заново — секунды
+// тишины на ровном месте.
 const wasId = await inside(a, ([{ net }]) => net.selfId);
+for (const page of [a, b]) {
+  await inside(page, ([{ mesh }]) => {
+    for (const c of mesh.conns.values()) c.pc.__before = true;
+  });
+}
 await inside(a, ([{ net }]) => net.ws.close());
 await a.waitForTimeout(4000);
 
@@ -678,13 +738,16 @@ const after = await inside(a, async ([{ net, mesh }]) => {
     id: net.selfId,
     online: net.connected,
     conns: mesh.peers(),
+    kept: [...mesh.conns.values()].every((c) => c.pc.__before),
     states: (await mesh.diagnostics()).map((r) => `${r.state}/${r.ctl}`),
   };
 });
 note(after.online, 'сокет вернулся');
-note(after.id !== wasId, 'сервер выдал новый id', `${wasId} -> ${after.id}`);
-note(after.conns.length === 2, 'соединения пересобраны под новый id',
+note(after.id === wasId, 'id остался прежним', `${wasId} -> ${after.id}`);
+note(after.conns.length === 2 && after.kept, 'соединения те же, а не пересобранные',
      `их ${after.conns.length}: ${after.conns.join(', ')}`);
+note(await inside(b, ([{ mesh }, id]) => !!mesh.conns.get(id)?.pc.__before, wasId),
+     'и у соседа соединение с ним то же');
 note(
   after.states.every((st) => st === 'connected/open'),
   'и снова живые, а не брошенные',
@@ -756,6 +819,102 @@ note(
   `свои ключи: ${mine.own.join(', ') || 'ни одного'}`
 );
 note((await a.locator('.cam-tile').count()) >= 1, 'сосед по-прежнему её видит');
+
+// Предложение, ушедшее в обрыв, повторяется, пока на него не ответят.
+//
+// Сигналинг ходит через сервер, и всё, что ушло, пока сокет лежал, пропадает.
+// Соединение после этого ждало ответа вечно: камера, включённая в эту секунду,
+// до соседа не доезжала уже никогда.
+const bId = await inside(b, ([{ net }]) => net.selfId);
+await b.click('#btn-camera');            // выключаем, чтобы включить уже в обрыве
+await a.waitForTimeout(2000);
+await inside(b, ([{ net }]) => net.ws.close());
+await b.click('#btn-camera');
+await a.waitForTimeout(9000);
+const camBack = await a.evaluate(async (id) => {
+  const { state } = await import('/js/state.js');
+  return !!state.screens.get(`${id}:cam`)?.getVideoTracks().some((t) => t.readyState === 'live');
+}, bId);
+note(camBack, 'камера, включённая в обрыве, доехала до соседа');
+
+// Звук трансляции переживает пересборку соединения у зрителя.
+//
+// Оболочка на macOS и Linux снимает звук компьютера отдельно от картинки и
+// дописывает его в уже идущую трансляцию. Пока дорожка жила только в
+// соединениях, открытых до неё, после пересборки соединения зритель получал
+// картинку без звука. Громкость выше ста процентов ломалась там же: усилитель
+// оставался слушать прежний, мёртвый поток, а элемент молчал.
+//
+// Обрыв сокета соединений больше не пересобирает, поэтому пересборку вызываем
+// так, как она и случается теперь: вернуться тем же участником не вышло, и
+// зритель входит заново, с новым id.
+await a.evaluate(async () => {
+  const { mesh, net } = await import('/js/core.js');
+  const { state } = await import('/js/state.js');
+  const { context } = await import('/js/audio.js');
+  const canvas = Object.assign(document.createElement('canvas'), { width: 320, height: 180 });
+  const paint = canvas.getContext('2d');
+  setInterval(() => {
+    paint.fillStyle = `hsl(${Date.now() % 360}, 80%, 50%)`;
+    paint.fillRect(0, 0, 320, 180);
+  }, 33);
+  const stream = canvas.captureStream(30);
+  state.shares.set('screen', stream);
+  mesh.setStream('screen', stream);
+  net.send({ t: 'presence', screen: true });
+  // То же, что делает `addSystemSound`, когда оболочка отдала звук.
+  const ctx = context();
+  const tone = ctx.createOscillator();
+  const out = ctx.createMediaStreamDestination();
+  tone.connect(out);
+  tone.start();
+  mesh.addTrack('screen', out.stream.getAudioTracks()[0]);
+});
+await b.waitForTimeout(3000);
+await b.evaluate(async () => {
+  const { settings } = await import('/js/core.js');
+  const { state } = await import('/js/state.js');
+  const { render } = await import('/js/render.js');
+  settings.setStreamVolume(`${state.peers.get(state.view.split(':')[0]).name}:screen`, 2);
+  render('stage');
+});
+await inside(b, ([{ net }]) => {
+  net.send({ t: 'leave' });
+  net._ticket = null;
+  net.ws.close();
+});
+await b.waitForTimeout(6000);
+
+const shown = await b.evaluate(async () => {
+  const { state } = await import('/js/state.js');
+  const el = state.player?.el;
+  return {
+    audio: el?.srcObject?.getAudioTracks().length ?? 0,
+    boost: !!el?.muted && window.__sources.includes(el.srcObject),
+  };
+});
+note(shown.audio === 1, 'звук трансляции пережил обрыв', `звуковых дорожек ${shown.audio}`);
+note(shown.boost, 'и громкость выше ста процентов осталась при живом потоке');
+
+// ---------------------------------------------------------- шумодав в шуме
+//
+// Человек сидит в ровном шуме — улица, транспорт, вентилятор — и молчит.
+// Модель давит такой шум почти до нуля, и присмотр за шумодавом принимал это
+// за поломку: через три секунды молчания подавление снималось насовсем, ровно
+// там, где оно нужнее всего. Фальшивый микрофон Chromium пищит с паузами и
+// этого не ловит, поэтому подсовываем ему свой шум.
+const noise = join(tmpdir(), `yeruverse-noise-${process.pid}.wav`);
+writeFileSync(noise, noiseWav(10));
+const noisy = await chromium.launch({
+  args: [...ARGS, `--use-file-for-fake-audio-capture=${noise}`],
+});
+const street = await open(noisy);
+await street.goto(`${BASE}/#${ROOM}-street`, { waitUntil: 'networkidle' });
+await street.waitForTimeout(7000);
+const kept = await inside(street, ([{ voice }]) => voice.denoising);
+note(kept === 'rnnoise', 'шумодав держится в ровном шуме', kept);
+await noisy.close();
+unlinkSync(noise);
 
 await browser.close();
 console.log(`\nитог: ${problems.length ? 'замечаний ' + problems.length : 'всё сошлось'}`);

@@ -31,6 +31,17 @@ const MAX_PEERS_PER_ROOM: usize = 64;
 /// отдельного пути.
 const DROP_AFTER_MS: i64 = 30_000;
 
+/// Сколько миллисекунд ждём возвращения того, у кого оборвался сокет, прежде
+/// чем объявить комнате об уходе.
+///
+/// Сокет до сервера и звонок между участниками — разные дороги: на мобильном
+/// интернете первый рвётся, а второй в это время живёт. Пока обрыв сокета
+/// сразу был уходом, вернувшийся получал новый id, и вся комната рвала с ним
+/// звонки и собирала их заново — секунды тишины на ровном месте, с повторной
+/// раздачей всех потоков. Теперь место держится, и вернувшийся в этот срок
+/// остаётся тем же участником (см. `Hub::resume`), а звонки его не замечают.
+const GRACE_MS: i64 = 30_000;
+
 /// Время сервера в миллисекундах эпохи.
 ///
 /// Часы, отведённые раньше эпохи, — не повод падать. Этим числом помечаются
@@ -47,21 +58,35 @@ pub fn now_ms() -> i64 {
 
 pub struct Peer {
     pub info: PeerInfo,
-    pub tx: Sender<String>,
+    /// Куда писать участнику. Пусто — сокет оборвался, и участник ждёт
+    /// возвращения (см. `Hub::end`): писать ему сейчас некуда.
+    tx: Option<Sender<String>>,
     /// Когда от этого участника в последний раз пришло хоть что-то живое —
-    /// см. `Hub::touch` и `Hub::sweep`. Атомик, а не поле за тем же `Mutex`,
-    /// нарочно не нужен: обновление и так идёт под общим замком комнат вместе
-    /// со всем остальным, но отдельный тип точнее говорит о своей роли —
-    /// это не часть карточки участника, а служебная метка сервера.
+    /// см. `Hub::touch` и `Hub::sweep`. У ждущего возвращения — когда
+    /// оборвался сокет. Атомик, а не поле за тем же `Mutex`, нарочно не
+    /// нужен: обновление и так идёт под общим замком комнат вместе со всем
+    /// остальным, но отдельный тип точнее говорит о своей роли — это не часть
+    /// карточки участника, а служебная метка сервера.
     last_seen: AtomicI64,
     /// Будит цикл чтения сокета, когда `sweep` решает, что участника пора
-    /// убрать: сам сокет об этом не знает, пока ему не скажут явно.
+    /// убрать: сам сокет об этом не знает, пока ему не скажут явно. Заодно
+    /// метит сокет, которому участник принадлежит сейчас: после возвращения
+    /// это уже другой сокет, и прежний ничего здесь не трогает.
     kill: Arc<Notify>,
+    /// Ключ к возвращению под тем же id. Уходит только самому участнику, в
+    /// `welcome`, и в карточку, которую видят все, не попадает.
+    key: String,
 }
 
 impl Peer {
     pub fn new(info: PeerInfo, tx: Sender<String>, kill: Arc<Notify>) -> Self {
-        Peer { info, tx, last_seen: AtomicI64::new(now_ms()), kill }
+        Peer {
+            info,
+            tx: Some(tx),
+            last_seen: AtomicI64::new(now_ms()),
+            kill,
+            key: uuid::Uuid::new_v4().simple().to_string(),
+        }
     }
 }
 
@@ -74,12 +99,34 @@ impl Peer {
 /// собеседника уже нет. Само сообщение в таком случае теряется — отвечать
 /// нечем и некому, — но участника это больше не оставляет висеть неопределённо
 /// долго: `last_seen` тут же отводится в прошлое, и ближайший `sweep` (раз в
-/// несколько секунд, см. `server.rs`) уберёт его и закроет сокет, а не будет
-/// ждать, пока это когда-нибудь заметит TCP.
+/// несколько секунд, см. `server.rs`) закроет его сокет, а не будет ждать,
+/// пока это когда-нибудь заметит TCP.
+///
+/// Тому, кто ждёт возвращения, не пишем вовсе: вернувшись, он получит
+/// `welcome` со всей комнатой как она есть, а договориться о звонках заново
+/// участники умеют сами — предложение без ответа повторяется (`Conn._chase`).
 fn post(peer: &Peer, text: String) {
-    if peer.tx.try_send(text).is_err() {
+    let Some(tx) = &peer.tx else { return };
+    if tx.try_send(text).is_err() {
         peer.last_seen.store(now_ms() - DROP_AFTER_MS, Ordering::Relaxed);
     }
+}
+
+/// `welcome`: кто ты, ключ к возвращению и кто ещё в комнате.
+fn welcome(room_id: &str, room: &Room, me: &Peer) -> Value {
+    json!({
+        "t": "welcome",
+        "you": me.info,
+        "key": me.key,
+        "room": room_id,
+        "peers": room
+            .peers
+            .values()
+            .filter(|p| p.info.id != me.info.id)
+            .map(|p| p.info.clone())
+            .collect::<Vec<_>>(),
+        "srv": now_ms(),
+    })
 }
 
 /// Комната — это только список участников. Ничего общего, что нужно было бы
@@ -120,22 +167,45 @@ impl Hub {
             return Err("комната заполнена");
         }
 
-        let info = peer.info.clone();
-        let welcome = json!({
-            "t": "welcome",
-            "you": info,
-            "room": room_id,
-            "peers": room.peers.values().map(|p| p.info.clone()).collect::<Vec<_>>(),
-            "srv": now_ms(),
-        });
-
-        let joined = json!({ "t": "peer_join", "peer": info }).to_string();
+        let joined = json!({ "t": "peer_join", "peer": peer.info }).to_string();
         for p in room.peers.values() {
             post(p, joined.clone());
         }
 
-        room.peers.insert(info.id.clone(), Peer { info, ..peer });
+        let id = peer.info.id.clone();
+        let welcome = welcome(room_id, room, &peer);
+        room.peers.insert(id, peer);
         Ok(welcome)
+    }
+
+    /// Возвращение после обрыва — тем же участником.
+    ///
+    /// Ключ сошёлся: участник получает обратно свой id, своё присутствие и
+    /// своё место, а комната не узнаёт ни об уходе, ни о входе — звонки с ним
+    /// идут как шли. Не сошёлся или место уже отдано (`GRACE_MS` вышел, сервер
+    /// перезапускали) — `None`, и это обычный вход с новым id.
+    ///
+    /// Прежний сокет может ещё числиться живым: обрыв на мобильном интернете
+    /// сервер замечает не сразу. Его будим, чтобы закрылся, — но участник с
+    /// этой секунды принадлежит новому сокету, и уход прежнего ничего здесь не
+    /// тронет (см. `end`).
+    pub fn resume(
+        &self,
+        room_id: &str,
+        peer_id: &str,
+        key: &str,
+        tx: Sender<String>,
+        kill: Arc<Notify>,
+    ) -> Option<Value> {
+        let mut rooms = self.rooms.lock().unwrap();
+        let room = rooms.get_mut(room_id)?;
+        let peer = room.peers.get_mut(peer_id).filter(|p| p.key == key)?;
+        peer.kill.notify_one();
+        peer.kill = kill;
+        peer.tx = Some(tx);
+        peer.last_seen.store(now_ms(), Ordering::Relaxed);
+        let peer = &room.peers[peer_id];
+        Some(welcome(room_id, room, peer))
     }
 
     /// Отмечает живой сигнал от участника — любое сообщение, разобравшееся до
@@ -149,27 +219,33 @@ impl Hub {
         }
     }
 
-    /// Убирает тех, кто не подавал признаков жизни дольше `DROP_AFTER_MS`, и
-    /// будит их сокеты, чтобы они закрылись сами, — обычный уход, только не
-    /// дождавшийся своей стороны. Зовётся периодически из `server.rs`.
+    /// Зовётся периодически из `server.rs`.
+    ///
+    /// Тот, кто молчит дольше `DROP_AFTER_MS`, переходит в ожидание
+    /// возвращения, как при обрыве сокета, — а сокет будим, чтобы закрылся
+    /// сам. Тот, кто ждёт дольше `GRACE_MS`, уже не вернётся: его убираем, и
+    /// комната узнаёт об уходе.
     pub fn sweep(&self) {
         let now = now_ms();
         let mut rooms = self.rooms.lock().unwrap();
 
         rooms.retain(|_, room| {
-            let dead: Vec<String> = room
-                .peers
-                .iter()
-                .filter(|(_, p)| now - p.last_seen.load(Ordering::Relaxed) >= DROP_AFTER_MS)
-                .map(|(id, _)| id.clone())
-                .collect();
-
-            for id in &dead {
-                if let Some(p) = room.peers.remove(id) {
+            let mut gone = Vec::new();
+            for (id, p) in room.peers.iter_mut() {
+                let quiet = now - p.last_seen.load(Ordering::Relaxed);
+                if p.tx.is_none() && quiet >= GRACE_MS {
+                    gone.push(id.clone());
+                } else if p.tx.is_some() && quiet >= DROP_AFTER_MS {
+                    p.tx = None;
+                    p.last_seen.store(now, Ordering::Relaxed);
                     p.kill.notify_one();
                 }
             }
-            for id in &dead {
+
+            for id in &gone {
+                room.peers.remove(id);
+            }
+            for id in &gone {
                 let left = json!({ "t": "peer_leave", "id": id }).to_string();
                 for p in room.peers.values() {
                     post(p, left.clone());
@@ -180,16 +256,32 @@ impl Hub {
         });
     }
 
-    pub fn leave(&self, room_id: &str, peer_id: &str) {
+    /// Сокет участника закрылся.
+    ///
+    /// `gone` — ушёл сам: нажал «выйти» или закрыл страницу. Тогда место
+    /// освобождается сразу, и комната узнаёт об уходе. Иначе это обрыв, и
+    /// место держится `GRACE_MS` — вдруг вернётся (см. `resume`).
+    ///
+    /// Участник мог уже вернуться через другой сокет, а прежний закрывается
+    /// только теперь — тогда он не хозяин этой записи и ничего в ней не
+    /// трогает. Хозяина узнаём по `kill`: он у каждого сокета свой.
+    pub fn end(&self, room_id: &str, peer_id: &str, kill: &Arc<Notify>, gone: bool) {
         let mut rooms = self.rooms.lock().unwrap();
         let Some(room) = rooms.get_mut(room_id) else { return };
-        // `sweep()` может уже убрать молчащего участника и разбудить его сокет —
-        // тогда `client_loop` на выходе зовёт `leave()` второй раз. Без этой
-        // проверки в комнату уйдёт дублирующий `peer_leave` для уже ушедшего id.
-        if room.peers.remove(peer_id).is_none() {
+        let Some(peer) = room.peers.get_mut(peer_id) else { return };
+        if !Arc::ptr_eq(&peer.kill, kill) {
             return;
         }
 
+        if !gone {
+            // Уже ждёт — например, его перевёл сюда `sweep`: срок не продлеваем.
+            if peer.tx.take().is_some() {
+                peer.last_seen.store(now_ms(), Ordering::Relaxed);
+            }
+            return;
+        }
+
+        room.peers.remove(peer_id);
         if room.peers.is_empty() {
             rooms.remove(room_id);
             return;
@@ -321,18 +413,96 @@ mod tests {
         let hub = Hub::new();
         let (a, _a_rx) = peer("a", "Аня");
         let (b, mut b_rx) = peer("b", "Боря");
+        let (a_kill, b_kill) = (Arc::clone(&a.kill), Arc::clone(&b.kill));
         hub.join("room", a).unwrap();
         hub.join("room", b).unwrap();
         let _ = b_rx.try_recv();
 
-        hub.leave("room", "a");
+        hub.end("room", "a", &a_kill, true);
         assert_eq!(hub.stats()["peers"], 1);
         let left: Value = serde_json::from_str(&b_rx.try_recv().unwrap()).unwrap();
         assert_eq!(left["t"], "peer_leave");
         assert_eq!(left["id"], "a");
 
-        hub.leave("room", "b");
+        hub.end("room", "b", &b_kill, true);
         assert_eq!(hub.stats()["rooms"], 0);
+    }
+
+    /// Обрыв — не уход: место держится, комната ничего не слышит, а
+    /// вернувшийся с ключом получает обратно тот же id.
+    #[test]
+    fn resume_keeps_the_id_and_tells_nobody() {
+        let hub = Hub::new();
+        let (a, mut a_rx) = peer("a", "Аня");
+        let (b, _b_rx) = peer("b", "Боря");
+        let b_kill = Arc::clone(&b.kill);
+        hub.join("room", a).unwrap();
+        let key = hub.join("room", b).unwrap()["key"].as_str().unwrap().to_string();
+        let _ = a_rx.try_recv(); // peer_join
+
+        hub.end("room", "b", &b_kill, false);
+        assert_eq!(hub.stats()["peers"], 2);
+
+        let (tx, _rx) = mpsc::channel(16);
+        let welcome = hub.resume("room", "b", &key, tx, Arc::new(Notify::new())).unwrap();
+        assert_eq!(welcome["you"]["id"], "b");
+        assert_eq!(welcome["peers"].as_array().unwrap().len(), 1);
+        assert!(a_rx.try_recv().is_err(), "комната не должна слышать ни ухода, ни входа");
+    }
+
+    /// Чужой ключ места не открывает.
+    #[test]
+    fn resume_with_a_wrong_key_is_refused() {
+        let hub = Hub::new();
+        let (a, _a_rx) = peer("a", "Аня");
+        let kill = Arc::clone(&a.kill);
+        hub.join("room", a).unwrap();
+        hub.end("room", "a", &kill, false);
+
+        let (tx, _rx) = mpsc::channel(16);
+        assert!(hub.resume("room", "a", "не тот", tx, Arc::new(Notify::new())).is_none());
+    }
+
+    /// Прежний сокет закрывается уже после возвращения — и ничего не трогает:
+    /// участник принадлежит новому.
+    #[test]
+    fn old_socket_cannot_touch_the_resumed_peer() {
+        let hub = Hub::new();
+        let (a, _a_rx) = peer("a", "Аня");
+        let old = Arc::clone(&a.kill);
+        let key = hub.join("room", a).unwrap()["key"].as_str().unwrap().to_string();
+
+        let (tx, _rx) = mpsc::channel(16);
+        hub.resume("room", "a", &key, tx, Arc::new(Notify::new())).unwrap();
+        hub.end("room", "a", &old, true);
+        assert_eq!(hub.stats()["peers"], 1);
+    }
+
+    /// Не вернулся за `GRACE_MS` — ушёл: место освобождается, комната узнаёт.
+    #[test]
+    fn the_absent_leave_after_grace() {
+        let hub = Hub::new();
+        let (a, mut a_rx) = peer("a", "Аня");
+        let (b, _b_rx) = peer("b", "Боря");
+        let b_kill = Arc::clone(&b.kill);
+        hub.join("room", a).unwrap();
+        hub.join("room", b).unwrap();
+        let _ = a_rx.try_recv();
+
+        hub.end("room", "b", &b_kill, false);
+        hub.sweep();
+        assert_eq!(hub.stats()["peers"], 2, "срок ещё не вышел");
+
+        {
+            let rooms = hub.rooms.lock().unwrap();
+            let p = &rooms["room"].peers["b"];
+            p.last_seen.store(now_ms() - GRACE_MS - 1, Ordering::Relaxed);
+        }
+        hub.sweep();
+        assert_eq!(hub.stats()["peers"], 1);
+        let left: Value = serde_json::from_str(&a_rx.try_recv().unwrap()).unwrap();
+        assert_eq!(left["t"], "peer_leave");
+        assert_eq!(left["id"], "b");
     }
 
     /// Присланы только изменившиеся поля — остальные остаются как были.
@@ -408,10 +578,11 @@ mod tests {
         assert!(hub.join("0", second).is_ok());
     }
 
-    /// `touch` держит участника живым, а без него `sweep` убирает по истечении
-    /// `DROP_AFTER_MS` — и будит его сокет через `kill`.
+    /// `touch` держит участника живым, а без него `sweep` по истечении
+    /// `DROP_AFTER_MS` будит его сокет через `kill` и держит место ещё
+    /// `GRACE_MS` — как при любом обрыве. Комната об этом пока не слышит.
     #[tokio::test]
-    async fn sweep_drops_the_silent_and_wakes_their_socket() {
+    async fn sweep_detaches_the_silent_and_wakes_their_socket() {
         let hub = Hub::new();
         let (a, _a_rx) = peer("a", "Аня");
         let kill = Arc::clone(&a.kill);
@@ -424,8 +595,7 @@ mod tests {
         hub.sweep();
         assert_eq!(hub.stats()["peers"], 2);
 
-        // Молчание дольше предела — участника нет, сокет разбужен, остальные
-        // узнали об уходе.
+        // Молчание дольше предела — сокет разбужен, место держится.
         hub.touch("room", "a");
         {
             let rooms = hub.rooms.lock().unwrap();
@@ -434,10 +604,9 @@ mod tests {
         }
         hub.sweep();
 
-        assert_eq!(hub.stats()["peers"], 1);
-        let left: Value = serde_json::from_str(&b_rx.try_recv().unwrap()).unwrap();
-        assert_eq!(left["t"], "peer_leave");
-        assert_eq!(left["id"], "a");
+        assert_eq!(hub.stats()["peers"], 2);
+        assert!(hub.rooms.lock().unwrap()["room"].peers["a"].tx.is_none());
+        assert!(b_rx.try_recv().is_err(), "об уходе рано говорить");
 
         // `notify_one()` без ждущих запоминает разрешение — следующий `notified()`
         // возвращается сразу же, без реального ожидания.
@@ -447,7 +616,8 @@ mod tests {
     }
 
     /// Переполненный outbox — не молчаливая потеря без последствий: следующий
-    /// `sweep` убирает участника, как будто тот отмолчал `DROP_AFTER_MS`.
+    /// `sweep` закрывает сокет участника, как будто тот отмолчал
+    /// `DROP_AFTER_MS`. Место за ним держится — вернуться он ещё может.
     #[test]
     fn overflowing_outbox_marks_the_peer_for_the_next_sweep() {
         let hub = Hub::new();
@@ -471,6 +641,6 @@ mod tests {
         hub.broadcast("room", &json!({ "t": "chat" }));
 
         hub.sweep();
-        assert_eq!(hub.stats()["peers"], 0);
+        assert!(hub.rooms.lock().unwrap()["room"].peers["a"].tx.is_none());
     }
 }

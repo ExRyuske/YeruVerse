@@ -4,7 +4,7 @@
 
 import { Emitter } from './events.js';
 import { playback, meter, gate, canChooseOutput, setOutput } from './audio.js';
-import { Denoiser, SILENT_OUT, isModel, modelTitle, modelWeight } from './denoise.js';
+import { Denoiser, isModel, modelTitle, modelWeight } from './denoise.js';
 
 /** Модели, которые в этой вкладке уже поднимались: про них молчим. */
 const loaded = new Set();
@@ -105,8 +105,21 @@ export class Voice extends Emitter {
     return attempt(rest);
   }
 
-  async enable() {
-    if (this.enabled) return;
+  /**
+   * Включить микрофон. Повторный вызов, пока первый ещё идёт, ждёт его же.
+   *
+   * Зовут его разом из двух мест: вход в комнату и `welcome` от сервера, — и
+   * оба успевали до того, как первый захват вернётся. Выходило два захвата,
+   * два шумодава и два gate, и первые из них никто уже не закрывал: работали
+   * они до конца разговора и грели процессор впустую.
+   */
+  enable() {
+    if (this.enabled) return Promise.resolve();
+    this._enabling ??= this._enable().finally(() => (this._enabling = null));
+    return this._enabling;
+  }
+
+  async _enable() {
     this.raw = await this._capture();
     this.enabled = true;
     this.muted = false;
@@ -334,8 +347,14 @@ export class Voice extends Emitter {
     // пробуждением, и менять шумодав тут не на что.
     if (!this.chain.awake()) return void (this._deaf = 0);
 
-    // Выход живой — вопросов нет, и прошлые подозрения снимаются.
-    if (this.chain.outLevel() > SILENT_OUT) return void (this._deaf = 0);
+    // Выход живой — вопросов нет, и прошлые подозрения снимаются. Живой — это
+    // не «слышно», а «не ноль». В постоянном шуме — улица, транспорт,
+    // вентилятор — работающая модель оставляет от него сотые доли процента,
+    // и пока здесь стоял порог слышимости, это читалось как поломка: модель
+    // снималась через три секунды молчания ровно там, где нужнее всего, и
+    // больше не возвращалась. Сломанная же отдаёт ровно ноль: процессор,
+    // который не поднялся, свой выход не заполняет вовсе.
+    if (this.chain.outLevel() > 0) return void (this._deaf = 0);
     // Молчат оба: это просто тишина. Она ни о чём не говорит и понемногу
     // списывает накопленное — иначе редкие шумы сложились бы в приговор.
     if (this.chain.level() < DENOISE_INPUT) {
