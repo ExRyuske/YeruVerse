@@ -18,6 +18,8 @@ export class Net extends Emitter {
     // Прежний id и ключ к нему из `welcome`: с ними после обрыва сервер
     // возвращает нас тем же участником, и звонки с комнатой не рвутся.
     this._ticket = null;
+    // Сколько замеров задержки ушло без единого ответа сервера — см. `_ping`.
+    this._unanswered = 0;
   }
 
   get connected() {
@@ -43,6 +45,7 @@ export class Net extends Emitter {
     ws.onopen = () => {
       if (!alive()) return ws.close();
       this._retry = 0;
+      this._unanswered = 0;
       this.send({ t: 'join', ...this._creds, ...this._ticket });
       this._pingTimer = setInterval(() => this._ping(), 5000);
       this._ping();
@@ -52,6 +55,7 @@ export class Net extends Emitter {
 
     ws.onmessage = (e) => {
       if (!alive()) return;
+      this._unanswered = 0;
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.t === 'pong') return this._onPong(msg);
@@ -62,18 +66,7 @@ export class Net extends Emitter {
       this.emit(msg.t, msg);
     };
 
-    ws.onclose = () => {
-      if (!alive()) return;
-      this.ws = null;
-      clearInterval(this._pingTimer);
-      this.emit('status', { online: false });
-      if (this._closedByUs) return;
-      // Экспоненциальный бэкофф: мобильные сети любят рвать сокеты. Потолок
-      // невысокий: место в комнате сервер держит за нами полминуты (`GRACE_MS`
-      // в `hub.rs`), и попыток вернуться в этот срок должно быть несколько.
-      const wait = Math.min(1000 * 2 ** this._retry++, 5000);
-      this._retryTimer = setTimeout(() => this._open(), wait);
-    };
+    ws.onclose = () => alive() && this._down();
 
     ws.onerror = () => alive() && ws.close();
   }
@@ -103,8 +96,47 @@ export class Net extends Emitter {
     return u.toString();
   }
 
+  /** Сокета больше нет: говорим об этом и собираемся обратно. */
+  _down() {
+    this.ws = null;
+    clearInterval(this._pingTimer);
+    clearTimeout(this._retryTimer);
+    this.emit('status', { online: false });
+    if (this._closedByUs) return;
+    // Экспоненциальный бэкофф: мобильные сети любят рвать сокеты. Потолок
+    // невысокий: место в комнате сервер держит за нами полминуты (`GRACE_MS`
+    // в `hub.rs`), и попыток вернуться в этот срок должно быть несколько.
+    const wait = Math.min(1000 * 2 ** this._retry++, 5000);
+    this._retryTimer = setTimeout(() => this._open(), wait);
+  }
+
+  /**
+   * Замер задержки — и заодно проверка, что сокет вообще жив.
+   *
+   * Сокет умеет умирать молча: телефон сменил сеть, ноутбук проснулся, роутер
+   * забыл соединение — и ни `close`, ни `error` не приходит, пока этого не
+   * заметит TCP, а он замечает минутами. Всё это время сокет числится открытым:
+   * `wake()` его не трогает, сообщения уходят в никуда, а сервер тем временем
+   * уже снял нас с места. Поэтому считаем замеры, на которые сервер не ответил
+   * ничем, и после третьего подряд бросаем сокет сами.
+   *
+   * Считаем именно замеры, а не время тишины: в свёрнутой вкладке таймеры
+   * ходят редко, и «давно ничего не слышно» там значит только, что мы давно
+   * не спрашивали.
+   */
   _ping() {
+    if (this._unanswered >= 3) return this._abandon();
+    this._unanswered++;
     this.send({ t: 'ping', at: Date.now() });
+  }
+
+  /** Бросить сокет, не дожидаясь его собственного `close`: тот может не прийти. */
+  _abandon() {
+    const ws = this.ws;
+    if (!ws) return;
+    ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+    try { ws.close(); } catch {}
+    this._down();
   }
 
   _onPong({ at }) {

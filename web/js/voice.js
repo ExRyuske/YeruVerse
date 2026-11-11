@@ -47,6 +47,9 @@ export class Voice extends Emitter {
     // Что подавляет шум на самом деле, а не что выбрано в настройках: модель
     // может не подняться, и знать об этом полезнее, чем верить настройке.
     this.denoising = 'off';
+    // Номер «включения». Растёт на каждом `disable()`: по нему захват, который
+    // ещё в пути, узнаёт, что его уже отменили, — см. `_enable`.
+    this._epoch = 0;
 
     settings.on('change', ({ key }) => {
       if (key === 'voiceVolume' || key === 'peerVolume') this.applyVolumes();
@@ -115,15 +118,45 @@ export class Voice extends Emitter {
    */
   enable() {
     if (this.enabled) return Promise.resolve();
-    this._enabling ??= this._enable().finally(() => (this._enabling = null));
-    return this._enabling;
+    // Идущее включение годится, только если его с тех пор не отменили.
+    if (this._enabling && this._enablingEpoch === this._epoch) return this._enabling;
+
+    // Отменённое ещё в пути (например, висит системный вопрос о доступе) —
+    // новое встаёт за ним, а не рядом: два захвата разом уже были бедой.
+    const prev = this._enabling;
+    this._enablingEpoch = this._epoch;
+    const run = prev ? prev.catch(() => {}).then(() => this._enable()) : this._enable();
+    this._enabling = run;
+    const clear = () => {
+      if (this._enabling === run) this._enabling = null;
+    };
+    run.then(clear, clear);
+    return run;
   }
 
+  /**
+   * Захват и сборка тракта — с оглядкой на то, что нас могли успеть выключить.
+   *
+   * Оба шага долгие: первый ждёт ответа человека на вопрос о доступе, второй —
+   * загрузки модели. Выйти из комнаты за это время проще простого, и раньше
+   * `disable()` в такой момент не делал ничего — выключать было ещё нечего, —
+   * а захват потом спокойно завершался: микрофон оставался включённым после
+   * выхода из комнаты и доставался следующей.
+   */
   async _enable() {
-    this.raw = await this._capture();
+    const epoch = this._epoch;
+    const raw = await this._capture();
+    if (epoch !== this._epoch) return void raw.getTracks().forEach((t) => t.stop());
+
+    this.raw = raw;
     this.enabled = true;
     this.muted = false;
-    this.stream = await this._process(this.raw);
+    const stream = await this._process(raw);
+    // Выключили, пока собирался тракт: `disable()` своё уже убрал, но тракт
+    // достроился после него — разбираем и его.
+    if (epoch !== this._epoch) return void (this.enabled || this._teardown());
+
+    this.stream = stream;
     this.mesh.setStream('mic', this.stream);
     this._applyMonitor();
     this.emit('change', this.status());
@@ -196,14 +229,30 @@ export class Voice extends Emitter {
       return;
     }
     this._rebuilding = true;
+    // Микрофон могут выключить, пока идёт пересборка, — тогда доделывать её
+    // значит включить его обратно (см. `_enable`).
+    const epoch = this._epoch;
     try {
       const fresh = recapture ? await this._capture() : this.raw;
+      if (epoch !== this._epoch) {
+        if (recapture) fresh.getTracks().forEach((t) => t.stop());
+        return;
+      }
       if (recapture) fresh.getAudioTracks().forEach((t) => (t.enabled = !this.muted));
 
       const oldRaw = recapture ? this.raw : null;
       const oldChain = this.chain;
       this.raw = fresh;
-      this.stream = await this._process(fresh);
+      const stream = await this._process(fresh);
+      if (epoch !== this._epoch) {
+        // `disable()` убрал то, что видел, — а прежний захват и прежняя модель
+        // к тому моменту жили уже только здесь.
+        oldRaw?.getTracks().forEach((t) => t.stop());
+        oldChain?.close();
+        if (!this.enabled) this._teardown();
+        return;
+      }
+      this.stream = stream;
       // Выход собрался заново — заглушение на нём надо проставить снова, иначе
       // смена микрофона или шумодава молча включает голос обратно.
       this.stream?.getAudioTracks().forEach((t) => (t.enabled = !this.muted));
@@ -377,7 +426,8 @@ export class Voice extends Emitter {
 
     this.chain = null;
     this._rawMeter = meter(this.raw);
-    this.stream = this._gated(this.raw);
+    // Узел замера, а не поток заново — по той же причине, что и в `bare()`.
+    this.stream = this._gated(this._rawMeter?.node ?? this.raw);
     this.denoising = 'off';
     await this.mesh.replaceStream('mic', this.stream);
     this._applyMonitor();
@@ -407,10 +457,21 @@ export class Voice extends Emitter {
   }
 
   disable() {
+    // Отменяем и то, что ещё только включается: см. `_enable`.
+    this._epoch++;
     if (!this.enabled) return;
+    this.mesh.setStream('mic', null);
+    this._teardown();
+    this.enabled = false;
+    this.muted = false;
+    this.speaking.delete('self');
+    this.emit('change', this.status());
+  }
+
+  /** Разобрать микрофонный тракт целиком: захват, модель, замеры, gate. */
+  _teardown() {
     this._monitor?.close();
     this._monitor = null;
-    this.mesh.setStream('mic', null);
     this.raw?.getTracks().forEach((t) => t.stop());
     this.chain?.close();
     this.chain = null;
@@ -422,10 +483,6 @@ export class Voice extends Emitter {
     this._sentMeter = null;
     this.raw = null;
     this.stream = null;
-    this.enabled = false;
-    this.muted = false;
-    this.speaking.delete('self');
-    this.emit('change', this.status());
   }
 
   /**

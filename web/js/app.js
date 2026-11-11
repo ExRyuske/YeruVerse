@@ -84,8 +84,13 @@ async function init() {
  * установки соединения, а не постоянно.
  */
 async function loadServerConfig() {
-  state.config = await askServer('/config.json');
-  mesh.iceServers = state.config.iceServers ?? [];
+  const fresh = await askServer('/config.json');
+  // Не ответил — остаёмся при прежнем. Пустой объект здесь значит «не вышло
+  // спросить», а не «TURN больше нет»: затереть им рабочие учётки значило бы
+  // на двадцать минут оставить без обходного пути всех, кто подключится.
+  if (!fresh.iceServers) return;
+  state.config = fresh;
+  mesh.iceServers = fresh.iceServers;
 }
 
 // ---------------------------------------------------------------- потоки

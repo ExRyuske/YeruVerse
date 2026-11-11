@@ -255,7 +255,14 @@ net.on('chat', ({ from, text, srv }) => {
   addChat(peer?.name ?? 'Гость', text, isSelf(from), srv, peer?.color);
 });
 
-net.on('error', ({ message }) => toast(message));
+net.on('error', ({ message }) => {
+  toast(message, 6000);
+  // Отказ до первого `welcome` — это отказ во входе: комната полна или сервер
+  // занят. Сокет после него сервер закрывает, а мы бы тут же шли обратно — и
+  // так по кругу, раз в пять секунд, с тем же сообщением и пустой комнатой на
+  // экране. Возвращаемся на вход: повторить человек может сам.
+  if (state.joined && !state.everJoined) leaveRoom();
+});
 
 net.on('status', ({ online, rtt }) => {
   const dot = ui('#conn-dot');

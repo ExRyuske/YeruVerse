@@ -291,8 +291,18 @@ export function gate(input) {
   let open = true;
   let above = 0;
   let below = 0;
+  let lastTick = Date.now();
 
   const timer = setInterval(() => {
+    // Скрытой вкладке движок растягивает таймеры до раза в секунду. Три
+    // замера, которыми gate открывается, превращаются тогда в три секунды — и
+    // человек, заговоривший из игры, терял бы начало фразы. Когда замеры
+    // редкие, хватает одного: закрываться позже нужного не страшно, открыться
+    // позже — значит откусить слова.
+    const tick = Date.now();
+    const sparse = tick - lastTick > 200;
+    lastTick = tick;
+
     const level = probe.level();
     const openLevel = floor * OPEN_MARGIN;
     const closeLevel = Math.max(FLOOR_MIN, floor * CLOSE_MARGIN);
@@ -301,7 +311,7 @@ export function gate(input) {
     else if (level < closeLevel) { below++; above = 0; }
     else { above = 0; below = 0; }   // между порогами — держим как было
 
-    if (!open && above >= OPEN_TICKS) open = true;
+    if (!open && above >= (sparse ? 1 : OPEN_TICKS)) open = true;
     else if (open && below >= CLOSE_TICKS) open = false;
 
     // Минимум за окно — фон следующего окна. Считаем всё время, а не только

@@ -11,6 +11,7 @@ import { reason } from './errors.js';
 import { refreshDevices } from './settings-panel.js';
 import {
   canCaptureSound,
+  canPickSound,
   captureSound,
   releaseSound,
   soundBytes,
@@ -28,6 +29,13 @@ const SHARES = {
     presence: 'screen',
     capture: () => {
       const q = streamSettings();
+      // Выбрано своё устройство звука — у движка звук не просим совсем: он
+      // отдал бы устройство по умолчанию, и в трансляции звучали бы оба.
+      // Выбор запоминаем: пока открыто системное окно «что показывать»,
+      // настройку могут сменить, а добирать звук надо тем же путём, каким
+      // начали, — иначе в трансляции окажутся оба звука или ни одного.
+      soundChoice = pickedSound();
+      const own = !!soundChoice;
       // Что вернул движок, тем и пользуемся. Была здесь попытка снимать пустую
       // звуковую дорожку, которую он якобы заводит на macOS, — от неё
       // отказались: заводит он её или нет, никто не видел, а останавливать
@@ -47,8 +55,10 @@ const SHARES = {
         // обработку сам.
         // На macOS эту просьбу движок молча пропускает мимо ушей — там звук
         // добирает оболочка, см. addSystemSound ниже.
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-        systemAudio: 'include',
+        audio: own
+          ? false
+          : { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        systemAudio: own ? 'exclude' : 'include',
         selfBrowserSurface: 'exclude',   // не предлагать транслировать сам YeruVerse
         surfaceSwitching: 'include',     // окно можно сменить, не пересоздавая поток
       });
@@ -81,6 +91,20 @@ const SHARES = {
     missing: 'Камера недоступна: нужен https',
   },
 };
+
+/**
+ * Устройство вывода, звук которого человек выбрал для трансляции.
+ *
+ * Пусто — «звук системы», и тогда на Windows всё идёт прежним путём, через
+ * движок. Не пусто бывает только в приложении на Windows: в остальных местах
+ * настройку негде выставить и некому исполнить.
+ */
+function pickedSound() {
+  return canPickSound() ? settings.get('streamSoundDevice') : '';
+}
+
+/** Устройство, с которым начата идущая трансляция экрана (см. `capture`). */
+let soundChoice = '';
 
 export function wireShares() {
   ui('#btn-screen').onclick = () => toggleShare('screen');
@@ -205,7 +229,8 @@ export async function toggleShare(kind) {
  * сказать, иначе он будет искать причину в настройках трансляции.
  */
 async function addSystemSound(stream) {
-  if (!canCaptureSound()) {
+  const device = soundChoice;
+  if (!device && !canCaptureSound()) {
     // Приложение старее страницы: страницу отдаёт сервер, а .app обновляют
     // отдельно. Молчать нельзя — снаружи это выглядит как «звук просто не
     // работает», и искать причину человек будет где угодно, только не здесь.
@@ -215,7 +240,7 @@ async function addSystemSound(stream) {
     return;
   }
   try {
-    const track = await captureSound();
+    const track = await captureSound(device);
     // Пока мы ходили за звуком, трансляцию могли уже выключить.
     if (state.shares.get('screen') !== stream) return stopSound();
     // `mesh` кладёт дорожку и в сам `stream` — иначе её не получат те, с кем
@@ -223,7 +248,9 @@ async function addSystemSound(stream) {
     // возвращаем: он и так идёт из колонок, а сцена показывает не сам поток,
     // а только его картинку (см. `ownDisplay`).
     mesh.addTrack('screen', track);
-    watchSound(stream);
+    // Проверка «ноль байт — значит, сломано» верна только для macOS: там
+    // посылки идут и в тишине. Устройство на Windows в тишине не шлёт ничего.
+    if (!device) watchSound(stream);
   } catch (e) {
     toast(`Звук компьютера не пошёл: ${reason(e)}`, 8000);
   }
@@ -436,6 +463,15 @@ async function restartScreen() {
 
 settings.on('change', ({ key }) => {
   if (!key.startsWith('stream')) return;
+  // Источник звука — свойство самого захвата: от него зависит, просим ли мы
+  // звук у движка вообще. На ходу его не сменить, а перезапускать трансляцию
+  // молча нельзя — система снова спросит, что показывать.
+  if (key === 'streamSoundDevice') {
+    if (state.shares.has('screen')) {
+      toast('Источник звука сменится, когда включите трансляцию заново', 6000);
+    }
+    return;
+  }
   applyQuality();
   // Битрейт и приоритет живут только в кодировщике, дорожки они не касаются.
   if (!['streamBitrate', 'streamPriority'].includes(key)) retuneCapture();

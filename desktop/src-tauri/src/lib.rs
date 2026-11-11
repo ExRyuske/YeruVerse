@@ -456,6 +456,10 @@ fn capabilities(app: tauri::AppHandle) -> serde_json::Value {
         // Может ли оболочка отдать звук самой системы. Нужно там, где движок
         // его не отдаёт сам: на macOS. На Windows отдаёт, и мост не нужен.
         "systemAudio": cfg!(target_os = "macos"),
+        // Может ли оболочка снять звук с названного устройства вывода, а не с
+        // того, что в системе по умолчанию. Это Windows: движок там отдаёт
+        // только устройство по умолчанию.
+        "soundDevices": cfg!(target_os = "windows"),
     })
 }
 
@@ -513,8 +517,13 @@ pub fn run() {
         // «The operation was aborted» и не начнётся вовсе.
         .on_page_load(|webview, payload| {
             use tauri::webview::PageLoadEvent;
-            if payload.event() == PageLoadEvent::Started {
+            // Только главное окно. Событие приходит от любого вебвью, а
+            // окно с курсорами (`overlay`) создаётся как раз в начале
+            // трансляции — и его загрузка гасила только что начатый захват
+            // звука, стоило тому успеть раньше.
+            if webview.label() == "main" && payload.event() == PageLoadEvent::Started {
                 sysaudio::stop(&webview.state::<sysaudio::Sound>());
+                input::reset(&webview.state::<input::Input>());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -538,6 +547,7 @@ pub fn run() {
             sysaudio::sound_start,
             sysaudio::sound_stop,
             sysaudio::sound_stats,
+            sysaudio::sound_devices,
         ])
         .setup(|app| {
             // Слежение за клавиатурой поднимаем здесь: до появления `AppHandle`

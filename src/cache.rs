@@ -51,16 +51,33 @@ pub fn http_client() -> reqwest::Client {
         .expect("http client")
 }
 
+/// Сколько не ходим наружу после неудачи.
+///
+/// Без этой паузы неудача не запоминалась вовсе, и каждый следующий запрос шёл
+/// наружу заново — по одному за раз, через `fetch_gate`, и каждый ждал свои
+/// `HTTP_TIMEOUT`. Стоило Cloudflare или GitHub замолчать, и `/config.json`
+/// отвечал по десять секунд каждому, а десятый в очереди ждал уже сто: ровно
+/// то, чего `HTTP_TIMEOUT` обещает не допустить. Полминуты протухшего ответа
+/// (или пустоты) обходятся дешевле.
+const RETRY_AFTER: Duration = Duration::from_secs(30);
+
 pub struct Cache {
     ttl: Duration,
     slot: Mutex<Option<(Instant, Value)>>,
+    /// Когда поход наружу в последний раз не удался — см. `RETRY_AFTER`.
+    failed: Mutex<Option<Instant>>,
     /// Пропускает наружу не более одного похода разом — см. `get`.
     fetch_gate: tokio::sync::Mutex<()>,
 }
 
 impl Cache {
     pub fn new(ttl: Duration) -> Self {
-        Cache { ttl, slot: Mutex::new(None), fetch_gate: tokio::sync::Mutex::new(()) }
+        Cache {
+            ttl,
+            slot: Mutex::new(None),
+            failed: Mutex::new(None),
+            fetch_gate: tokio::sync::Mutex::new(()),
+        }
     }
 
     /// Что лежит в кэше, если оно ещё не протухло.
@@ -95,14 +112,20 @@ impl Cache {
         if let Some(fresh) = self.fresh() {
             return fresh;
         }
+        // Или сходить и вернуться ни с чем — тогда повторять сразу незачем.
+        if self.failed.lock().unwrap().is_some_and(|at| at.elapsed() < RETRY_AFTER) {
+            return self.stale().unwrap_or(empty);
+        }
 
         match fetch().await {
             Ok(found) => {
+                *self.failed.lock().unwrap() = None;
                 *self.slot.lock().unwrap() = Some((Instant::now(), found.clone()));
                 found
             }
             Err(e) => {
                 warn!("не удалось получить {what}: {e}");
+                *self.failed.lock().unwrap() = Some(Instant::now());
                 // Протухший ответ лучше пустоты: он был верен полчаса назад, а
                 // пустота не верна никогда.
                 self.stale().unwrap_or(empty)
@@ -172,6 +195,22 @@ mod tests {
 
         cache.put(Instant::now() - TTL - Duration::from_secs(1), json!(["протухшее"]));
         assert_eq!(cache.get("что-нибудь", json!([]), fails).await, json!(["протухшее"]));
+    }
+
+    /// После неудачи наружу какое-то время не ходят: иначе каждый запрос ждал
+    /// бы свой таймаут, стоя в очереди за предыдущим.
+    #[tokio::test]
+    async fn failure_is_not_retried_at_once() {
+        let cache = Cache::new(TTL);
+        let fails = || async { Err::<Value, String>("сеть молчит".into()) };
+        assert_eq!(cache.get("что-нибудь", json!([]), fails).await, json!([]));
+
+        let answer = cache
+            .get("что-нибудь", json!([]), || async {
+                panic!("слишком рано идти снова")
+            })
+            .await;
+        assert_eq!(answer, json!([]));
     }
 
     /// Удачный поход кладёт ответ в кэш — следующий раз наружу уже не идёт.

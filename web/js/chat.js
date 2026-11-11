@@ -192,7 +192,7 @@ function addAttachment(peer, meta, mine, at) {
     if (own) {
       img.src = own;
       action.remove();
-    } else if (mine || canAutoDownload(peer.id)) {
+    } else if (mine || canAutoDownload(peer?.id ?? '')) {
       action.click();       // качаем, не дожидаясь нажатия
     }
     // Иначе оставляем обычную кнопку «Скачать»: спрос сейчас превысил порог

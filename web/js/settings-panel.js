@@ -11,6 +11,7 @@ import { make, toast, ui } from './ui.js';
 import { hiddenLabels } from './stage.js';
 import { enableMic } from './devices.js';
 import { OK, WARN, BAD, LINKS } from './link-status.js';
+import { canPickSound, soundDevices } from './sysaudio.js';
 
 /**
  * Есть ли кому ловить сочетания.
@@ -71,6 +72,23 @@ function wireSettings() {
   bindCheck('#set-mirror', 'mirrorCam');
   bindCheck('#set-monitor', 'monitor');
   wireStream();
+
+  // Выбор устройства для звука трансляции есть только там, где оболочка умеет
+  // его снять, — в приложении на Windows.
+  if (canPickSound()) {
+    const pick = ui('#pick-stream-sound');
+    ui('#row-stream-sound').hidden = false;
+    pick.onchange = () => {
+      settings.set('streamSoundDevice', pick.value);
+      ui('#stream-sound-note').hidden = !pick.value;
+    };
+    // Список нужен до того, как откроют окно настроек: выбор живёт во
+    // всплывающей панели у кнопки трансляции, и открыть её могут первой.
+    refreshStreamSound();
+    // Наушники подключают и отключают на ходу — перед выбором список
+    // перечитываем, чтобы не предлагать того, чего уже нет.
+    pick.addEventListener('pointerdown', refreshStreamSound);
+  }
 
   ui('#pick-output').onchange = () => {
     settings.set('outputDevice', ui('#pick-output').value);
@@ -563,6 +581,38 @@ async function refreshOutputs() {
 }
 
 /**
+ * Устройства вывода, звук которых можно отдать в трансляцию.
+ *
+ * Список приходит от оболочки, а не от движка: идентификаторы здесь системные,
+ * и с теми, что знает страница (`pick-output`), они не совпадают.
+ *
+ * Отказ оболочки выбор не стирает: пустой список от ошибки — не «устройство
+ * исчезло». Стираем только когда список пришёл и выбранного в нём нет.
+ */
+async function refreshStreamSound() {
+  if (!canPickSound()) return;
+  const select = ui('#pick-stream-sound');
+  const list = await soundDevices().catch(() => null);
+  if (list) {
+    const saved = settings.get('streamSoundDevice');
+    if (saved && !list.some((d) => d.id === saved)) settings.set('streamSoundDevice', '');
+  }
+  const options = [
+    new Option('Звук системы', ''),
+    ...(list ?? []).map((d) => new Option(d.name, d.id)),
+  ];
+  // Перерисовка под открытым списком закрыла бы его — меняем, только если
+  // состав и правда другой.
+  const shot = options.map((o) => o.value).join('\n');
+  if (select.dataset.shot !== shot) {
+    select.dataset.shot = shot;
+    select.replaceChildren(...options);
+  }
+  select.value = settings.get('streamSoundDevice');
+  ui('#stream-sound-note').hidden = !select.value;
+}
+
+/**
  * Список камер. Имена система выдаёт только после первого доступа к камере, так
  * что до него в списке одна строка — «как в системе». После включения камеры
  * список наполняется сам: `refreshDevices` вызывается сразу после захвата.
@@ -576,6 +626,7 @@ async function refreshCameras() {
 }
 
 export async function refreshDevices() {
+  refreshStreamSound();
   await refreshOutputs();
   await refreshCameras();
   const list = uniqueDevices(await voice.devices().catch(() => []));

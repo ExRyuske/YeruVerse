@@ -1,10 +1,16 @@
-// Звук компьютера в свою трансляцию — на macOS.
+// Звук компьютера в свою трансляцию — на macOS, и звук выбранного устройства
+// вывода — на Windows.
 //
 // На Windows это делает сам движок: `getDisplayMedia` отдаёт звук вместе с
 // картинкой, и здесь ничего не нужно. На macOS системный звук не отдаёт ни
 // один движок — ни WebKit, ни Chrome. Трансляция уходит немой, и закрыть эту
 // дыру может только оболочка (`sysaudio.rs`): она снимает звук через
 // ScreenCaptureKit и присылает сюда отсчёты.
+//
+// На Windows оболочка нужна в одном случае: движок отдаёт звук только с
+// устройства по умолчанию, а транслировать хочется то, что играет в другое
+// (браузер выведен в наушники, остальное — в колонки). Тогда звук у движка не
+// просим вовсе, а оболочка снимает названное устройство тем же путём.
 //
 // Отсюда они попадают в обычную дорожку MediaStreamTrack, и дальше всё как
 // всегда — `mesh` жмёт её тем же Opus, что и звук игры на Windows.
@@ -43,17 +49,34 @@ export function canCaptureSound() {
   return !!native.caps.systemAudio;
 }
 
+/** Умеет ли эта сборка снимать звук с выбранного устройства вывода. */
+export function canPickSound() {
+  return !!native.caps.soundDevices;
+}
+
+/** Есть ли у оболочки хоть какой-то захват звука — и, значит, что гасить. */
+const bridged = () => canCaptureSound() || canPickSound();
+
+/** Устройства вывода, с которых можно снять звук: `{ id, name }`. */
+export function soundDevices() {
+  if (!canPickSound()) return Promise.resolve([]);
+  return native.invoke('sound_devices');
+}
+
 /**
  * Начать снимать звук системы и вернуть дорожку с ним.
  *
  * Ошибку не глотаем: самая частая — не выдана «Запись экрана», и человеку об
  * этом надо сказать, иначе он будет искать причину в настройках трансляции.
+ *
+ * `device` — с какого устройства вывода снимать (только Windows). Пусто — звук
+ * системы целиком.
  */
-export async function captureSound() {
+export async function captureSound(device = '') {
   // Именно `track`, а не сам `live`: во время настройки он уже заведён, но
   // дорожки в нём ещё нет.
   if (live?.track) return live.track;
-  if (!canCaptureSound()) throw new Error('захват звука системы недоступен');
+  if (!bridged()) throw new Error('захват звука системы недоступен');
 
   const Channel = window.__TAURI__?.core?.Channel;
   if (!Channel) throw new Error('нативный слой недоступен');
@@ -69,6 +92,11 @@ export async function captureSound() {
     numberOfInputs: 0,
     numberOfOutputs: 1,
     outputChannelCount: [2],
+    // Запас перед игрой — только для устройства на Windows: оно в тишине
+    // замолкает совсем, и без запаса каждый новый звук начинался бы с провалов
+    // (см. `prebuffer` в процессоре). Сорок миллисекунд покрывают и пачку в
+    // десять, и грубый системный таймер, по которому оболочка их забирает.
+    processorOptions: { prebuffer: device ? Math.round(ctx.sampleRate * 0.04) : 0 },
   });
   const dest = ctx.createMediaStreamDestination();
   node.connect(dest);
@@ -92,7 +120,11 @@ export async function captureSound() {
     // Частоту берём у графа, а не считаем: движок вправе не дать 48 кГц, и
     // тогда наши отсчёты играли бы не с той скоростью — звук поехал бы по
     // высоте, а понять почему было бы неоткуда.
-    await native.invoke('sound_start', { channel, rate: Math.round(ctx.sampleRate) });
+    await native.invoke('sound_start', {
+      channel,
+      rate: Math.round(ctx.sampleRate),
+      device: device || null,
+    });
   } catch (e) {
     live = null;
     node.port.postMessage('stop');
@@ -118,7 +150,7 @@ export async function captureSound() {
  * состояние: его к этому моменту уже могли обнулить.
  */
 export function releaseSound() {
-  if (!canCaptureSound()) return Promise.resolve();
+  if (!bridged()) return Promise.resolve();
   return native.invoke('sound_stop').catch(() => {});
 }
 
