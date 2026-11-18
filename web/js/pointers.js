@@ -115,7 +115,7 @@ export class Pointers {
    * оставляли за собой вереницу кругов.
    */
   _hide(id) {
-    this.cursors.get(id)?.remove();
+    this.cursors.get(id)?.el.remove();
     this.cursors.delete(id);
   }
 
@@ -228,15 +228,24 @@ export class Pointers {
 
     if (msg.type === 'click') this._ping(msg.x, msg.y, peer);
 
-    let el = this.cursors.get(id);
-    if (!el) {
-      el = make('div', { class: 'ptr', html: CURSOR });
+    let cur = this.cursors.get(id);
+    if (!cur) {
+      const el = make('div', { class: 'ptr', html: CURSOR });
       this.layer.appendChild(el);
-      this.cursors.set(id, el);
+      cur = { el, label: el.querySelector('span'), name: null, color: null };
+      this.cursors.set(id, cur);
     }
-    el.style.setProperty('--ptr', peer?.color ?? PEER_COLOR);
-    el.querySelector('span').textContent = peer?.name ?? '';
-    el.style.transform = `translate(${left}px, ${top}px)`;
+    const color = peer?.color ?? PEER_COLOR;
+    if (cur.color !== color) {
+      cur.color = color;
+      cur.el.style.setProperty('--ptr', color);
+    }
+    const name = peer?.name ?? '';
+    if (cur.name !== name) {
+      cur.name = name;
+      cur.label.textContent = name;
+    }
+    cur.el.style.transform = `translate(${left}px, ${top}px)`;
   }
 
   /** Короткая пульсирующая метка в точке клика. */

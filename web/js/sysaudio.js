@@ -92,11 +92,9 @@ export async function captureSound(device = '') {
     numberOfInputs: 0,
     numberOfOutputs: 1,
     outputChannelCount: [2],
-    // Запас перед игрой — только для устройства на Windows: оно в тишине
-    // замолкает совсем, и без запаса каждый новый звук начинался бы с провалов
-    // (см. `prebuffer` в процессоре). Сорок миллисекунд покрывают и пачку в
-    // десять, и грубый системный таймер, по которому оболочка их забирает.
-    processorOptions: { prebuffer: device ? Math.round(ctx.sampleRate * 0.04) : 0 },
+    // Запас перед игрой нужен везде: на Windows устройство в тишине замолкает,
+    // а на macOS сглаживает скачки доставки через IPC и главный поток.
+    processorOptions: { prebuffer: Math.round(ctx.sampleRate * 0.06) },
   });
   const dest = ctx.createMediaStreamDestination();
   node.connect(dest);

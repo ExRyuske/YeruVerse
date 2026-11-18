@@ -16,20 +16,14 @@
  * тощает. Растущую подрезаем: лишняя задержка в трансляции хуже, чем щелчок
  * раз в час. Пустая очередь и так отдаёт тишину.
  */
-const MAX_FRAMES = 12000;
+const MAX_FRAMES = 19200;
+const REBUFFER_EMPTY = 1200;
 
 class SystemSound extends AudioWorkletProcessor {
   constructor(options) {
     super();
     /**
-     * Сколько кадров копим, прежде чем заиграть после пустой очереди. Ноль —
-     * играем сразу, как было всегда.
-     *
-     * Нужен там, где источник замолкает совсем: устройство на Windows в тишине
-     * не шлёт ничего, очередь пустеет до дна, и каждый новый звук начинался бы
-     * с череды провалов — посылки приходят пачками, а запаса на неровность их
-     * прихода нет. На macOS поток непрерывен, и запас там складывается один
-     * раз сам собой.
+     * Сколько кадров копим, прежде чем заиграть после пустой очереди.
      */
     this.prebuffer = options?.processorOptions?.prebuffer ?? 0;
     /** Копим запас и пока молчим. */
@@ -40,6 +34,9 @@ class SystemSound extends AudioWorkletProcessor {
     this.head = 0;
     /** Сколько кадров лежит в очереди — чтобы не пересчитывать её каждый раз. */
     this.frames = 0;
+    this.lastL = 0;
+    this.lastR = 0;
+    this.emptyFrames = 0;
     this.stopped = false;
 
     this.port.onmessage = ({ data }) => {
@@ -52,10 +49,14 @@ class SystemSound extends AudioWorkletProcessor {
       this.frames += chunk.length >> 1;
 
       // Подрезаем с головы, а не с хвоста: свежий звук нужнее старого.
-      while (this.frames > MAX_FRAMES && this.queue.length > 1) {
-        const dropped = this.queue.shift();
-        this.frames -= (dropped.length - this.head) >> 1;
-        this.head = 0;
+      // Сбрасываем с запасом до рабочего уровня, чтобы не резать каждый кусок подряд.
+      if (this.frames > MAX_FRAMES) {
+        const target = Math.max(this.prebuffer * 2, 4800);
+        while (this.frames > target && this.queue.length > 1) {
+          const dropped = this.queue.shift();
+          this.frames -= (dropped.length - this.head) >> 1;
+          this.head = 0;
+        }
       }
     };
   }
@@ -72,21 +73,32 @@ class SystemSound extends AudioWorkletProcessor {
       // Буферы выхода приходят уже обнулёнными — пока копим, это и есть тишина.
       if (this.frames < this.prebuffer) return !this.stopped;
       this.filling = false;
+      this.emptyFrames = 0;
     }
 
     for (let i = 0; i < need; i++) {
       const chunk = this.queue[0];
       if (!chunk) {
-        // Не успели — отдаём тишину. Это лучше, чем повторить прошлый кусок:
-        // повтор слышен как заикание, тишина — как пропуск.
-        left[i] = 0;
-        if (right) right[i] = 0;
-        // Дно очереди: дальше снова копим запас, если он нужен.
-        this.filling = this.prebuffer > 0;
+        // Кратковременную нехватку гасим плавным затуханием, чтобы не щёлкать
+        // и не уходить сразу в повторное накопление; перенабор включаем
+        // только если источник замолчал дольше ~25 мс.
+        this.lastL *= 0.95;
+        this.lastR *= 0.95;
+        left[i] = this.lastL;
+        if (right) right[i] = this.lastR;
+        this.emptyFrames++;
+        if (this.prebuffer > 0 && this.emptyFrames >= REBUFFER_EMPTY) {
+          this.filling = true;
+        }
         continue;
       }
-      left[i] = chunk[this.head] / 32768;
-      if (right) right[i] = chunk[this.head + 1] / 32768;
+      const l = chunk[this.head] / 32768;
+      const r = chunk[this.head + 1] / 32768;
+      this.lastL = l;
+      this.lastR = r;
+      this.emptyFrames = 0;
+      left[i] = l;
+      if (right) right[i] = r;
       this.head += 2;
       this.frames--;
       if (this.head >= chunk.length) {

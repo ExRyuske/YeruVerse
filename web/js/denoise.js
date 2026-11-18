@@ -10,7 +10,7 @@
 // одна строчка звука и ни один запрос наружу не уходят. Обновляются скриптом
 // `scripts/denoiser.py`.
 
-import { MODEL_RATE, context, meter, resume, running, tap } from './audio.js';
+import { MODEL_RATE, context, resume, running, tap } from './audio.js';
 
 export const MODELS = {
   /**
@@ -152,15 +152,18 @@ export class Denoiser {
 
   constructor(kind, ctx, raw, node) {
     this.kind = kind;
+    this.ctx = ctx;
     this.node = node;
     this.source = ctx.createMediaStreamSource(raw);
-    this.out = ctx.createMediaStreamDestination();
+    this.out = null;
     this.source.connect(node);
-    node.connect(this.out);
 
     // Уровень меряем до подавления: индикатор должен показывать, что микрофон
     // вообще что-то слышит, даже когда модель признала это шумом.
-    this.meter = meter(raw);
+    // Замер вешаем прямо на уже созданный `source`, а не заводим второй
+    // `createMediaStreamSource(raw)`: два узла на одном потоке на WebKit
+    // оставляют один из них без звука.
+    this.meter = tap(this.source);
 
     // И то же самое после — прямо с выхода узла, а не с готового потока: так
     // замер не зависит от того, дружит ли движок с MediaStream в графе
@@ -169,6 +172,10 @@ export class Denoiser {
   }
 
   get stream() {
+    if (!this.out) {
+      this.out = this.ctx.createMediaStreamDestination();
+      this.node.connect(this.out);
+    }
     return this.out.stream;
   }
 
@@ -210,8 +217,8 @@ export class Denoiser {
     step(() => this.node.disconnect());
     // Дорожка выхода живёт сама по себе: пока её не остановить, она остаётся
     // «живой» и после того, как собеседникам отдали уже другую.
-    step(() => this.out.stream.getTracks().forEach((t) => t.stop()));
-    step(() => this.out.disconnect());
+    step(() => this.out?.stream.getTracks().forEach((t) => t.stop()));
+    step(() => this.out?.disconnect());
     // Модель освобождает своё последней: после этого узел уже не узел.
     step(() => MODELS[this.kind]?.stop(this.node));
   }

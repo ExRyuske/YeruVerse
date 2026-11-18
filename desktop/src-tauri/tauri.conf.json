@@ -18,6 +18,7 @@
         "fullscreen": false,
         "label": "main",
         "url": "https://verse.yeru.cc",
+        "backgroundColor": "#0f1115",
         "dragDropEnabled": false
       }
     ],

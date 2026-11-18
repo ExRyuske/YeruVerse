@@ -410,7 +410,7 @@ fn watch(dispatch: &'static Dispatch) -> bool {
         })
         .is_ok();
 
-    started && done.recv_timeout(Duration::from_secs(3)).unwrap_or(false)
+    started && done.recv_timeout(Duration::from_millis(250)).unwrap_or(false)
 }
 
 // ---------------------------------------------------------------- macOS
@@ -525,7 +525,7 @@ fn watch(dispatch: &'static Dispatch) -> bool {
         })
         .is_ok();
 
-    started && done.recv_timeout(Duration::from_secs(3)).unwrap_or(false)
+    started && done.recv_timeout(Duration::from_millis(250)).unwrap_or(false)
 }
 
 #[cfg(test)]

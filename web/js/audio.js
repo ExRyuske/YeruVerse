@@ -271,67 +271,82 @@ export function gate(input) {
   const dest = ctx.createMediaStreamDestination();
   src.connect(g).connect(dest);
 
-  // Ниже этой отметки калибровать не на чем — там уже не фон, а цифровая
-  // тишина самого тракта. Заодно и потолок чувствительности: без него
-  // случайно застрявшая на нуле оценка держала бы порог неразличимым от шума
-  // собственных проводов.
+  // Потолок и пол калибровки фона: ниже `FLOOR_MIN` уже цифровая тишина тракта,
+  // а выше `FLOOR_MAX` — уже речь, а не шум комнаты (`openLevel` не уползёт
+  // выше тихого голоса даже в шумной обстановке).
   const FLOOR_MIN = 0.0006;
-  // Порог открытия — фон с запасом на всплеск; порог закрытия — фон с
-  // запасом поменьше, чтобы гистерезис не съедал всю чувствительность у
-  // тихого голоса в тихой комнате.
-  const OPEN_MARGIN = 3;
+  const FLOOR_MAX = 0.006;
+  const OPEN_MARGIN = 2.5;
   const CLOSE_MARGIN = 1.6;
-  const OPEN_TICKS = 3;    // ~90 мс уверенного звука, чтобы открыться
-  const CLOSE_TICKS = 25;  // ~750 мс тишины, чтобы закрыться
-  const CALIBRATE_MS = 800;   // как часто пересчитывается фон
+  const HOLD_MS = 750;
+  const CALIBRATE_MS = 2500;
+  const MIN_WINDOW_SAMPLES = 30;
 
   let floor = FLOOR_MIN;
   let windowMin = Infinity;
+  let windowSamples = 0;
   let windowStart = Date.now();
   let open = true;
-  let above = 0;
-  let below = 0;
-  let lastTick = Date.now();
+  let applied = true;
+  let lastVoiceAt = Date.now();
+
+  const applyGain = () => {
+    if (open === applied) return;
+    applied = open;
+    g.gain.setTargetAtTime(open ? 1 : 0, ctx.currentTime, open ? 0.006 : 0.015);
+  };
 
   const timer = setInterval(() => {
-    // Скрытой вкладке движок растягивает таймеры до раза в секунду. Три
-    // замера, которыми gate открывается, превращаются тогда в три секунды — и
-    // человек, заговоривший из игры, терял бы начало фразы. Когда замеры
-    // редкие, хватает одного: закрываться позже нужного не страшно, открыться
-    // позже — значит откусить слова.
-    const tick = Date.now();
-    const sparse = tick - lastTick > 200;
-    lastTick = tick;
+    const now = Date.now();
+
+    // В свёрнутой или фоновой вкладке браузер тормозит таймеры до раза в
+    // секунду: ждать замеров там значит откусывать первые слоги каждой фразы,
+    // поэтому в фоне держим гейт открытым и не засоряем калибровку редкими тиками.
+    if (document.hidden) {
+      open = true;
+      lastVoiceAt = now;
+      windowMin = Infinity;
+      windowSamples = 0;
+      windowStart = now;
+      applyGain();
+      return;
+    }
 
     const level = probe.level();
+    if (level < floor) floor = Math.max(FLOOR_MIN, level);
+
     const openLevel = floor * OPEN_MARGIN;
     const closeLevel = Math.max(FLOOR_MIN, floor * CLOSE_MARGIN);
 
-    if (level > openLevel) { above++; below = 0; }
-    else if (level < closeLevel) { below++; above = 0; }
-    else { above = 0; below = 0; }   // между порогами — держим как было
+    if (level > openLevel) {
+      open = true;
+      lastVoiceAt = now;
+    } else if (open && level >= closeLevel) {
+      lastVoiceAt = now;
+    } else if (open && now - lastVoiceAt >= HOLD_MS) {
+      open = false;
+    }
 
-    if (!open && above >= (sparse ? 1 : OPEN_TICKS)) open = true;
-    else if (open && below >= CLOSE_TICKS) open = false;
-
-    // Минимум за окно — фон следующего окна. Считаем всё время, а не только
-    // пока закрыт: тот же тупик без шумодава, что и раньше, — калибровка
-    // ждала закрытия, закрыться было не от чего, раз порог для этого ещё не
-    // поднялся, — вернулся бы и на постоянном пересчёте, реши он ждать своего
-    // «подходящего» момента.
     if (level < windowMin) windowMin = level;
-    const now = Date.now();
+    windowSamples++;
     if (now - windowStart >= CALIBRATE_MS) {
-      floor = Math.max(FLOOR_MIN, windowMin);
+      if (windowSamples >= MIN_WINDOW_SAMPLES) {
+        const candidate = Math.min(FLOOR_MAX, Math.max(FLOOR_MIN, windowMin));
+        if (candidate > floor && (!open || windowMin <= FLOOR_MAX)) {
+          floor = floor * 0.7 + candidate * 0.3;
+        }
+      }
       windowMin = Infinity;
+      windowSamples = 0;
       windowStart = now;
     }
 
-    g.gain.setTargetAtTime(open ? 1 : 0, ctx.currentTime, 0.01);
+    applyGain();
   }, 30);
 
   return {
     stream: dest.stream,
+    level: () => probe.level() * g.gain.value,
     close() {
       clearInterval(timer);
       const step = (fn) => { try { fn(); } catch {} };
@@ -411,6 +426,29 @@ export function volume(el, stream) {
     boost?.set(loud && !silenced ? level : 0);
   };
 
+  const watched = new Set();
+  const onAudioReady = () => {
+    wake();
+    if (level > 1 && !boost) {
+      boost = amplify(stream, route);
+      route();
+    }
+    if (el.paused && !silenced) {
+      restart().catch(() => retryOnGesture(restart));
+    }
+  };
+  const watchTrack = (track) => {
+    if (track.kind !== 'audio' || watched.has(track)) return;
+    watched.add(track);
+    track.addEventListener('unmute', onAudioReady);
+  };
+  const onAddTrack = ({ track }) => {
+    watchTrack(track);
+    if (track.kind === 'audio') onAudioReady();
+  };
+  for (const track of stream.getAudioTracks()) watchTrack(track);
+  stream.addEventListener('addtrack', onAddTrack);
+
   return {
     set(v) {
       level = Math.min(MAX_GAIN, Math.max(0, v));
@@ -423,6 +461,9 @@ export function volume(el, stream) {
       route();
     },
     close() {
+      stream.removeEventListener('addtrack', onAddTrack);
+      for (const track of watched) track.removeEventListener('unmute', onAudioReady);
+      watched.clear();
       players.delete(el);
       // Элемента больше нет — ждать ради него касания незачем.
       forgetGesture(restart);

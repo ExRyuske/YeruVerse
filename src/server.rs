@@ -86,6 +86,9 @@ const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// сервер и хватится тишины, не растягивая её обнаружение на лишний круг.
 const SWEEP_EVERY: Duration = Duration::from_secs(5);
 
+/// Как часто заранее прогреваем кэш TURN и последнего релиза (до истечения 30-минутного TTL).
+const WARM_EVERY: Duration = Duration::from_secs(60 * 25);
+
 /// Поднимает сервер и сразу возвращает управление.
 pub async fn start(config: Config) -> std::io::Result<Handle> {
     let listener = TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], config.port))).await?;
@@ -111,6 +114,19 @@ pub async fn start(config: Config) -> std::io::Result<Handle> {
             loop {
                 tick.tick().await;
                 state.hub.sweep();
+            }
+        });
+    }
+
+    // Прогреваем кэш TURN и обновлений заранее в фоне, чтобы запросы
+    // `/config.json` и `/update.json` не ждали походов наружу.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(WARM_EVERY);
+            loop {
+                tick.tick().await;
+                tokio::join!(state.turn.warm(), state.updates.warm());
             }
         });
     }
@@ -294,9 +310,18 @@ async fn client_loop(
     let (tx, mut rx) = mpsc::channel::<String>(OUTBOX);
 
     // Писатель: единственное место, где что-то уходит в сокет.
+    // Сбрасываем очередь пачками: feed + try_recv + один flush уменьшают число системных вызовов.
     let writer = tokio::spawn(async move {
-        while let Some(text) = rx.recv().await {
-            if sink.send(Message::Text(text.into())).await.is_err() {
+        'write: while let Some(text) = rx.recv().await {
+            if sink.feed(Message::Text(text.into())).await.is_err() {
+                break;
+            }
+            while let Ok(more) = rx.try_recv() {
+                if sink.feed(Message::Text(more.into())).await.is_err() {
+                    break 'write;
+                }
+            }
+            if sink.flush().await.is_err() {
                 break;
             }
         }
@@ -357,12 +382,6 @@ async fn client_loop(
             }
         };
 
-        // Любое сообщение, дошедшее до этой строки, — знак жизни: не только
-        // `ping`, но и обычный обмен держит участника вне подозрений у `sweep`.
-        if let Some(room) = room_id.as_deref() {
-            state.hub.touch(room, &peer_id);
-        }
-
         // Пока комната не названа, разговаривать не о чем: единственное, что
         // принимается до входа, — это сам вход и замер задержки.
         match msg {
@@ -414,6 +433,9 @@ async fn client_loop(
             }
 
             ClientMsg::Ping { at } => {
+                if let Some(room) = room_id.as_deref() {
+                    state.hub.touch(room, &peer_id);
+                }
                 let _ = tx.try_send(json!({ "t": "pong", "at": at }).to_string());
             }
 
@@ -468,40 +490,43 @@ impl Budget {
 fn handle_in_room(state: &AppState, room: &str, peer_id: &str, msg: ClientMsg) {
     match msg {
         ClientMsg::Signal { to, data } => {
-            state.hub.send_to(room, &to, &json!({ "t": "signal", "from": peer_id, "data": data }));
+            state.hub.relay(
+                room,
+                peer_id,
+                &to,
+                &json!({ "t": "signal", "from": peer_id, "data": data }),
+            );
         }
 
         ClientMsg::Chat { text } => {
             let text = limit(text.trim(), 500);
             if text.is_empty() {
+                state.hub.touch(room, peer_id);
                 return;
             }
             let msg = json!({ "t": "chat", "from": peer_id, "text": text, "srv": now_ms() });
-            state.hub.broadcast(room, &msg);
+            state.hub.broadcast_from(room, peer_id, &msg);
         }
 
         ClientMsg::Profile { name, color } => {
             let name = name.map(|n| limit(n.trim(), 32));
             let color = color.as_deref().map(|c| sanitize_color(Some(c)));
-            if let Some(info) = state.hub.set_profile(room, peer_id, name, color) {
-                state.hub.broadcast(room, &json!({ "t": "presence", "peer": info }));
-            }
+            state.hub.apply_profile(room, peer_id, name, color);
         }
 
         ClientMsg::File { meta } => {
             // Карточка приходит от клиента и попадает в чужой интерфейс,
             // поэтому ограничиваем её размер; содержимое рисуется текстом.
             if meta.to_string().len() > 4096 || !sane_file_meta(&meta) {
+                state.hub.touch(room, peer_id);
                 return;
             }
             let msg = json!({ "t": "file", "from": peer_id, "meta": meta, "srv": now_ms() });
-            state.hub.broadcast(room, &msg);
+            state.hub.broadcast_from(room, peer_id, &msg);
         }
 
         ClientMsg::Presence(presence) => {
-            if let Some(info) = state.hub.set_presence(room, peer_id, presence) {
-                state.hub.broadcast(room, &json!({ "t": "presence", "peer": info }));
-            }
+            state.hub.apply_presence(room, peer_id, presence);
         }
 
         // Вход, уход и замер задержки разобраны до комнаты.

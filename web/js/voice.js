@@ -311,7 +311,7 @@ export class Voice extends Emitter {
         this.chain = await Denoiser.create(kind, raw);
         loaded.add(kind);
         this.denoising = kind;
-        out = this.chain.stream;
+        out = this.chain.node;
       } catch (e) {
         // Модель не поднялась — голос идёт как есть. Запасным вариантом тут
         // стоял шумодав движка, но просьба к движку никогда не остаётся при
@@ -354,8 +354,14 @@ export class Voice extends Emitter {
     this._gate = this.settings.get('gate') ? gate(input) : null;
 
     if (this._gate) {
-      this._sentMeter = meter(this._gate.stream);
-      return this._gate.stream;
+      const gated = this._gate;
+      this._sentMeter = { level: () => gated.level(), close: () => {} };
+      return gated.stream;
+    }
+    if (this.chain) {
+      const chain = this.chain;
+      this._sentMeter = { level: () => chain.outLevel(), close: () => {} };
+      return chain.stream;
     }
     if (input instanceof MediaStream) {
       this._sentMeter = meter(input);
@@ -464,6 +470,7 @@ export class Voice extends Emitter {
     this._teardown();
     this.enabled = false;
     this.muted = false;
+    this.level = 0;
     this.speaking.delete('self');
     this.emit('change', this.status());
   }
@@ -579,6 +586,7 @@ export class Voice extends Emitter {
   }
 
   _sample() {
+    if (!this.enabled && !this.remotes.size && !this.speaking.size) return;
     const now = Date.now();
     this._until ??= new Map();
     let changed = false;

@@ -318,7 +318,7 @@ export function stopShare(kind) {
  */
 function watchFrames(stream) {
   const video = make('video', {
-    srcObject: stream,
+    srcObject: new MediaStream(stream.getVideoTracks()),
     muted: true,
     playsInline: true,
     // Полностью скрытое видео браузер вправе не декодировать, поэтому

@@ -43,7 +43,6 @@ export function wireJoin() {
   buildPalette(ui('#set-palette'));
   render('rooms');
 
-  checkUpdate();
   setInterval(checkUpdate, 6 * 60 * 60 * 1000);
 }
 
@@ -106,7 +105,7 @@ function randomCode() {
  * политика содержимого. В обычном браузере обновлять нечего вовсе: страница и
  * так всегда свежая.
  */
-async function checkUpdate() {
+export async function checkUpdate() {
   const found = native.caps.updates
     ? await native.updateCheck().catch(failedCheck)
     : await releasedVersion();

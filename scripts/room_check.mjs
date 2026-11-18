@@ -325,10 +325,15 @@ const sound = await b.evaluate(async () => {
     if (s.type === 'outbound-rtp' && s.kind === 'audio') fmtp = codecs.get(s.codecId)?.sdpFmtpLine ?? '';
   });
   const mic = c.pc.getSenders().find((s) => s.track?.kind === 'audio');
+  const micRecv = c.pc.getReceivers().find((r) => r.track?.kind === 'audio');
+  const enc = mic?.getParameters().encodings?.[0];
   return {
     fmtp,
     hint: mic?.track?.contentHint ?? '',
-    cap: mic?.getParameters().encodings?.[0]?.maxBitrate ?? 0,
+    cap: enc?.maxBitrate ?? 0,
+    prio: enc?.priority ?? enc?.networkPriority ?? '',
+    bufMs: micRecv?.jitterBufferTarget ?? null,
+    delayHint: micRecv?.playoutDelayHint ?? null,
   };
 });
 const ceiling = Number(/maxaveragebitrate=(\d+)/.exec(sound.fmtp)?.[1] ?? 0);
@@ -336,6 +341,12 @@ note(/stereo=1/.test(sound.fmtp), 'собеседник просит стере�
 note(ceiling > 32000, 'и потолок выше телефонного', `${ceiling} бит/с`);
 note(sound.hint === 'speech' && sound.cap > 32000,
      'у микрофона своя подсказка и свой предел', `${sound.hint} · ${sound.cap} бит/с`);
+note(sound.prio === 'high', 'у микрофона высокий приоритет отправки', sound.prio);
+note(
+  (sound.bufMs !== null && sound.bufMs >= 60) || (sound.delayHint !== null && sound.delayHint >= 0.06),
+  'у входящего голоса настроен запасной буфер',
+  `target=${sound.bufMs} мс · hint=${sound.delayHint} с`
+);
 
 // ------------------------------------------------------ настройки микрофона
 //
@@ -439,6 +450,15 @@ await a.click('#btn-camera');
 await a.waitForTimeout(2500);
 await b.waitForTimeout(2500);
 note((await b.locator('.cam-tile').count()) >= 1, 'камера дошла до второго');
+
+const videoPrio = await a.evaluate(async () => {
+  const { mesh } = await import('/js/core.js');
+  const c = [...mesh.conns.values()][0];
+  const vid = c?.pc.getSenders().find((s) => s.track?.kind === 'video');
+  const enc = vid?.getParameters().encodings?.[0];
+  return enc?.priority ?? enc?.networkPriority ?? '';
+});
+note(videoPrio === 'medium', 'у видео приоритет ниже голоса', videoPrio);
 
 await b.click('.cam-tile video');
 await b.waitForTimeout(600);
@@ -913,6 +933,43 @@ await street.goto(`${BASE}/#${ROOM}-street`, { waitUntil: 'networkidle' });
 await street.waitForTimeout(7000);
 const kept = await inside(street, ([{ voice }]) => voice.denoising);
 note(kept === 'rnnoise', 'шумодав держится в ровном шуме', kept);
+
+// Непрерывный голос при включённом gate не должен глушиться самокалибровкой
+// даже дольше окна пересчёта фона (2.5 с), а при уходе ниже порога — закрываться.
+await a.bringToFront();
+const gateCheck = await a.evaluate(async () => {
+  const { context, gate } = await import('/js/audio.js');
+  const ctx = context();
+  const osc = ctx.createOscillator();
+  const amp = ctx.createGain();
+  const dest = ctx.createMediaStreamDestination();
+  osc.frequency.value = 220;
+  amp.gain.value = 0.05;
+  osc.connect(amp).connect(dest);
+  osc.start();
+
+  const g = gate(dest.stream);
+  await new Promise((r) => setTimeout(r, 3500));
+  const steadyLevel = g.level();
+
+  // Оставляем слабый шум (RMS ~0.00056 < closeLevel 0.00096), чтобы проверить
+  // именно закрытие самого гейта (gain -> 0), а не просто тишину источника.
+  amp.gain.value = 0.0008;
+  await new Promise((r) => setTimeout(r, 1500));
+  const quietLevel = g.level();
+
+  g.close();
+  osc.stop();
+  osc.disconnect();
+  amp.disconnect();
+  return { hidden: document.hidden, steadyLevel, quietLevel };
+});
+note(
+  !gateCheck.hidden && gateCheck.steadyLevel > 0.02 && gateCheck.quietLevel < 0.00005,
+  'gate не глушит непрерывную речь самокалибровкой и закрывается в тишине',
+  JSON.stringify(gateCheck)
+);
+
 await noisy.close();
 unlinkSync(noise);
 

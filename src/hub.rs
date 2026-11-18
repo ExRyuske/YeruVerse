@@ -341,20 +341,106 @@ impl Hub {
     /// Одному участнику. Если его уже нет — сообщение просто пропадает: это
     /// нормальный исход, а не ошибка, отвечать на неё всё равно нечем.
     pub fn send_to(&self, room_id: &str, peer_id: &str, msg: &Value) {
+        let text = msg.to_string();
         let rooms = self.rooms.lock().unwrap();
         if let Some(p) = rooms.get(room_id).and_then(|r| r.peers.get(peer_id)) {
-            post(p, msg.to_string());
+            post(p, text);
         }
     }
 
     /// Всем в комнате, включая отправителя: чат и присутствие возвращаются и
     /// ему тоже — так у всех один и тот же список и один и тот же порядок строк.
     pub fn broadcast(&self, room_id: &str, msg: &Value) {
+        let text = msg.to_string();
         let rooms = self.rooms.lock().unwrap();
         let Some(room) = rooms.get(room_id) else { return };
-        let text = msg.to_string();
         for p in room.peers.values() {
             post(p, text.clone());
+        }
+    }
+
+    /// Транзит одному участнику с одновременной отметкой активности отправителя под одним замком.
+    pub fn relay(&self, room_id: &str, from_id: &str, to_id: &str, msg: &Value) {
+        let text = msg.to_string();
+        let now = now_ms();
+        let rooms = self.rooms.lock().unwrap();
+        let Some(room) = rooms.get(room_id) else { return };
+        if let Some(from) = room.peers.get(from_id) {
+            from.last_seen.store(now, Ordering::Relaxed);
+        }
+        if let Some(to) = room.peers.get(to_id) {
+            post(to, text);
+        }
+    }
+
+    /// Рассылка от участника с отметкой его активности под одним замком.
+    pub fn broadcast_from(&self, room_id: &str, from_id: &str, msg: &Value) {
+        let text = msg.to_string();
+        let now = now_ms();
+        let rooms = self.rooms.lock().unwrap();
+        let Some(room) = rooms.get(room_id) else { return };
+        if let Some(from) = room.peers.get(from_id) {
+            from.last_seen.store(now, Ordering::Relaxed);
+        }
+        for p in room.peers.values() {
+            post(p, text.clone());
+        }
+    }
+
+    /// Обновить профиль участника, отметить активность и разослать карточку под одним замком.
+    pub fn apply_profile(
+        &self,
+        room_id: &str,
+        peer_id: &str,
+        name: Option<String>,
+        color: Option<String>,
+    ) {
+        let now = now_ms();
+        let mut rooms = self.rooms.lock().unwrap();
+        let Some(room) = rooms.get_mut(room_id) else { return };
+        let Some(p) = room.peers.get_mut(peer_id) else { return };
+        p.last_seen.store(now, Ordering::Relaxed);
+        if let Some(n) = name {
+            if !n.is_empty() {
+                p.info.name = n;
+            }
+        }
+        if let Some(c) = color {
+            p.info.color = c;
+        }
+        let text = json!({ "t": "presence", "peer": &p.info }).to_string();
+        for peer in room.peers.values() {
+            post(peer, text.clone());
+        }
+    }
+
+    /// Обновить присутствие участника, отметить активность и разослать карточку под одним замком.
+    pub fn apply_presence(&self, room_id: &str, peer_id: &str, p: Presence) {
+        let now = now_ms();
+        let mut rooms = self.rooms.lock().unwrap();
+        let Some(room) = rooms.get_mut(room_id) else { return };
+        let Some(peer) = room.peers.get_mut(peer_id) else { return };
+        peer.last_seen.store(now, Ordering::Relaxed);
+        let info = &mut peer.info;
+
+        if let Some(v) = p.voice {
+            info.voice = v;
+        }
+        if let Some(m) = p.muted {
+            info.muted = m;
+        }
+        if let Some(s) = p.screen {
+            info.screen = s;
+        }
+        if let Some(c) = p.camera {
+            info.camera = c;
+        }
+        if let Some(d) = p.deaf {
+            info.deaf = d;
+        }
+        let text = json!({ "t": "presence", "peer": &peer.info }).to_string();
+        for other in room.peers.values() {
+            post(other, text.clone());
         }
     }
 

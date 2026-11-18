@@ -27,13 +27,45 @@ export function initSettingsPanel() {
   wireSettings();
 }
 
+let streamSoundWired = false;
+let widebandWired = false;
+
+/** Показать или скрыть настройки, которые зависят от возможностей оболочки. */
+export function syncNativeSettings() {
+  ui('#hotkeys-section').hidden = !hasHotkeys();
+
+  if (canPickSound()) {
+    const pick = ui('#pick-stream-sound');
+    ui('#row-stream-sound').hidden = false;
+    if (!streamSoundWired) {
+      streamSoundWired = true;
+      pick.onchange = () => {
+        settings.set('streamSoundDevice', pick.value);
+        ui('#stream-sound-note').hidden = !pick.value;
+      };
+      // Наушники подключают и отключают на ходу — перед выбором список
+      // перечитываем, чтобы не предлагать того, чего уже нет.
+      pick.addEventListener('pointerdown', refreshStreamSound);
+    }
+    // Список нужен до того, как откроют окно настроек: выбор живёт во
+    // всплывающей панели у кнопки трансляции, и открыть её могут первой.
+    refreshStreamSound();
+  }
+
+  if (native.caps.background) {
+    ui('#row-wideband').hidden = false;
+    if (!widebandWired) {
+      widebandWired = true;
+      bindCheck('#set-wideband', 'wideband');
+    }
+  }
+}
+
 function wireSettings() {
   const modal = ui('#settings');
   const close = () => (modal.hidden = true);
 
-  // Раздел прячем там, где ловить сочетания некому: настройка, которой неоткуда
-  // сработать, — это просто мусор в окне.
-  ui('#hotkeys-section').hidden = !hasHotkeys();
+  syncNativeSettings();
 
   ui('#btn-settings').onclick = () => {
     modal.hidden = false;
@@ -73,34 +105,9 @@ function wireSettings() {
   bindCheck('#set-monitor', 'monitor');
   wireStream();
 
-  // Выбор устройства для звука трансляции есть только там, где оболочка умеет
-  // его снять, — в приложении на Windows.
-  if (canPickSound()) {
-    const pick = ui('#pick-stream-sound');
-    ui('#row-stream-sound').hidden = false;
-    pick.onchange = () => {
-      settings.set('streamSoundDevice', pick.value);
-      ui('#stream-sound-note').hidden = !pick.value;
-    };
-    // Список нужен до того, как откроют окно настроек: выбор живёт во
-    // всплывающей панели у кнопки трансляции, и открыть её могут первой.
-    refreshStreamSound();
-    // Наушники подключают и отключают на ходу — перед выбором список
-    // перечитываем, чтобы не предлагать того, чего уже нет.
-    pick.addEventListener('pointerdown', refreshStreamSound);
-  }
-
   ui('#pick-output').onchange = () => {
     settings.set('outputDevice', ui('#pick-output').value);
   };
-
-  // Настройка существует только там, где есть кому её исполнять: правит режим
-  // звука сама оболочка (Android), а в браузере и на настольных системах эта
-  // строка обещала бы то, чего не будет.
-  if (native.caps.background) {
-    ui('#row-wideband').hidden = false;
-    bindCheck('#set-wideband', 'wideband');
-  }
 
   // Полоска уровня помогает понять, ловит ли микрофон голос. Считаем её только
   // когда она на виду: раз в 150 мс, и всё это ради одной строки текста.

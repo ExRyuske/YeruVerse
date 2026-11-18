@@ -38,8 +38,23 @@ const STUN = {
  * Сколько на самом деле уйдёт байтов, решает не этот потолок, а `tuneAudio` —
  * там у голоса и у звука игры разные пределы.
  */
-const OPUS = 'stereo=1;sprop-stereo=1;maxaveragebitrate=128000;maxplaybackrate=48000;useinbandfec=1;usedtx=0';
+const OPUS = 'stereo=1;sprop-stereo=1;maxaveragebitrate=128000;maxplaybackrate=48000;useinbandfec=1;usedtx=0;ptime=20;maxptime=60';
 const OPUS_KEYS = new Set(OPUS.split(';').map((p) => p.split('=')[0]));
+
+// Базовый запас джиттер-буфера для звука (голоса и трансляции) и потолок при лагах сети.
+const MIN_VOICE_BUFFER_MS = 60;
+const MAX_VOICE_BUFFER_MS = 400;
+const ADAPT_INTERVAL_MS = 1500;
+
+function setAudioBuffer(receiver, ms) {
+  const clamped = Math.round(Math.min(MAX_VOICE_BUFFER_MS, Math.max(MIN_VOICE_BUFFER_MS, ms)));
+  try {
+    if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = clamped;
+  } catch {}
+  try {
+    if ('playoutDelayHint' in receiver) receiver.playoutDelayHint = clamped / 1000;
+  } catch {}
+}
 
 /**
  * Вписать эту просьбу в описание, которое уходит собеседнику.
@@ -106,6 +121,7 @@ class Conn {
     this.ctl = null;
     this.data = null;
     this.senders = new Map();   // 'mic' | 'screen' -> RTCRtpSender[]
+    this.audioRecv = new Map(); // track.id -> { receiver, targetMs, prevSamples, prevConcealed }
 
     const pc = new RTCPeerConnection(mesh.iceConfig());
     this.pc = pc;
@@ -149,20 +165,17 @@ class Conn {
       const stream = event.streams[0];
       if (!stream) return;
 
-      // Приёмник по умолчанию копит буфер ради плавности. В игре это
-      // превращается в задержку в полсекунды и больше — просим минимум.
-      //
-      // Просим только у картинки. Звуку эта просьба не нужна: его буфер держит
-      // не запас кадров, а разброс прихода пакетов, и укоротить этот разброс
-      // нельзя — можно только заставить тракт подгонять сам звук. Движки, к
-      // счастью, читают ноль как «своего минимума не ставлю» и остаются при
-      // своём (замерено: счётчики растяжений и сжатий в звуке не отличаются ни
-      // на один), но просить у звука видеонастройку всё равно незачем.
-      if (event.track.kind === 'video') {
-        try {
-          if ('playoutDelayHint' in event.receiver) event.receiver.playoutDelayHint = 0;
-          if ('jitterBufferTarget' in event.receiver) event.receiver.jitterBufferTarget = 0;
-        } catch {}
+      // Всем входящим аудиодорожкам (голосу и звуку трансляции) задаём стартовый
+      // запас буфера и включаем адаптацию под джиттер. Видео оставляем под
+      // штатный буфер движка, чтобы не ломать синхронизацию и не рвать кадры.
+      if (event.track.kind === 'audio') {
+        setAudioBuffer(event.receiver, MIN_VOICE_BUFFER_MS);
+        this.audioRecv.set(event.track.id, {
+          receiver: event.receiver,
+          targetMs: MIN_VOICE_BUFFER_MS,
+          prevSamples: null,
+          prevConcealed: null,
+        });
       }
       mesh._sawStream(id, stream);
     };
@@ -210,6 +223,7 @@ class Conn {
       this.retries = (this.retries ?? 0) + 1;
       try {
         if (this.initiator) this.pc.restartIce();
+        else this.mesh.net.signal(this.id, { iceRestart: true });
       } catch (e) {
         console.warn('перезапуск ICE не удался', e);
       }
@@ -313,6 +327,14 @@ class Conn {
   async onSignal(data) {
     const pc = this.pc;
     try {
+      if (data.iceRestart) {
+        if (this.initiator) {
+          this.retries = 0;
+          try { pc.restartIce(); } catch {}
+          if (pc.connectionState !== 'connected') this._recover(4000);
+        }
+        return;
+      }
       if (data.description) {
         const collision =
           data.description.type === 'offer' && (this.makingOffer || pc.signalingState !== 'stable');
@@ -336,9 +358,86 @@ class Conn {
     }
   }
 
+  /** Подстроить буфер джиттера входящего звука (голоса и стрима) под потери и разброс пакетов. */
+  async adaptAudio() {
+    if (!this.audioRecv.size || this.pc.connectionState !== 'connected') return;
+
+    for (const [trackId, entry] of this.audioRecv) {
+      if (entry.receiver.track?.readyState !== 'live') {
+        this.audioRecv.delete(trackId);
+      }
+    }
+    if (!this.audioRecv.size) return;
+
+    let stats;
+    try {
+      stats = await this.pc.getStats();
+    } catch {
+      return;
+    }
+
+    const tracks = new Map();
+    const inbound = [];
+    stats.forEach((s) => {
+      if (s.type === 'track' && s.trackIdentifier) tracks.set(s.id, s.trackIdentifier);
+      if (s.type === 'inbound-rtp' && s.kind === 'audio') inbound.push(s);
+    });
+
+    const liveAudioCount = this.pc
+      .getReceivers()
+      .filter((r) => r.track?.kind === 'audio' && r.track.readyState === 'live').length;
+
+    for (const s of inbound) {
+      const trackId = s.trackIdentifier ?? tracks.get(s.trackId);
+      let entry = trackId ? this.audioRecv.get(trackId) : null;
+      if (!entry && !trackId && this.audioRecv.size === 1 && liveAudioCount === 1) {
+        entry = this.audioRecv.values().next().value;
+      }
+      if (!entry) continue;
+
+      const hasSamples =
+        Number.isFinite(s.totalSamplesReceived) && Number.isFinite(s.concealedSamples);
+      let concealRatio = 0;
+      let hasDelta = false;
+      if (hasSamples) {
+        const prevSamples = entry.prevSamples;
+        const prevConcealed = entry.prevConcealed;
+        entry.prevSamples = s.totalSamplesReceived;
+        entry.prevConcealed = s.concealedSamples;
+        if (prevSamples !== null) {
+          const deltaSamples = s.totalSamplesReceived - prevSamples;
+          if (deltaSamples <= 0) continue;
+          const deltaConcealed = Math.max(0, s.concealedSamples - prevConcealed);
+          concealRatio = deltaConcealed / deltaSamples;
+          hasDelta = true;
+        }
+      }
+
+      const jitterMs = Number.isFinite(s.jitter) ? s.jitter * 1000 : 0;
+      let next = entry.targetMs;
+
+      if (concealRatio > 0.015 || jitterMs * 3 > entry.targetMs) {
+        const stepUp = concealRatio > 0.05 ? 100 : concealRatio > 0.015 ? 60 : 0;
+        next = Math.min(
+          MAX_VOICE_BUFFER_MS,
+          Math.max(entry.targetMs + stepUp, jitterMs * 3.5, MIN_VOICE_BUFFER_MS)
+        );
+      } else if ((!hasSamples || hasDelta) && concealRatio < 0.005 && jitterMs * 3 <= entry.targetMs - 20) {
+        next = Math.max(MIN_VOICE_BUFFER_MS, entry.targetMs - 20);
+      }
+
+      next = Math.round(next);
+      if (next !== entry.targetMs) {
+        entry.targetMs = next;
+        setAudioBuffer(entry.receiver, next);
+      }
+    }
+  }
+
   close() {
     clearTimeout(this._timer);
     clearTimeout(this._chaser);
+    this.audioRecv.clear();
     try { this.ctl?.close(); this.data?.close(); this.pc.close(); } catch {}
   }
 }
@@ -357,10 +456,9 @@ export class Mesh extends Emitter {
     this.seen = new Map();
     this.videoBitrate = 8_000_000;   // потолок для трансляции, бит/с
     this.videoFramerate = 60;
-    // Потолки звука. Речь при шестидесяти килобитах уже прозрачна, а звуку
-    // игры — музыке, взрывам, стерео — нужно заметно больше: движок сам по себе
-    // даёт вчетверо меньше, и слышно это сразу.
-    this.voiceBitrate = 64_000;
+    // Потолки звука. Речь при 96 кбит/с даёт кодировщику запас для стерео и
+    // In-Band FEC (`useinbandfec=1`), а звуку игры нужно больше.
+    this.voiceBitrate = 96_000;
     this.soundBitrate = 128_000;
     // Отправители, у которых просьба к движку сейчас в пути, и те, кому надо
     // будет повторить её следом: см. `apply`.
@@ -385,6 +483,19 @@ export class Mesh extends Emitter {
         this.send(id, { ns: 'media', kind, id: stream.id });
       }
     });
+
+    this._adapting = false;
+    setInterval(() => this.adaptAudio(), ADAPT_INTERVAL_MS);
+  }
+
+  async adaptAudio() {
+    if (this._adapting || !this.conns.size) return;
+    this._adapting = true;
+    try {
+      await Promise.all([...this.conns.values()].map((c) => c.adaptAudio()));
+    } finally {
+      this._adapting = false;
+    }
   }
 
   get selfId() { return this.net.selfId; }
@@ -524,7 +635,10 @@ export class Mesh extends Emitter {
     for (const c of this.conns.values()) {
       if (c.pc.connectionState === 'connected') continue;
       c.retries = 0;
-      try { if (c.initiator) c.pc.restartIce(); } catch {}
+      try {
+        if (c.initiator) c.pc.restartIce();
+        else c.mesh.net.signal(c.id, { iceRestart: true });
+      } catch {}
     }
   }
 
@@ -586,8 +700,8 @@ export class Mesh extends Emitter {
       for (const e of params.encodings) {
         e.maxBitrate = this.videoBitrate;
         e.maxFramerate = this.videoFramerate;
-        e.networkPriority = 'high';
-        e.priority = 'high';
+        e.networkPriority = 'medium';
+        e.priority = 'medium';
       }
       this.apply(sender, params, () => this.tune(sender, kind));
     } catch (e) {

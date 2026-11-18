@@ -11,9 +11,9 @@ import { render } from './render.js';
 import { icon } from './icons.js';
 import { clearStaleFlag, setIcon, toast, ui } from './ui.js';
 import { initChat } from './chat.js';
-import { initSettingsPanel, refreshDevices, wireHotkeys } from './settings-panel.js';
+import { initSettingsPanel, refreshDevices, syncNativeSettings, wireHotkeys } from './settings-panel.js';
 import { wireLayout } from './layout.js';
-import { joinByCode, parseInvite, wireJoin } from './join.js';
+import { checkUpdate, joinByCode, parseInvite, wireJoin } from './join.js';
 import { wireRoom } from './room.js';
 import { wireShares } from './shares.js';
 import { wireControl } from './control-ui.js';
@@ -25,15 +25,14 @@ import { modelTitle, modelWeight } from './denoise.js';
 init();
 
 async function init() {
-  ui('#btn-get-app').hidden = native.available;
-  if (native.available) {
-    await native.load();
-    ui('#server-row').hidden = false;
-    ui('#in-server').value = await native.currentServer().catch(() => location.origin);
-  }
+  // Запрашиваем конфигурацию и возможности оболочки параллельно, не задерживая
+  // первую отрисовку интерфейса: на Windows без этого окно долго держит пустой фон.
+  const configPromise = loadServerConfig();
+  const nativePromise = native.available
+    ? native.load().then(() => native.currentServer().catch(() => location.origin))
+    : Promise.resolve(null);
 
-  await loadServerConfig();
-  setInterval(loadServerConfig, 20 * 60 * 1000);
+  ui('#btn-get-app').hidden = native.available;
 
   const code = parseInvite();
   const nameField = ui('#in-name');
@@ -64,15 +63,24 @@ async function init() {
   wireStage();
   wireControl();
   initSettingsPanel();
-  wireHotkeys();
   initChat();
 
-  refreshDevices();
   // Наушники воткнули или камеру отключили — список должен это заметить сам.
   navigator.mediaDevices?.addEventListener?.('devicechange', () => refreshDevices());
 
   // Интерфейс собрался целиком — прошлое аварийное обновление можно забыть.
   clearStaleFlag();
+
+  const [serverUrl] = await Promise.all([nativePromise, configPromise]);
+  if (native.available) {
+    ui('#server-row').hidden = false;
+    ui('#in-server').value = serverUrl ?? location.origin;
+    syncNativeSettings();
+  }
+  wireHotkeys();
+  checkUpdate();
+  refreshDevices();
+  setInterval(loadServerConfig, 20 * 60 * 1000);
 
   // Ссылка-приглашение открывается сразу в комнате.
   if (code) joinByCode(code);

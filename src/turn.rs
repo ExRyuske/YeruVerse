@@ -81,6 +81,16 @@ impl Turn {
         self.cached.get("TURN у Cloudflare", json!([]), || self.fetch(key_id, token, *ttl)).await
     }
 
+    /// Заранее обновить учётки TURN в фоне, чтобы клиентский запрос не ждал Cloudflare.
+    pub async fn warm(&self) {
+        let Provider::Cloudflare { key_id, token, ttl } = &self.provider else {
+            return;
+        };
+        self.cached
+            .refresh("TURN у Cloudflare", json!([]), || self.fetch(key_id, token, *ttl))
+            .await;
+    }
+
     async fn fetch(&self, key_id: &str, token: &str, ttl: u64) -> Result<Value, String> {
         let http = self.http.as_ref().ok_or("http-клиент не создан")?;
         let url = format!("{CF_ENDPOINT}/{key_id}/credentials/generate-ice-servers");

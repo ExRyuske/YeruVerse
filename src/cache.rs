@@ -106,11 +106,33 @@ impl Cache {
         if let Some(fresh) = self.fresh() {
             return fresh;
         }
+        self.load(what, empty, false, fetch).await
+    }
 
+    /// Обновить кэш заранее, не дожидаясь истечения срока годности.
+    pub async fn refresh<F>(&self, what: &str, empty: Value, fetch: impl FnOnce() -> F) -> Value
+    where
+        F: Future<Output = Result<Value, String>>,
+    {
+        self.load(what, empty, true, fetch).await
+    }
+
+    async fn load<F>(
+        &self,
+        what: &str,
+        empty: Value,
+        force: bool,
+        fetch: impl FnOnce() -> F,
+    ) -> Value
+    where
+        F: Future<Output = Result<Value, String>>,
+    {
         let _permit = self.fetch_gate.lock().await;
         // Пока ждали своей очереди, кто-то мог уже сходить за нас.
-        if let Some(fresh) = self.fresh() {
-            return fresh;
+        if !force {
+            if let Some(fresh) = self.fresh() {
+                return fresh;
+            }
         }
         // Или сходить и вернуться ни с чем — тогда повторять сразу незачем.
         if self.failed.lock().unwrap().is_some_and(|at| at.elapsed() < RETRY_AFTER) {
